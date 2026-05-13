@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Advisory Board</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <div>
+          <div class="brand-title">AI Advisory Board</div>
+          <div class="brand-sub" id="workspace-label">…</div>
+        </div>
+      </div>
+
+      <div class="workspace-card" id="workspace-card" hidden>
+        <div class="ws-row">
+          <span class="ws-label-key">Workspace</span>
+          <span class="ws-pill" id="ws-scope-pill">…</span>
+        </div>
+        <div class="ws-row">
+          <span class="ws-label-key">Members</span>
+          <span class="ws-count" id="ws-member-count">…</span>
+        </div>
+        <div class="ws-row" id="ws-root-row">
+          <span class="ws-path" id="ws-root-path"></span>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-item active" data-route="discussions">
+          <span class="nav-icon">💬</span>
+          <span>Discussions</span>
+        </button>
+        <button class="nav-item" data-route="actions">
+          <span class="nav-icon">📋</span>
+          <span>Action Board</span>
+        </button>
+        <button class="nav-item" data-route="members">
+          <span class="nav-icon">👥</span>
+          <span>Board members</span>
+        </button>
+        <button class="nav-item" data-route="principles">
+          <span class="nav-icon">🧭</span>
+          <span>Principles</span>
+        </button>
+        <button class="nav-item" data-route="settings">
+          <span class="nav-icon">⚙️</span>
+          <span>Settings</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span class="status-dot" id="ws-dot"></span>
+        <span id="ws-label">connecting…</span>
+      </div>
+    </aside>
+
+    <main class="main" id="main">
+      <!-- Active view rendered here -->
+    </main>
+
+    <!-- New-discussion modal -->
+    <div class="modal-backdrop" id="new-discussion-modal" hidden>
+      <div class="modal">
+        <div class="modal-header">
+          <h2>New discussion</h2>
+          <button class="icon-btn" id="modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body">
+          <label class="field-label" for="new-question">Your question</label>
+          <textarea
+            id="new-question"
+            placeholder="e.g. Should we charge usage-based or per-seat for our new B2B tool?"
+            rows="3"
+          ></textarea>
+          <label class="field-label">Members</label>
+          <div class="member-chips" id="member-chips"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="modal-cancel">Cancel</button>
+          <button class="btn-primary" id="modal-submit">Start discussion</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Generic edit modal (member / principle) -->
+    <div class="modal-backdrop" id="edit-modal" hidden>
+      <div class="modal modal-wide">
+        <div class="modal-header">
+          <h2 id="edit-modal-title">Edit</h2>
+          <button class="icon-btn" id="edit-modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body" id="edit-modal-body"></div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="edit-modal-cancel">Cancel</button>
+          <button class="btn-danger" id="edit-modal-delete" hidden>Delete</button>
+          <button class="btn-primary" id="edit-modal-save">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirm modal -->
+    <div class="modal-backdrop" id="confirm-modal" hidden>
+      <div class="modal">
+        <div class="modal-header">
+          <h2 id="confirm-modal-title">Are you sure?</h2>
+          <button class="icon-btn" id="confirm-modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body">
+          <div id="confirm-modal-message" class="confirm-message"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="confirm-modal-cancel">Cancel</button>
+          <button class="btn-danger" id="confirm-modal-ok">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast container -->
+    <div class="toast-container" id="toasts"></div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

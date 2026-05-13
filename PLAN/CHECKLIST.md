@@ -1,0 +1,446 @@
+# AI Advisory Board CLI — Implementation Checklist
+
+Live progress tracker. Each item is a concrete deliverable. Phase numbering matches `PLAN.md` (with the post-refactor adjustment that we're now claude-CLI-native end-to-end, so old "Mode A vs Mode B" splits collapsed into one mode).
+
+**Legend:** `✅ done` · `🟡 in progress / partial` · `⬜ not started` · `🔵 deferred / nice-to-have`
+
+---
+
+## Phase 0 — Project skeleton ✅
+
+- [x] `package.json` with bin, scripts, deps (commander, enquirer, chalk, ora, proper-lockfile, slugify, zod)
+- [x] `tsconfig.json` strict + ESNext + paths
+- [x] `tsup.config.ts` ESM build with shebang banner
+- [x] `bin/aab.ts` entry → `runCli(argv)`
+- [x] `.gitignore`
+- [x] `README.md`
+- [x] `src/core/utils.ts` — generateUUID, nowIso, formatDuration, formatUsd, clampInt
+- [x] `src/core/logger.ts` — levels, redact, stderr-only
+- [x] `src/core/errors.ts` — typed errors → exit codes 1-7
+- [x] `src/storage/types.ts` — full domain types
+- [x] `src/storage/paths.ts` — workspace resolution (override > env > project-mount > active > cwd-slug)
+- [x] `src/storage/io.ts` — atomic JSON, snapshots, JSONL append
+- [x] `src/storage/locks.ts` — proper-lockfile per-workspace
+- [x] `src/storage/fs-storage-service.ts` — full StorageService impl
+- [x] `src/llm/claude-code-runner.ts` — shells out to `claude` CLI (no Anthropic SDK)
+- [x] `src/env/detect-claude-code.ts` — env hint detection
+- [x] `src/agents/emit-member-agent.ts` — `.claude/agents/<slug>.md` emitter with AAB:GENERATED marker
+- [x] `src/starter/starter-board-members.ts` — Elon, Julian, Alexandra
+- [x] `src/starter/starter-principles.ts` — 8 Dalio-inspired principles
+- [x] `src/ui/colors.ts` — chalk + deterministic per-member palette
+- [x] `src/ui/prompts.ts` — enquirer wrappers
+- [x] `src/ui/spinner.ts` — ora (TTY-aware)
+- [x] `src/cli.ts` — commander root, global flags, error mapping
+- [x] `src/commands/_context.ts` — workspace + lock helper
+- [x] `src/commands/init.ts` — bootstrap: detect claude CLI, seed members + principles, write agent files
+- [x] `src/commands/settings.ts` — get/set with type coercion
+- [x] `src/commands/doctor.ts` — 9 diagnostic checks
+- [x] `src/commands/workspace.ts` — list/new/switch/delete
+- [x] Smoke-tested: `aab --version`, `aab init`, `aab doctor`, `aab settings`, `aab workspace`
+
+---
+
+## Phase 1 — Discussions 🟡
+
+### Core engine ✅
+
+- [x] `src/core/parsing/safe-json.ts` — 5-strategy tolerant parser
+- [x] `src/core/parsing/llm-response-schemas.ts` — structuredResponse, orchestratorDecision, summary schemas
+- [x] `src/core/discussion/build-user-message.ts` — `[ROUND: N]` payload assembly with context truncation
+- [x] `src/core/discussion/run-member.ts` — claude --agent invocation, JSON parse, token-usage log
+- [x] `src/core/discussion/orchestrator.ts` — claude -p decision + deterministic state math (consensus / repetition / quality)
+- [x] `src/core/discussion/conversation-flow.ts` — `startDiscussion` (round 1) end-to-end
+- [x] Storage methods: saveDiscussion, loadDiscussionById, loadDiscussionPage, deleteDiscussion, archiveDiscussion
+- [x] `src/ui/render-discussion.ts` — TTY render with colored member badges, structured data, HITL panel
+- [x] Stdin closed on spawn (no `claude` CLI stdin warning)
+- [x] Live smoke test: 3-member discussion, structured JSON parsed correctly, orchestrator decided `request_user_input` with options
+
+### Commands ✅ (start/continue/respond/follow-up/list/show/delete) · 🟡 (spar/summarize/export)
+
+- [x] `aab discuss start "<question>"` — round 1, members default to all active, `--members` filter, `--max-turns` override
+- [x] `aab discuss list [--limit] [--offset] [--archived]`
+- [x] `aab discuss show <idOrShort> [--round N]`
+- [x] `aab discuss delete <idOrShort>`
+- [x] `aab discuss continue <id>` — orchestrator-gated next round
+- [x] `aab discuss respond <id> "<answer>" [--option <i>]` — answer pending `userInputRequest`
+- [x] `aab discuss follow-up <id> "<q>" [--all|--member <name>|--members a,b,c]` — targeted follow-up round (strict: any member failure aborts the round)
+- [ ] `aab discuss summarize <id>` — call summary prompt, persist `discussion.summary`
+- [ ] `aab discuss export <id> --md [--out <path>]` — render to markdown file
+- [ ] `aab discuss archive <id>` / `aab discuss unarchive <id>`
+- [x] Pre-round clarification gate (fires before `continue` AND `follow-up` per PLAN §4.3.1)
+
+### Supporting services ⬜ (Phase 2 territory but listed here for completeness)
+
+- [~] `src/core/discussion/business-context-agent.ts` — **SUPERSEDED by Phase 1.5 Knowledge Wiki.** The auto-extract-BusinessContext idea is replaced by the wiki's auto-ingest hook on discussion conclude. See `PLAN/KNOWLEDGE_WIKI.md` and Phase 1.5 below.
+- [ ] `src/core/discussion/enhanced-analyzer.ts` — alternative parsers for malformed JSON, question certainty extraction
+- [ ] `src/core/discussion/conversation-analyzer.ts` — extract action items from concluded discussions (structured-data fast path)
+- [ ] `aab usage [--since YYYY-MM-DD] [--by feature|model|day]` — token usage summary
+
+---
+
+## Phase 1.5 — Knowledge Wiki (Karpathy-style LLM Wiki) ⬜
+
+**Spec:** `PLAN/KNOWLEDGE_WIKI.md` (authoritative — read this first).
+**Plan section:** `PLAN/PLAN.md` Part 7.
+**External references:** [Karpathy's gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f), [obsidian-wiki framework](https://github.com/Ar9av/obsidian-wiki), [second-brain](https://github.com/NicholasSpisak/second-brain).
+
+**Locked decisions (2026-05-10, do not renegotiate without fresh user input):**
+1. Wiki lives **inside the workspace dir** — `~/.aabcli/<ws>/wiki/` (home scope) or `<projectRoot>/wiki/` (project scope).
+2. Source-page filenames are **humanized + footer reference to id** (e.g., `wiki/sources/q3-pricing-pivot.md` with `> Source: discussion 7a3f...` in footer).
+3. Wiki **fully replaces** `BusinessContext` — `aab knowledge migrate` + `BusinessContext` runtime path retired in same release.
+4. Auto-summarization stays **ON by default** (`autoSummarization: true` already at `src/storage/types.ts:328`).
+5. Auto-ingest from concluded discussions is **ON by default** (`knowledgeWiki.autoIngestDiscussions: true`).
+6. No vector DB / embeddings in v1 — markdown + Grep/Glob is the retrieval primitive.
+
+### Chunk 1 — Wiki skeleton + manifest
+
+- [ ] `src/storage/paths.ts` adds `wiki`, `raw`, `manifest`, `outputs` paths
+- [ ] `src/core/knowledge/page.ts` — frontmatter parse/serialize (YAML), slug ↔ filename helpers, `[[wikilink]]` extraction, body kebab-case humanizer
+- [ ] `src/core/knowledge/manifest.ts` — load/save (atomic), dedup by hash, append entry, mark `userEditedPagesSkipped`
+- [ ] `src/core/knowledge/schema-emitter.ts` — emits `wiki/KNOWLEDGE.md` from a string template (per `KNOWLEDGE_WIKI.md` §12)
+- [ ] `aab init` writes `wiki/KNOWLEDGE.md`, empty `wiki/index.md`, empty `wiki/log.md`, empty `.manifest.json`, empty `outputs/` and `raw/{files,urls,pasted,discussions,summaries}/` dirs (idempotent — never overwrites existing)
+- [ ] `aab init`-emitted `.gitignore` template recommends `raw/` (sensitive sources) but NOT `wiki/` (committable curated knowledge)
+
+### Chunk 2 — File / text / paste ingest
+
+- [ ] `src/core/prompts/skill-ingest.ts` — the ingest prompt template (per `KNOWLEDGE_WIKI.md` §15.1)
+- [ ] `src/core/knowledge/ingest.ts` — orchestrates: hash → manifest dedup → write to `raw/<bucket>/` → run ingest agent → parse JSON output → atomic manifest update
+- [ ] `aab knowledge ingest <path>` — md, txt, pdf paths
+- [ ] `aab knowledge ingest --paste` — read from stdin
+- [ ] `aab knowledge ingest --force` — re-ingest even when hash already in manifest
+- [ ] `--json` output
+
+### Chunk 3 — URL ingest
+
+- [ ] WebFetch → `raw/urls/<hash6>.md`
+- [ ] `raw/urls/<hash6>.meta.json` ({ url, fetchedAt, title, contentHash })
+- [ ] `aab knowledge ingest <url>` (auto-detected as URL by `http(s)://` prefix)
+- [ ] `--force` re-fetches and re-ingests
+
+### Chunk 4 — Member + orchestrator integration
+
+- [ ] `src/agents/emit-member-agent.ts` appends the Knowledge Wiki stanza (per `KNOWLEDGE_WIKI.md` §14) to the AAB:GENERATED block of every member file
+- [ ] `src/core/discussion/orchestrator.ts:51` — `allowedTools = ['Read', 'Grep', 'Glob']`
+- [ ] Settings: `knowledgeWiki.exposeToMemberAgents: true`, `knowledgeWiki.exposeToOrchestrator: true`
+- [ ] `aab members sync-agents` regenerates with the new addendum (one-time op for existing workspaces)
+- [ ] Smoke test: a member call on a wiki-populated workspace shows `Read` / `Grep` tool calls in the stream-json events
+
+### Chunk 5 — Auto-ingest hook on discussion conclude
+
+- [ ] `src/core/discussion/conversation-flow.ts` post-conclude: render transcript → `raw/discussions/<humanized>.md`, render summary → `raw/summaries/<humanized>.md`, run ingest agent
+- [ ] Wrapped in try/catch — failed ingest never blocks discussion completion (logs to `wiki/log.md` with `[ingest-failed]` prefix)
+- [ ] Settings: `knowledgeWiki.autoIngestDiscussions: true` (default)
+- [ ] User HITL responses (`aab discuss respond` bodies) auto-ingest as paste-style raw inputs (settings: `knowledgeWiki.autoIngestUserResponses: true`)
+- [ ] `aab knowledge backfill <discussion-id>` — manually run the hook for a past discussion
+
+### Chunk 6 — Query + Lint
+
+- [ ] `src/core/prompts/skill-query.ts` — query prompt template
+- [ ] `src/core/knowledge/query.ts` — one-shot Sonnet call with Read/Grep/Glob, max 15 turns
+- [ ] `aab knowledge query "<question>"` — supports `--max-pages`, `--out`, `--save-as concept|entity|...`
+- [ ] `src/core/knowledge/lint.ts` — static checks (slug uniqueness, broken links, orphans, missing frontmatter, broken sources) + LLM passes (contradictions, stale claims via `fastModel`)
+- [ ] `aab knowledge lint [--write]` — writes `outputs/lint-<yyyy-mm-dd>.md`, prints summary counts
+
+### Chunk 7 — Migrate + retire BusinessContext
+
+- [ ] `src/core/knowledge/migrate.ts` — converts `BusinessContext` items + `BusinessProfile` blob into wiki pages per the mapping table at `KNOWLEDGE_WIKI.md` §19
+- [ ] `aab knowledge migrate [--dry-run] [--force-schema]` — idempotent
+- [ ] `loadBusinessContextSafe` returns `[]` when `wiki/` exists; falls back to `business-context.json` when not (transition window)
+- [ ] Delete inline business-context block from `src/core/discussion/build-user-message.ts:65-69, :103-123`
+- [ ] Rename `business-context.json` → `business-context.json.migrated.bak` after successful migrate
+- [ ] Drop `loadBusinessContext` / `saveBusinessContext` / `updateBusinessContext` / `deleteBusinessContext` from `src/storage/fs-storage-service.ts:165-186` after migrate
+- [ ] Delete `BusinessContext` and `BusinessProfile` types from `src/storage/types.ts:242-276`
+
+### Chunk 8 — Web UI: Knowledge tab
+
+- [ ] Sidebar item: **Knowledge** (graph icon)
+- [ ] Default view: graph (force-directed; nodes = pages by type, edges = wiki-links; hover for `summary:`)
+- [ ] Page list view (sortable table; type/orphan filter chips)
+- [ ] Page detail view (rendered markdown + frontmatter sidebar + sources links + backlinks list + edit button)
+- [ ] Raw sources list view (table + filter)
+- [ ] Ingest panel (drag-drop file zone + URL input + paste textarea; streams progress over WS)
+- [ ] Query panel (textarea + answer with clickable citations)
+- [ ] Lint panel (run-now + render latest report)
+- [ ] WS events: `wiki_ingest_started`, `wiki_ingest_page_written`, `wiki_ingest_done`, `wiki_query_started`, `wiki_query_done`, `wiki_lint_done`
+- [ ] REST endpoints: `/api/knowledge/{state,pages,pages/:slug,ingest,ingest/discussion/:id,query,lint,graph,raw,raw/:hash}`
+
+### Cross-cutting (this phase)
+
+- [ ] `aab knowledge list [--type ...] [--orphans] [--user-edited]`
+- [ ] `aab knowledge show <slug>` (rendered: frontmatter + body + backlinks)
+- [ ] `aab knowledge edit <slug>` (opens `$EDITOR`, marks `userEdited: true`)
+- [ ] `aab knowledge open <slug>` (prints absolute path)
+- [ ] `aab knowledge stats` (page counts by type, total raw sources, last ingest, total ingest cost)
+- [ ] `aab knowledge graph [--out <path>]` (DOT format link graph)
+- [ ] Settings namespace: `knowledgeWiki.{enabled, autoIngestDiscussions, autoIngestUserResponses, ingestModel, queryModel, lintStaleDays, maxAgentPagesPerCall, pageBodySoftCap, summarySoftCap, exposeToMemberAgents, exposeToOrchestrator}` — all overridable via `aab settings set`
+- [ ] `src/storage/types.ts:300` adds `knowledgeWiki` to `AppSettings` with seeded defaults
+- [ ] Tests: unit (`page.test.ts`, `manifest.test.ts`, `slug.test.ts`), integration (mocked Claude — `ingest-file.test.ts`, `auto-ingest.test.ts`, `migrate.test.ts`, `lint.test.ts`), golden-file (`skill-ingest.golden.md`, `skill-query.golden.md`)
+- [ ] Live test (`AAB_LIVE_TEST=1`): real PDF + URL + discussion conclude → manifest grows, agent answers wiki-grounded query
+
+---
+
+## Phase 2 — Members + Principles + Coach ⬜
+
+### Members CRUD
+
+- [ ] `aab members list` — flat or `--json` output
+- [ ] `aab members show <name>` — full persona / voice / tools
+- [ ] `aab members add` — interactive (name, title, expertise, persona OR `--enhance`)
+- [ ] `aab members edit <id|name>` — interactive field-by-field edit
+- [ ] `aab members enhance <id> [--type famous|expert|non-famous]` — AI-fill persona + voiceGuide via claude -p
+- [ ] `aab members delete <id>` — also removes `.claude/agents/<slug>.md`
+- [ ] `aab members sync-agents [--agents-dir <path>]` — regenerate all agent files (preserving `# AAB:GENERATED` marker)
+- [ ] `aab members tools <id> [--allow ... | --deny ...]` — per-member tool allowlist override
+- [ ] `aab members regenerate-voice <id>` — voice-guide-only refresh
+
+### Persona generation
+
+- [ ] `src/core/members/ai-enhancer.ts` — three template variants (`enhance_famous_person`, `enhance_top_expert`, `enhance_non_famous`)
+- [ ] `src/core/members/voice-guide.ts` — voice-only generator
+- [ ] `src/core/members/fallback-voice-guides.ts` — hardcoded fallback voices keyed by first name
+
+### Principles
+
+- [ ] `aab principles list [--category ...] [--active|--inactive]`
+- [ ] `aab principles add` — interactive
+- [ ] `aab principles edit <id>` — interactive
+- [ ] `aab principles delete <id>`
+- [ ] `aab principles seed-starters` — re-seed 8 starters into existing workspace
+- [ ] `aab principles explore [--principle <id>]` — Socratic 5-step wizard (behavior → anti-pattern → triggers → examples → priority)
+
+### Decision Coach
+
+- [ ] `aab coach` — REPL session with streaming responses
+- [ ] `aab coach show <session>` — list past sessions or show one
+- [ ] `aab coach delete <session>`
+- [ ] `src/core/coach/decision-coach.ts` — uses `decision_coach_system` prompt with user's principles injected
+- [ ] `src/core/coach/principle-explorer.ts` — 5-step explorer flow with cross-step context
+- [ ] DecisionSession persistence (already in storage types, just need command wiring)
+
+---
+
+## Phase 3 — Sparring (1:1 deep dive) ⬜
+
+- [ ] `src/core/sparring/sparring-service.ts` — port with truncation budgets (14k discussion / 8k history / 4k bcontext / 4k anchor)
+- [ ] `aab discuss spar <id> --member <name> [--round N --turn M]` — opens REPL anchored to a response
+- [ ] `aab discuss inject <id> --from <session>` — write sparring insight back to main timeline as `sparring_injection`
+- [ ] `aab discuss spar list <discussion-id>` — list sparring sessions for a discussion
+- [ ] `aab discuss spar show <session-id>` — view a sparring session
+
+---
+
+## Phase 4 — Action Board (Kanban) ⬜
+
+(Per Part 6 scope cut: kanban tracking + skill-only solve. Multi-agent solve / artifact mode / deliverable types are NOT in scope.)
+
+### Kanban CRUD
+
+- [ ] `aab actions add "<title>" [--description] [--priority high|medium|low] [--due YYYY-MM-DD]`
+- [ ] `aab actions list [--status pending|in-progress|completed] [--priority ...]`
+- [ ] `aab actions board [--watch] [--filter ...]` — 3-column ANSI Kanban view
+- [ ] `aab actions show <id>` — detail: title, description, status, linked discussion, linked skill runs
+- [ ] `aab actions edit <id>` — interactive
+- [ ] `aab actions move <id> pending|in-progress|completed`
+- [ ] `aab actions delete <id> [--cascade]`
+
+### Auto-extract from discussions
+
+- [ ] `aab actions extract <discussion-id>` — structured-data fast path, LLM fallback when no `structuredData`
+- [ ] `src/core/actions/conversation-analyzer.ts` (port; Phase 1 noted it as supporting)
+
+---
+
+## Phase 5 — Skill creator (the killer feature) ⬜
+
+The "Solve" action: turn one action item into one installed Claude Code skill.
+
+### Preflight + research
+
+- [ ] `src/core/skill/preflight.ts` — capability pattern matching (browser, API, MCP, shell, filesystem, git, cloud, SaaS)
+- [ ] `src/core/skill/preflight-wizard.ts` — interactive enquirer wizard, auto-detects CLI tools / MCP servers / env vars
+- [ ] `src/core/skill/agent-environment-profile.ts` — parse `BusinessProfile` blob, normalize to `AgentEnvironment`
+- [ ] `src/core/skill/skill-task-research.ts` — `skill_generation.skill_task_research` prompt with web search
+
+### Single-loop skill builder
+
+- [ ] `src/core/skill/single-loop-planner.ts` — `skill_generation.single_loop_planner` (steps[] from decomposition + plan)
+- [ ] `src/core/skill/single-loop-tool-turn.ts` — `skill_generation.single_loop_tool_turn` runtime over a tempdir workspace
+- [ ] `src/core/skill/workspace-fs.ts` — list_files / read_file / create_file / update_file / write_file / rename_file / delete_file in `~/.aabcli/<ws>/skill-runs/<run-id>/workspace/`
+- [ ] Turn cap (default 60), 3-consecutive-error abort, telemetry to `<run-id>/telemetry.jsonl`
+
+### Quality gates
+
+- [ ] `src/core/skill/package-critic.ts` — `skill_generation.skill_package_critic` (7-dimension rubric, hard gates)
+- [ ] `src/core/skill/repair-pass.ts` — `skill_generation.repair_pass` (max 2 attempts)
+- [ ] `src/core/skill/master-prompter-potency.ts` — `skill_generation.master_prompter_potency_pass` per file
+- [ ] `src/core/skill/security-review.ts` — `skill_generation.security_review` (loose | strict | defer)
+- [ ] `src/core/skill/trigger-evaluator.ts` — `skill_generation.trigger_evaluator` (8-10 should / 8-10 should-not queries; precision/recall)
+
+### Decomposition (lightweight, internal-only)
+
+- [ ] `src/core/skill/task-orchestrator.ts` — `skill_generation.decomposition` headless decomposition for plan input
+- [ ] (Skip skill-aware decomposition critic + composition critic per Part 6 scope cut)
+
+### Adapter + install
+
+- [ ] `src/core/skill/claude-code-adapter.ts` — frontmatter rewrite per Part 4.1.1 (real Claude Code spec: name, description, when_to_use, allowed-tools, model)
+- [ ] Install to `.claude/skills/<skill-name>/`
+- [ ] Conflict handling: `overwrite | rename | abort`
+
+### Prompts
+
+- [ ] `src/core/prompts/default-prompts.ts` — port advisory prompts (board_member_response is in agent files; orchestrator + summary + persona enhancers + decision-coach + sparring-deep-dive needed)
+- [ ] `src/core/prompts/skill-generation-prompts.ts` — port all 14 skill prompts verbatim
+- [ ] `src/core/prompts/master-gpt-prompter-hardening.ts` — port verbatim, auto-applied at render
+- [ ] `src/core/prompts/prompt-resolver.ts` — user-override → default chain with Mustache-style conditionals
+- [ ] `src/core/prompts/skill-operating-model.ts` — shared `<skill_operating_model>` preamble
+
+### Run management
+
+- [ ] `aab actions solve <id>` — full pipeline end-to-end
+- [ ] `aab actions runs <action-id>` — list past runs
+- [ ] `aab actions runs show <run-id>` — telemetry, critic scores, files, security mode
+- [ ] `aab actions runs export <run-id> --zip <path>`
+- [ ] Flags: `--no-preflight`, `--no-install`, `--zip <path>`, `--skill-name <name>`, `--single-loop-max-turns`, `--reflexion`, `--budget-cap-usd`
+
+### User-customisable prompts
+
+- [ ] `aab prompts list` — show defaults vs overrides
+- [ ] `aab prompts edit <key>` — open `$EDITOR`, validate placeholders + required fragments
+- [ ] `aab prompts reset <key>` / `reset-all`
+
+---
+
+## Phase 6.5 — Web UI (messaging-app dashboard) 🟡
+
+### Server + bundled assets ✅
+
+- [x] `src/gui/server.ts` — Express + WebSocket, REST endpoints (state / discussions / members / actions / principles), POST /api/discussions kicks off async with WS broadcast
+- [x] `gui/index.html` — sidebar + main shell, new-discussion modal, toast container
+- [x] `gui/style.css` — dark theme, message bubbles, typing-dots animation (`@keyframes typing-bounce`), kanban, principles cards, settings table
+- [x] `gui/app.js` — vanilla JS router, WS client with auto-reconnect, view renderers
+- [x] `aab ui [--port 3737] [--bind 127.0.0.1] [--no-open]` — start server + open browser
+- [x] `gui/` shipped via `package.json` `files` field
+- [x] Live smoke test: WS streams `member_thinking → member_response → orchestrator_decision → discussion_completed` with real Claude calls
+
+### Views ✅ (read-only) · 🟡 (editing)
+
+- [x] **Discussions** — list with status pills + new-discussion modal + chat view with typing dots + structured response cards (key points / questions / actions / confidence bar)
+- [x] **Members** — grid of cards with avatars, expertise tags, persona preview (read-only)
+- [x] **Actions** — 3-column kanban with priority marks, linked-skill badges (read-only)
+- [x] **Principles** — grid of cards with category, description, priority bar (read-only)
+- [x] **Settings** — read-only key/value table
+- [x] Member edit / add / delete UI (with active toggle, expertise editing, persona/voiceGuide forms; auto-emits + cleans up `.claude/agents/<slug>.md`)
+- [ ] Action add / edit / move / delete UI (drag-drop kanban)
+- [x] Principle edit / add / delete UI (active toggle, category select, priority slider; click-to-edit cards)
+- [x] Settings editing UI (full form: title, max turns/members, models, budget, locale, HITL toggle)
+- [x] Discussion: continue + respond from the UI (Continue button + HITL reply form)
+- [x] Discussion: follow-up from the UI (Follow up button + composer with member-chip selector)
+- [ ] Discussion: spar from the UI
+- [x] Workspace card in sidebar showing scope (home/project), active/total member count, full root path
+- [x] Loud empty-state in new-discussion modal when 0 active members (avoids the silent-empty-chips bug)
+- [ ] Decision Coach chat view
+- [ ] Sparring 1:1 chat view (anchored to a response)
+- [ ] Per-member color from the agent file's `color:` frontmatter (currently uses deterministic hash)
+- [ ] Token-usage / cost dashboard view
+- [ ] Light theme + theme toggle
+- [ ] Mobile responsive sidebar
+
+---
+
+## Phase 6 — Hardening, docs, distribution ⬜
+
+### Optional: hooks layer (aiagentorg-style governance)
+
+- [ ] `.claude/settings.json` template hooks for project workspaces
+- [ ] PostToolUse hook: append every tool call to `~/.aabcli/<ws>/telemetry/<date>.jsonl`
+- [ ] PreToolUse hook on `.claude/skills/**` writes: run skill-package critic before allowing install
+- [ ] PreToolUse hook on `.claude/agents/**` writes: warn on edits to AAB-generated files
+- [ ] Hook config emitted by `aab init` (opt-in)
+
+### Tests
+
+- [ ] Vitest config + npm script
+- [ ] Unit tests: safe-json, orchestrator state math, build-user-message, fs-storage-service, prompt-resolver
+- [ ] Integration tests: discuss-one-round (mocked claude), discuss-needs-more-info, sparring, actions extract→solve
+- [ ] Golden-file tests: every prompt key × representative inputs (`AAB_UPDATE_GOLDENS=1`)
+- [ ] Live test (gated by `AAB_LIVE_TEST=1`): one short discussion, one solve
+
+### Distribution
+
+- [ ] `npm publish` workflow (manual)
+- [ ] GitHub Actions CI: typecheck + lint + test on Node 20+22 / win-mac-linux
+- [ ] Self-update: `aab update` runs `npm i -g aabclitool@latest` with confirmation
+- [ ] Optional `keytar` integration for OS-keyring API key storage (not needed since we use `claude` CLI, but useful for any future per-call auth)
+
+### Documentation
+
+- [ ] Polish `README.md` with screenshots / asciinema
+- [ ] `docs/commands.md` auto-generated from commander definitions
+- [ ] `docs/architecture.md` (abridged from PLAN.md)
+- [ ] `docs/skills.md` — what the CLI emits + Claude Code spec
+- [ ] `docs/troubleshooting.md` — common failure modes (lock files, missing claude CLI, JSON parse fallbacks)
+- [x] `CHANGELOG.md` (date-grouped session log; one entry per user trigger; root cause + verification + "no regression" reasoning per bug fix)
+- [ ] `CONTRIBUTING.md` — prompt-hardening guardrail, test gates, commit format
+- [ ] Project-level `CLAUDE.md` for the CLI's own repo
+
+### Resilience
+
+- [ ] Backups: snapshot every settings/members/principles write (already plumbed via `writeJsonAtomic` snapshotDir option)
+- [ ] `aab restore <entity> [--snapshot <ts>]`
+- [ ] Resume: `<jobId>.partial.json` checkpoints + "Resume job <id>?" prompt on next run
+- [ ] Stale-job watchdog: jobs in `running` >15 min on next CLI invocation get force-failed
+- [ ] Per-call budget cap honoured by all `runClaude` invocations (already wired)
+- [ ] `aab discuss retry-member <id> --member <name>` — re-run one failed member without redoing whole round
+
+### i18n + ergonomics
+
+- [ ] Locale-aware date formatting via `Intl.DateTimeFormat`
+- [ ] Bundled `en` strings file; opt-in `da` for Julian Bent Singh
+- [ ] Tab completion: `aab completion bash|zsh|fish|powershell`
+- [ ] `aab import sage-council <export-path>` — one-way migration helper
+
+### Optional `/aab` slash skill (cherry on top)
+
+- [ ] `aab init` writes `.claude/skills/aab/SKILL.md` so users can drive the CLI by natural language inside Claude Code
+- [ ] Skill body teaches Claude Code which `aab` commands to run for which user phrases
+
+---
+
+## Cross-cutting (anywhere appropriate)
+
+- [x] Exit-code error taxonomy (1 user / 2 model / 3 network / 4 parse / 5 fs / 6 cancelled / 7 budget)
+- [x] `--json` output flag plumbed for read-only commands
+- [ ] `--json` output for `discuss start | continue | follow-up`
+- [ ] Cost reporting (running total + cache-hit %) printed at end of long-running commands
+- [ ] Context-window awareness — truncate prior rounds / business context before exceeding `claude` model's window
+- [x] Per-workspace lock file (proper-lockfile)
+- [x] Atomic JSON writes with snapshot
+- [x] Token-usage logging from `claude --output-format json` envelopes
+
+---
+
+## What's running right now (May 2026)
+
+- **Phase 0:** done.
+- **Phase 1:** Multi-round discussions work end-to-end on real Claude Code calls. Verified live (May 2026): `start` → 3 members responded → orchestrator gated next round → `respond --option 1` with answer → 3 members responded round 2 → orchestrator asked again → maxTurns auto-concluded. **Targeted follow-ups also live**: `aab discuss follow-up <id> "<q>" --member "Elon Musk"` ran a strict 1-member round and persisted `followUpQuestion`, `followUpTargetType: 'specific'`, `followUpSelectedMemberId`, and a matching `UserResponse{type:'follow_up_question'}`. The pre-round clarification gate fires at both `continue` and `follow-up` entry points per PLAN §4.3.1 — no member tokens spent when the orchestrator wants user input first. Still missing: summarize, export, archive, sparring.
+- **Phase 1.5 (Knowledge Wiki):** spec-locked, not yet built. Replaces flat-JSON `BusinessContext` with a Karpathy-style LLM Wiki: `raw/` (immutable sources) + `wiki/` (curated, linked markdown with `[[wikilinks]]` and YAML frontmatter) + `.manifest.json` (provenance ledger). Members and orchestrator read it natively via Read/Grep/Glob (the same way Claude Code walks a codebase). Auto-summarization stays ON by default (Haiku/`fastModel`); concluded discussions auto-ingest summary + transcript so the wiki grows itself. Full spec at `PLAN/KNOWLEDGE_WIKI.md`; high-level overview at `PLAN/PLAN.md` Part 7. 8 build chunks queued.
+- **Phase 6.5 (UI):** Web dashboard ships with `aab ui`. Live-streams typing-dot animations while members respond, then morphs into structured response cards. **Drives multi-round conversations from the browser**: Continue button on open discussions, inline reply form (with option chips) on HITL panels, and a Follow up composer with a member-chip selector that maps to `targetType: all|specific|subset` automatically based on chip count. Server posts to `/api/discussions/:id/continue`, `/respond`, and `/follow-up`, broadcasting the same WS event stream. Read-only views still for Members, Kanban, Principles, Settings. Editing UIs and Coach/Sparring views deferred until their backends land.
+- **Phase 2-6:** not started.
+
+**Next sensible chunk:** Phase 1 closeout (`summarize` + `export --md` + `archive`/`unarchive`) is still cheap and ships the "save my discussion as a doc" workflow. After that, **Phase 1.5 chunk 1** (Knowledge Wiki skeleton + manifest + schema emission on `aab init`) is the foundation for everything downstream — it unlocks chunks 2-8 in sequence and rewires how members get business context. Then Phase 4 (Kanban CRUD + extract from discussion). Then Phase 5 (skill creator), the headline feature.
+
+---
+
+## How to update this file
+
+When you finish an item:
+
+1. Change `- [ ]` → `- [x]` on the line.
+2. If the phase has all items checked, flip its emoji from 🟡 to ✅ in the heading.
+3. Add a one-line note under "What's running right now" if it's a meaningful milestone.
+
+When you start an item:
+
+1. Add a 🟡 emoji to the section heading if not already there.
+2. Optionally add `(in progress)` after the bullet text.

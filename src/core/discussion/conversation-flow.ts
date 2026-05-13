@@ -1,0 +1,823 @@
+/**
+ * Top-level discussion engine. Wraps round execution, orchestrator analysis,
+ * and persistence.
+ *
+ * Phase 1 surface:
+ *   - startDiscussion         — round 1
+ *   - continueDiscussion      — orchestrator-gated next round (with pre-round
+ *                               clarification gate per PLAN.md §4.3.1)
+ *   - respondToUserRequest    — answer a pending HITL `request_user_input`,
+ *                               then drive a follow-up round
+ *   - addFollowUpQuestion     — targeted follow-up round (all / specific /
+ *                               subset of members) carrying the user's new
+ *                               question. Strict: any member failure aborts
+ *                               the round per PLAN.md §1.5.
+ *
+ * Sparring and summarize/export come next.
+ */
+import { logger } from '../logger.js';
+import { UserError } from '../errors.js';
+import { generateUUID, nowIso } from '../utils.js';
+import { runMember } from './run-member.js';
+import {
+  analyzeConversation,
+  createInitialOrchestratorState,
+  updateOrchestratorState,
+} from './orchestrator.js';
+import type {
+  AdvisoryBoardMember,
+  AppSettings,
+  BusinessContext,
+  ConversationRound,
+  Discussion,
+  Response,
+  StorageService,
+  UserResponse,
+} from '../../storage/types.js';
+
+export type StartProgressEvent =
+  | { stage: 'initializing' }
+  | { stage: 'context' }
+  | { stage: 'generating'; memberName: string; index: number; total: number }
+  | {
+      stage: 'member_activity';
+      memberName: string;
+      activity: string;
+      tool?: string;
+      detail?: string;
+    }
+  | {
+      stage: 'member_done';
+      memberName: string;
+      durationMs: number;
+      costUsd: number;
+      response: Response;
+      roundNumber: number;
+    }
+  | { stage: 'orchestrating' }
+  | {
+      stage: 'orchestrator_decided';
+      decision: import('../../storage/types.js').OrchestratorDecision;
+      roundNumber: number;
+    }
+  | { stage: 'finalizing'; round: number };
+
+export interface StartDiscussionOptions {
+  question: string;
+  members: AdvisoryBoardMember[];
+  settings: AppSettings;
+  storage: StorageService;
+  /** Where the .claude/agents/ directory lives. Default: process.cwd(). */
+  projectRoot?: string;
+  signal?: AbortSignal;
+  onProgress?: (event: StartProgressEvent) => void;
+}
+
+export interface StartDiscussionResult {
+  discussion: Discussion;
+  totalCostUsd: number;
+  totalDurationMs: number;
+}
+
+export async function startDiscussion(opts: StartDiscussionOptions): Promise<StartDiscussionResult> {
+  const t0 = Date.now();
+  opts.onProgress?.({ stage: 'initializing' });
+
+  const activeMembers = opts.members.filter((m) => m.isActive);
+  if (activeMembers.length === 0) {
+    throw new Error('No active board members. Add or activate at least one with `aab members add`.');
+  }
+
+  // Skeleton discussion record
+  const discussionId = generateUUID();
+  const now = nowIso();
+  const discussion: Discussion = {
+    id: discussionId,
+    question: opts.question,
+    selectedMemberIds: activeMembers.map((m) => m.id),
+    responses: [],
+    rounds: [],
+    orchestratorState: createInitialOrchestratorState(),
+    totalTurns: 0,
+    maxTurns: opts.settings.maxTurnsPerDiscussion,
+    userResponses: [],
+    createdAt: now,
+  };
+
+  // Capture the user's original question as a UserResponse (matches source behavior)
+  const initialUserResponse: UserResponse = {
+    id: generateUUID(),
+    requestId: 'initial-question',
+    content: opts.question,
+    timestamp: now,
+    roundNumber: 1,
+    type: 'initial_question',
+    prompt: opts.question,
+  };
+  discussion.userResponses.push(initialUserResponse);
+
+  // Load business context for prompt injection (Phase 1: load existing only,
+  // we don't yet auto-extract new context from the question — that's Phase 2)
+  opts.onProgress?.({ stage: 'context' });
+  const businessContext = await loadBusinessContextSafe(opts.storage);
+
+  // Round 1
+  const round1: ConversationRound = {
+    roundNumber: 1,
+    responses: [],
+    orchestratorDecision: {
+      action: 'continue',
+      reasoning: 'Initial round.',
+      consensusReached: false,
+      confidence: 100,
+    },
+    startedAt: nowIso(),
+  };
+
+  let totalCostUsd = 0;
+  for (let i = 0; i < activeMembers.length; i++) {
+    const member = activeMembers[i]!;
+    opts.onProgress?.({ stage: 'generating', memberName: member.name, index: i + 1, total: activeMembers.length });
+
+    const result = await runMember({
+      question: opts.question,
+      member,
+      roundNumber: 1,
+      previousResponsesInRound: round1.responses,
+      conversationHistory: [],
+      businessContext,
+      settings: opts.settings,
+      storage: opts.storage,
+      discussionId,
+      projectRoot: opts.projectRoot,
+      signal: opts.signal,
+      onActivity: (a) =>
+        opts.onProgress?.({ stage: 'member_activity', memberName: member.name, ...a }),
+    });
+
+    round1.responses.push(result.response);
+    discussion.responses.push(result.response);
+    discussion.totalTurns++;
+    totalCostUsd += result.costUsd;
+
+    opts.onProgress?.({
+      stage: 'member_done',
+      memberName: member.name,
+      durationMs: result.durationMs,
+      costUsd: result.costUsd,
+      response: result.response,
+      roundNumber: 1,
+    });
+  }
+
+  if (round1.responses.length === 0) {
+    throw new Error('All board members failed to respond. Check `aab doctor` and try again.');
+  }
+
+  round1.completedAt = nowIso();
+
+  // Orchestrator analysis (decides whether the next round should run, ask user, etc.)
+  opts.onProgress?.({ stage: 'orchestrating' });
+  try {
+    const decision = await analyzeConversation({
+      question: opts.question,
+      rounds: [round1],
+      members: activeMembers,
+      currentTurn: discussion.totalTurns,
+      settings: opts.settings,
+      storage: opts.storage,
+      discussionId,
+      signal: opts.signal,
+    });
+    round1.orchestratorDecision = decision;
+    discussion.orchestratorState = updateOrchestratorState(
+      discussion.orchestratorState,
+      decision,
+      round1,
+    );
+    if (decision.action === 'request_user_input' && decision.userInputRequest) {
+      discussion.pendingUserRequest = decision.userInputRequest;
+    }
+    opts.onProgress?.({ stage: 'orchestrator_decided', decision, roundNumber: 1 });
+  } catch (error) {
+    logger.warn('[startDiscussion] orchestrator failed (non-blocking):', error);
+  }
+
+  discussion.rounds.push(round1);
+
+  // If we hit the conclusion right after round 1, mark the discussion complete
+  if (round1.orchestratorDecision.action === 'conclude' || discussion.totalTurns >= discussion.maxTurns) {
+    discussion.completedAt = nowIso();
+    discussion.pendingUserRequest = undefined;
+  }
+
+  opts.onProgress?.({ stage: 'finalizing', round: 1 });
+  await opts.storage.saveDiscussion(discussion);
+
+  return {
+    discussion,
+    totalCostUsd,
+    totalDurationMs: Date.now() - t0,
+  };
+}
+
+async function loadBusinessContextSafe(storage: StorageService): Promise<BusinessContext[]> {
+  try {
+    return await storage.loadBusinessContext();
+  } catch (error) {
+    logger.debug('[conversation-flow] business context load failed (non-blocking):', error);
+    return [];
+  }
+}
+
+// ============================================================
+// continueDiscussion — orchestrator-gated next round
+// ============================================================
+
+export interface ContinueDiscussionOptions {
+  discussion: Discussion;
+  members: AdvisoryBoardMember[];
+  settings: AppSettings;
+  storage: StorageService;
+  /** Where the .claude/agents/ directory lives. Default: process.cwd(). */
+  projectRoot?: string;
+  signal?: AbortSignal;
+  onProgress?: (event: StartProgressEvent) => void;
+  /**
+   * When provided, treat the user's reply as a follow-up question driving
+   * the next round. Used internally by `respondToUserRequest`.
+   */
+  userFollowUp?: { content: string; selectedOption?: string };
+  /**
+   * If true, skip the pre-round clarification gate. Used internally by
+   * `respondToUserRequest` since the orchestrator's question is the very
+   * thing the user just answered — re-asking would loop forever.
+   */
+  skipPreRoundGate?: boolean;
+}
+
+export interface ContinueDiscussionResult {
+  discussion: Discussion;
+  totalCostUsd: number;
+  totalDurationMs: number;
+  /** True when the pre-round gate ended early because the orchestrator wants user input. */
+  gated: boolean;
+  /** True when the discussion concluded as part of this call. */
+  concluded: boolean;
+  /** Round number that was generated in this call, or null if gated/no-op. */
+  roundNumber: number | null;
+}
+
+export async function continueDiscussion(
+  opts: ContinueDiscussionOptions,
+): Promise<ContinueDiscussionResult> {
+  const t0 = Date.now();
+  const { discussion } = opts;
+
+  if (discussion.completedAt) {
+    throw new UserError(
+      'This discussion is already concluded.',
+      'Start a new one with `aab discuss start "<question>"` or open a sparring session with `aab discuss spar`.',
+    );
+  }
+  if (discussion.pendingUserRequest && !opts.userFollowUp) {
+    throw new UserError(
+      'This discussion is awaiting your input.',
+      'Reply with `aab discuss respond <id> "<answer>" [--option <i>]` first.',
+    );
+  }
+
+  const activeMembers = opts.members.filter((m) => m.isActive);
+  if (activeMembers.length === 0) {
+    throw new UserError('No active board members. Add or activate at least one with `aab members add`.');
+  }
+
+  // Bail if we're already at maxTurns — mark concluded.
+  if (discussion.totalTurns >= discussion.maxTurns) {
+    if (!discussion.completedAt) {
+      discussion.completedAt = nowIso();
+      await opts.storage.saveDiscussion(discussion);
+    }
+    return {
+      discussion,
+      totalCostUsd: 0,
+      totalDurationMs: Date.now() - t0,
+      gated: false,
+      concluded: true,
+      roundNumber: null,
+    };
+  }
+
+  // Pre-round clarification gate — runs *before* any model spawns.
+  if (!opts.skipPreRoundGate) {
+    opts.onProgress?.({ stage: 'orchestrating' });
+    try {
+      const gate = await analyzeConversation({
+        question: discussion.question,
+        rounds: discussion.rounds,
+        members: activeMembers,
+        currentTurn: discussion.totalTurns,
+        settings: opts.settings,
+        storage: opts.storage,
+        discussionId: discussion.id,
+        signal: opts.signal,
+      });
+      if (gate.action === 'request_user_input' && gate.userInputRequest) {
+        discussion.pendingUserRequest = gate.userInputRequest;
+        await opts.storage.saveDiscussion(discussion);
+        return {
+          discussion,
+          totalCostUsd: 0,
+          totalDurationMs: Date.now() - t0,
+          gated: true,
+          concluded: false,
+          roundNumber: null,
+        };
+      }
+      if (gate.action === 'conclude') {
+        // Orchestrator decided no further round is warranted — close out.
+        discussion.completedAt = nowIso();
+        // Stamp the gate decision onto the most recent round if present
+        const last = discussion.rounds[discussion.rounds.length - 1];
+        if (last) last.orchestratorDecision = gate;
+        await opts.storage.saveDiscussion(discussion);
+        return {
+          discussion,
+          totalCostUsd: 0,
+          totalDurationMs: Date.now() - t0,
+          gated: false,
+          concluded: true,
+          roundNumber: null,
+        };
+      }
+    } catch (error) {
+      logger.warn('[continueDiscussion] pre-round gate failed (non-blocking):', error);
+    }
+  }
+
+  // Build the next round
+  const lastRound = discussion.rounds[discussion.rounds.length - 1];
+  const nextRoundNumber = (lastRound?.roundNumber ?? 0) + 1;
+
+  const round: ConversationRound = {
+    roundNumber: nextRoundNumber,
+    responses: [],
+    orchestratorDecision: {
+      action: 'continue',
+      reasoning: `Round ${nextRoundNumber} starting.`,
+      consensusReached: false,
+      confidence: 100,
+    },
+    startedAt: nowIso(),
+  };
+  if (opts.userFollowUp) {
+    const lastResponse = discussion.userResponses[discussion.userResponses.length - 1];
+    round.userResponse = lastResponse;
+  }
+
+  const conversationHistory = discussion.responses;
+  const businessContext = await loadBusinessContextSafe(opts.storage);
+
+  let totalCostUsd = 0;
+  for (let i = 0; i < activeMembers.length; i++) {
+    const member = activeMembers[i]!;
+    opts.onProgress?.({
+      stage: 'generating',
+      memberName: member.name,
+      index: i + 1,
+      total: activeMembers.length,
+    });
+
+    try {
+      const result = await runMember({
+        question: discussion.question,
+        member,
+        roundNumber: nextRoundNumber,
+        previousResponsesInRound: round.responses,
+        conversationHistory,
+        businessContext,
+        settings: opts.settings,
+        storage: opts.storage,
+        discussionId: discussion.id,
+        projectRoot: opts.projectRoot,
+        signal: opts.signal,
+        isFollowUp: true,
+        followUpQuestion: opts.userFollowUp?.content,
+        onActivity: (a) =>
+          opts.onProgress?.({ stage: 'member_activity', memberName: member.name, ...a }),
+      });
+
+      round.responses.push(result.response);
+      discussion.responses.push(result.response);
+      discussion.totalTurns++;
+      totalCostUsd += result.costUsd;
+
+      opts.onProgress?.({
+        stage: 'member_done',
+        memberName: member.name,
+        durationMs: result.durationMs,
+        costUsd: result.costUsd,
+        response: result.response,
+        roundNumber: nextRoundNumber,
+      });
+    } catch (error) {
+      logger.warn(`[continueDiscussion] ${member.name} failed (continuing with other members):`, error);
+    }
+  }
+
+  if (round.responses.length === 0) {
+    throw new UserError(
+      'All board members failed to respond in this round.',
+      'Run `aab doctor` to verify the claude CLI is reachable, then try `aab discuss continue <id>` again.',
+    );
+  }
+
+  round.completedAt = nowIso();
+
+  // Post-round orchestrator analysis
+  opts.onProgress?.({ stage: 'orchestrating' });
+  try {
+    const decision = await analyzeConversation({
+      question: discussion.question,
+      rounds: [...discussion.rounds, round],
+      members: activeMembers,
+      currentTurn: discussion.totalTurns,
+      settings: opts.settings,
+      storage: opts.storage,
+      discussionId: discussion.id,
+      signal: opts.signal,
+    });
+    round.orchestratorDecision = decision;
+    discussion.orchestratorState = updateOrchestratorState(discussion.orchestratorState, decision, round);
+    if (decision.action === 'request_user_input' && decision.userInputRequest) {
+      discussion.pendingUserRequest = decision.userInputRequest;
+    }
+    opts.onProgress?.({ stage: 'orchestrator_decided', decision, roundNumber: nextRoundNumber });
+  } catch (error) {
+    logger.warn('[continueDiscussion] orchestrator failed (non-blocking):', error);
+  }
+
+  discussion.rounds.push(round);
+
+  let concluded = false;
+  if (
+    round.orchestratorDecision.action === 'conclude' ||
+    discussion.totalTurns >= discussion.maxTurns
+  ) {
+    discussion.completedAt = nowIso();
+    concluded = true;
+    // If the orchestrator wanted input but we're out of turns, the question
+    // is moot — clear it so the UI doesn't show "done" alongside an
+    // unanswerable HITL prompt.
+    discussion.pendingUserRequest = undefined;
+  }
+
+  opts.onProgress?.({ stage: 'finalizing', round: nextRoundNumber });
+  await opts.storage.saveDiscussion(discussion);
+
+  return {
+    discussion,
+    totalCostUsd,
+    totalDurationMs: Date.now() - t0,
+    gated: false,
+    concluded,
+    roundNumber: nextRoundNumber,
+  };
+}
+
+// ============================================================
+// respondToUserRequest — answer a pending HITL request
+// ============================================================
+
+export interface RespondToUserRequestOptions {
+  discussion: Discussion;
+  content: string;
+  selectedOption?: string;
+  members: AdvisoryBoardMember[];
+  settings: AppSettings;
+  storage: StorageService;
+  projectRoot?: string;
+  signal?: AbortSignal;
+  onProgress?: (event: StartProgressEvent) => void;
+}
+
+export async function respondToUserRequest(
+  opts: RespondToUserRequestOptions,
+): Promise<ContinueDiscussionResult> {
+  const { discussion } = opts;
+  const trimmed = opts.content.trim();
+  if (!trimmed) {
+    throw new UserError('Reply content is empty.');
+  }
+  if (!discussion.pendingUserRequest) {
+    throw new UserError(
+      'This discussion is not awaiting your input.',
+      'Use `aab discuss continue <id>` to drive the next round.',
+    );
+  }
+
+  const requestId = discussion.pendingUserRequest.id;
+  const lastRoundNumber = discussion.rounds[discussion.rounds.length - 1]?.roundNumber ?? 1;
+  const userResponse: UserResponse = {
+    id: generateUUID(),
+    requestId,
+    content: trimmed,
+    selectedOption: opts.selectedOption,
+    timestamp: nowIso(),
+    roundNumber: lastRoundNumber,
+    type: 'advisory_board_requested',
+    prompt: discussion.pendingUserRequest.question,
+  };
+  discussion.userResponses.push(userResponse);
+  discussion.pendingUserRequest = undefined;
+
+  // Persist the cleared HITL state immediately so a crash mid-round
+  // doesn't leave the discussion stuck "awaiting input" forever.
+  await opts.storage.saveDiscussion(discussion);
+
+  // Drive the next round, threading the user's reply as a follow-up question.
+  // Skip the pre-round gate — the orchestrator just asked for this exact
+  // input, so re-running it would either say "continue" (waste of a call)
+  // or loop forever asking again.
+  return continueDiscussion({
+    discussion,
+    members: opts.members,
+    settings: opts.settings,
+    storage: opts.storage,
+    projectRoot: opts.projectRoot,
+    signal: opts.signal,
+    onProgress: opts.onProgress,
+    userFollowUp: { content: trimmed, selectedOption: opts.selectedOption },
+    skipPreRoundGate: true,
+  });
+}
+
+// ============================================================
+// addFollowUpQuestion — targeted follow-up round
+// ============================================================
+
+export type FollowUpTargetType = 'all' | 'specific' | 'subset';
+
+export interface AddFollowUpQuestionOptions {
+  discussion: Discussion;
+  /** The user's new question to put to the targeted member(s). */
+  question: string;
+  /** Active members of the workspace — used both as the candidate pool and to populate the orchestrator's view. */
+  members: AdvisoryBoardMember[];
+  settings: AppSettings;
+  storage: StorageService;
+  projectRoot?: string;
+  signal?: AbortSignal;
+  onProgress?: (event: StartProgressEvent) => void;
+  /** Default: 'all' (every active member from the discussion responds). */
+  targetType?: FollowUpTargetType;
+  /** Required when targetType='specific'. */
+  selectedMemberId?: string;
+  /** Required when targetType='subset'. */
+  selectedMemberIds?: string[];
+}
+
+export async function addFollowUpQuestion(
+  opts: AddFollowUpQuestionOptions,
+): Promise<ContinueDiscussionResult> {
+  const t0 = Date.now();
+  const { discussion } = opts;
+  const trimmed = opts.question.trim();
+  if (!trimmed) {
+    throw new UserError('Follow-up question is empty.');
+  }
+  if (discussion.completedAt) {
+    throw new UserError(
+      'This discussion is already concluded.',
+      'Start a new one with `aab discuss start "<question>"` or open a sparring session with `aab discuss spar`.',
+    );
+  }
+  if (discussion.pendingUserRequest) {
+    throw new UserError(
+      'This discussion is awaiting your input.',
+      'Reply with `aab discuss respond <id> "<answer>"` first.',
+    );
+  }
+  if (discussion.totalTurns >= discussion.maxTurns) {
+    if (!discussion.completedAt) {
+      discussion.completedAt = nowIso();
+      await opts.storage.saveDiscussion(discussion);
+    }
+    return {
+      discussion,
+      totalCostUsd: 0,
+      totalDurationMs: Date.now() - t0,
+      gated: false,
+      concluded: true,
+      roundNumber: null,
+    };
+  }
+
+  const targetType: FollowUpTargetType = opts.targetType ?? 'all';
+  const activeMembers = opts.members.filter((m) => m.isActive);
+  if (activeMembers.length === 0) {
+    throw new UserError('No active board members.');
+  }
+
+  // Restrict candidates to the discussion's original member set so a
+  // follow-up doesn't pull in someone the discussion never had.
+  const allowedIds = new Set(discussion.selectedMemberIds ?? activeMembers.map((m) => m.id));
+  const candidatePool = activeMembers.filter((m) => allowedIds.has(m.id));
+  if (candidatePool.length === 0) {
+    throw new UserError('None of the discussion\'s original members are still active.');
+  }
+
+  let targetMembers: AdvisoryBoardMember[];
+  if (targetType === 'all') {
+    targetMembers = candidatePool;
+  } else if (targetType === 'specific') {
+    if (!opts.selectedMemberId) {
+      throw new UserError('targetType=specific requires selectedMemberId.');
+    }
+    const m = candidatePool.find((c) => c.id === opts.selectedMemberId);
+    if (!m) {
+      throw new UserError(`Member ${opts.selectedMemberId} is not part of this discussion.`);
+    }
+    targetMembers = [m];
+  } else {
+    // subset
+    const ids = opts.selectedMemberIds ?? [];
+    if (ids.length === 0) {
+      throw new UserError('targetType=subset requires selectedMemberIds.');
+    }
+    const set = new Set(ids);
+    targetMembers = candidatePool.filter((c) => set.has(c.id));
+    if (targetMembers.length === 0) {
+      throw new UserError('No members from selectedMemberIds are part of this discussion.');
+    }
+  }
+
+  // Pre-round clarification gate (PLAN.md §4.3.1: must fire here too).
+  opts.onProgress?.({ stage: 'orchestrating' });
+  try {
+    const gate = await analyzeConversation({
+      question: discussion.question,
+      rounds: discussion.rounds,
+      members: activeMembers,
+      currentTurn: discussion.totalTurns,
+      settings: opts.settings,
+      storage: opts.storage,
+      discussionId: discussion.id,
+      signal: opts.signal,
+    });
+    if (gate.action === 'request_user_input' && gate.userInputRequest) {
+      discussion.pendingUserRequest = gate.userInputRequest;
+      await opts.storage.saveDiscussion(discussion);
+      return {
+        discussion,
+        totalCostUsd: 0,
+        totalDurationMs: Date.now() - t0,
+        gated: true,
+        concluded: false,
+        roundNumber: null,
+      };
+    }
+  } catch (error) {
+    logger.warn('[addFollowUpQuestion] pre-round gate failed (non-blocking):', error);
+  }
+
+  const lastRound = discussion.rounds[discussion.rounds.length - 1];
+  const nextRoundNumber = (lastRound?.roundNumber ?? 0) + 1;
+
+  // Build the round in-memory; only commit on full success so a partial
+  // failure doesn't leave a half-baked round saved.
+  const round: ConversationRound = {
+    roundNumber: nextRoundNumber,
+    responses: [],
+    orchestratorDecision: {
+      action: 'continue',
+      reasoning: `Follow-up round ${nextRoundNumber}.`,
+      consensusReached: false,
+      confidence: 100,
+    },
+    startedAt: nowIso(),
+    followUpQuestion: trimmed,
+    followUpTargetType: targetType,
+  };
+  if (targetType === 'specific') round.followUpSelectedMemberId = targetMembers[0]!.id;
+  if (targetType === 'subset') round.followUpSelectedMemberIds = targetMembers.map((m) => m.id);
+
+  const conversationHistory = discussion.responses;
+  const businessContext = await loadBusinessContextSafe(opts.storage);
+
+  let totalCostUsd = 0;
+  for (let i = 0; i < targetMembers.length; i++) {
+    const member = targetMembers[i]!;
+    opts.onProgress?.({
+      stage: 'generating',
+      memberName: member.name,
+      index: i + 1,
+      total: targetMembers.length,
+    });
+
+    // Strict: any failure aborts the whole follow-up round (per PLAN §1.5).
+    const result = await runMember({
+      question: discussion.question,
+      member,
+      roundNumber: nextRoundNumber,
+      previousResponsesInRound: round.responses,
+      conversationHistory,
+      businessContext,
+      settings: opts.settings,
+      storage: opts.storage,
+      discussionId: discussion.id,
+      projectRoot: opts.projectRoot,
+      signal: opts.signal,
+      isFollowUp: true,
+      followUpQuestion: trimmed,
+      onActivity: (a) =>
+        opts.onProgress?.({ stage: 'member_activity', memberName: member.name, ...a }),
+    });
+
+    round.responses.push(result.response);
+    totalCostUsd += result.costUsd;
+
+    opts.onProgress?.({
+      stage: 'member_done',
+      memberName: member.name,
+      durationMs: result.durationMs,
+      costUsd: result.costUsd,
+      response: result.response,
+      roundNumber: nextRoundNumber,
+    });
+  }
+
+  round.completedAt = nowIso();
+
+  // Post-round orchestrator analysis
+  opts.onProgress?.({ stage: 'orchestrating' });
+  try {
+    const decision = await analyzeConversation({
+      question: discussion.question,
+      rounds: [...discussion.rounds, round],
+      members: activeMembers,
+      currentTurn: discussion.totalTurns + round.responses.length,
+      settings: opts.settings,
+      storage: opts.storage,
+      discussionId: discussion.id,
+      signal: opts.signal,
+    });
+    round.orchestratorDecision = decision;
+    opts.onProgress?.({ stage: 'orchestrator_decided', decision, roundNumber: nextRoundNumber });
+  } catch (error) {
+    logger.warn('[addFollowUpQuestion] orchestrator failed (non-blocking):', error);
+  }
+
+  // Commit to the discussion record.
+  const userResponse: UserResponse = {
+    id: generateUUID(),
+    requestId: `follow-up-${nextRoundNumber}`,
+    content: trimmed,
+    timestamp: nowIso(),
+    roundNumber: nextRoundNumber,
+    type: 'follow_up_question',
+    prompt: trimmed,
+    targetType,
+    selectedMemberId: targetType === 'specific' ? targetMembers[0]!.id : undefined,
+    selectedMemberIds: targetType === 'subset' ? targetMembers.map((m) => m.id) : undefined,
+  };
+  round.userResponse = userResponse;
+  discussion.userResponses.push(userResponse);
+  for (const r of round.responses) discussion.responses.push(r);
+  discussion.totalTurns += round.responses.length;
+  discussion.rounds.push(round);
+  discussion.orchestratorState = updateOrchestratorState(
+    discussion.orchestratorState,
+    round.orchestratorDecision,
+    round,
+  );
+
+  if (
+    round.orchestratorDecision.action === 'request_user_input' &&
+    round.orchestratorDecision.userInputRequest
+  ) {
+    discussion.pendingUserRequest = round.orchestratorDecision.userInputRequest;
+  }
+
+  let concluded = false;
+  if (
+    round.orchestratorDecision.action === 'conclude' ||
+    discussion.totalTurns >= discussion.maxTurns
+  ) {
+    discussion.completedAt = nowIso();
+    discussion.pendingUserRequest = undefined;
+    concluded = true;
+  }
+
+  opts.onProgress?.({ stage: 'finalizing', round: nextRoundNumber });
+  await opts.storage.saveDiscussion(discussion);
+
+  return {
+    discussion,
+    totalCostUsd,
+    totalDurationMs: Date.now() - t0,
+    gated: false,
+    concluded,
+    roundNumber: nextRoundNumber,
+  };
+}

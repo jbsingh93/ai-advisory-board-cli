@@ -1,17 +1,20 @@
 /**
- * `aab discuss start | continue | respond | follow-up | list | show | delete`
+ * `aab discuss start | continue | respond | follow-up | list | show | delete |
+ *  archive | unarchive | summarize | export`
  *
  * Phase 1 surface: kick off a discussion, drive multi-round conversations,
  * answer the orchestrator's HITL questions, ask targeted follow-ups, list /
- * show / delete saved discussions. Sparring + summarize/export come next.
+ * show / delete / archive saved discussions, summarize a concluded discussion,
+ * and export it to markdown. Sparring comes next (Phase 3).
  */
 import { Command } from 'commander';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { closeContext, openContext } from './_context.js';
 import { c } from '../ui/colors.js';
 import { spinner } from '../ui/spinner.js';
 import { renderDiscussion, shortId } from '../ui/render-discussion.js';
+import { renderDiscussionMarkdown, defaultExportFilename } from '../ui/render-discussion-markdown.js';
 import { UserError } from '../core/errors.js';
 import { formatDuration, formatUsd } from '../core/utils.js';
 import {
@@ -22,8 +25,9 @@ import {
   type FollowUpTargetType,
   type StartProgressEvent,
 } from '../core/discussion/conversation-flow.js';
+import { summarizeDiscussion } from '../core/discussion/summarize.js';
 import { memberAgentPath, memberAgentSlug } from '../agents/emit-member-agent.js';
-import type { AdvisoryBoardMember, Discussion } from '../storage/types.js';
+import type { AdvisoryBoardMember, ConversationSummary, Discussion } from '../storage/types.js';
 
 export function registerDiscussCommand(program: Command): void {
   const discuss = program.command('discuss').description('start, view, and manage advisory-board discussions');
@@ -35,6 +39,10 @@ export function registerDiscussCommand(program: Command): void {
   registerList(discuss);
   registerShow(discuss);
   registerDelete(discuss);
+  registerArchive(discuss);
+  registerUnarchive(discuss);
+  registerSummarize(discuss);
+  registerExport(discuss);
 }
 
 function registerStart(parent: Command): void {
@@ -486,6 +494,162 @@ function registerDelete(parent: Command): void {
     });
 }
 
+function registerArchive(parent: Command): void {
+  parent
+    .command('archive <idOrShort>')
+    .description('archive a discussion (hidden from `list` unless --archived)')
+    .action(async (idOrShort: string) => {
+      const ctx = await openContext(parent);
+      try {
+        const discussion = await resolveDiscussion(ctx.storage, idOrShort);
+        if (discussion.archivedAt) {
+          process.stdout.write(`${c.hint('—')} discussion ${shortId(discussion.id)} is already archived.\n`);
+          return;
+        }
+        await ctx.storage.archiveDiscussion(discussion.id);
+        if (ctx.json) {
+          process.stdout.write(JSON.stringify({ id: discussion.id, archived: true }, null, 2) + '\n');
+        } else {
+          process.stdout.write(`${c.ok('✓')} discussion ${shortId(discussion.id)} archived.\n`);
+        }
+      } finally {
+        await closeContext(ctx);
+      }
+    });
+}
+
+function registerUnarchive(parent: Command): void {
+  parent
+    .command('unarchive <idOrShort>')
+    .description('restore an archived discussion to the active list')
+    .action(async (idOrShort: string) => {
+      const ctx = await openContext(parent);
+      try {
+        const discussion = await resolveDiscussion(ctx.storage, idOrShort);
+        if (!discussion.archivedAt) {
+          process.stdout.write(`${c.hint('—')} discussion ${shortId(discussion.id)} is not archived.\n`);
+          return;
+        }
+        await ctx.storage.unarchiveDiscussion(discussion.id);
+        if (ctx.json) {
+          process.stdout.write(JSON.stringify({ id: discussion.id, archived: false }, null, 2) + '\n');
+        } else {
+          process.stdout.write(`${c.ok('✓')} discussion ${shortId(discussion.id)} unarchived.\n`);
+        }
+      } finally {
+        await closeContext(ctx);
+      }
+    });
+}
+
+function registerSummarize(parent: Command): void {
+  parent
+    .command('summarize <idOrShort>')
+    .description('generate or refresh the ConversationSummary for a discussion')
+    .option('--force', 'regenerate even if a summary already exists')
+    .action(async (idOrShort: string, opts: { force?: boolean }) => {
+      const ctx = await openContext(parent);
+      try {
+        const discussion = await resolveDiscussion(ctx.storage, idOrShort);
+        if (discussion.rounds.length === 0) {
+          throw new UserError(
+            'Cannot summarize: discussion has no rounds yet.',
+            'Run `aab discuss continue` first.',
+          );
+        }
+        if (discussion.summary && !opts.force) {
+          if (ctx.json) {
+            process.stdout.write(JSON.stringify({ summary: discussion.summary, regenerated: false }, null, 2) + '\n');
+          } else {
+            process.stdout.write(`${c.hint('—')} summary already exists. Re-run with --force to regenerate.\n\n`);
+            renderSummary(discussion.summary);
+          }
+          return;
+        }
+
+        const settings = await ctx.storage.loadSettings();
+        const allMembers = await ctx.storage.loadBoardMembers();
+        const memberMap = new Map(allMembers.map((m) => [m.id, m]));
+        const memberIds =
+          discussion.selectedMemberIds ?? Array.from(new Set(discussion.responses.map((r) => r.memberId)));
+        const members = memberIds
+          .map((id) => memberMap.get(id))
+          .filter((m): m is AdvisoryBoardMember => !!m);
+
+        const sp = spinner('summarizing discussion...');
+        sp.start();
+        const summary = await summarizeDiscussion({
+          discussion,
+          members,
+          settings,
+        });
+        discussion.summary = summary;
+        await ctx.storage.saveDiscussion(discussion);
+        sp.succeed(`Summary written (${summary.keyPoints.length} key points, ${summary.consensus.length} consensus, ${summary.disagreements.length} disagreements).`);
+
+        if (ctx.json) {
+          process.stdout.write(JSON.stringify({ summary, regenerated: !!opts.force }, null, 2) + '\n');
+        } else {
+          renderSummary(summary);
+        }
+      } finally {
+        await closeContext(ctx);
+      }
+    });
+}
+
+function registerExport(parent: Command): void {
+  parent
+    .command('export <idOrShort>')
+    .description('export a discussion to a markdown file')
+    .option('--md', 'render as markdown (default and only format in v1)')
+    .option('--out <path>', 'output file path (default: <short-id>-<slug>.md in cwd)')
+    .option('--no-summary', 'skip auto-generating a summary if one is missing')
+    .action(async (idOrShort: string, opts: { md?: boolean; out?: string; summary?: boolean }) => {
+      const ctx = await openContext(parent);
+      try {
+        const discussion = await resolveDiscussion(ctx.storage, idOrShort);
+
+        // Auto-summarize once at export time if missing — keeps the markdown
+        // self-contained without forcing the user to run two commands.
+        const wantsSummary = opts.summary !== false;
+        if (wantsSummary && !discussion.summary && discussion.rounds.length > 0) {
+          const settings = await ctx.storage.loadSettings();
+          const allMembers = await ctx.storage.loadBoardMembers();
+          const memberMap = new Map(allMembers.map((m) => [m.id, m]));
+          const memberIds =
+            discussion.selectedMemberIds ?? Array.from(new Set(discussion.responses.map((r) => r.memberId)));
+          const members = memberIds
+            .map((id) => memberMap.get(id))
+            .filter((m): m is AdvisoryBoardMember => !!m);
+
+          const sp = spinner('summarizing before export...');
+          sp.start();
+          try {
+            discussion.summary = await summarizeDiscussion({ discussion, members, settings });
+            await ctx.storage.saveDiscussion(discussion);
+            sp.succeed('Summary generated.');
+          } catch (error) {
+            sp.warn(`Summary generation failed: ${error instanceof Error ? error.message : String(error)}`);
+            // Export proceeds without a summary — better than failing the export.
+          }
+        }
+
+        const md = renderDiscussionMarkdown(discussion);
+        const outPath = opts.out ?? join(process.cwd(), defaultExportFilename(discussion));
+        writeFileSync(outPath, md, 'utf8');
+
+        if (ctx.json) {
+          process.stdout.write(JSON.stringify({ id: discussion.id, path: outPath, bytes: Buffer.byteLength(md, 'utf8') }, null, 2) + '\n');
+        } else {
+          process.stdout.write(`${c.ok('✓')} exported ${shortId(discussion.id)} → ${c.bold(outPath)}\n`);
+        }
+      } finally {
+        await closeContext(ctx);
+      }
+    });
+}
+
 // ---------------- helpers ----------------
 
 function verifyAgentFiles(members: AdvisoryBoardMember[], projectRoot: string): void {
@@ -552,6 +716,27 @@ async function resolveDiscussion(
   if (matches.length === 0) throw new UserError(`No discussion found with id starting "${idOrShort}".`);
   if (matches.length > 1) throw new UserError(`Multiple discussions match "${idOrShort}". Use a longer prefix.`);
   return matches[0]!;
+}
+
+function renderSummary(s: ConversationSummary): void {
+  const out = process.stdout;
+  out.write(`\n${c.bold('Summary')} ${c.hint(`· quality ${s.overallQuality}/100 · ${s.generatedAt.slice(0, 10)}`)}\n`);
+  if (s.keyPoints.length > 0) {
+    out.write(`\n${c.bold('Key points:')}\n`);
+    for (const p of s.keyPoints) out.write(`  • ${p}\n`);
+  }
+  if (s.consensus.length > 0) {
+    out.write(`\n${c.bold('Consensus:')}\n`);
+    for (const p of s.consensus) out.write(`  ${c.ok('✓')} ${p}\n`);
+  }
+  if (s.disagreements.length > 0) {
+    out.write(`\n${c.bold('Disagreements:')}\n`);
+    for (const p of s.disagreements) out.write(`  ${c.warn('!')} ${p}\n`);
+  }
+  if (s.actionableInsights.length > 0) {
+    out.write(`\n${c.bold('Actionable insights:')}\n`);
+    for (const p of s.actionableInsights) out.write(`  → ${p}\n`);
+  }
 }
 
 function renderListRow(d: Discussion): string {

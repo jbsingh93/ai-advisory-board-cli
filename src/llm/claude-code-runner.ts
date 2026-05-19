@@ -14,8 +14,8 @@
  * Code session with just the prompt + allowed tools.
  */
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { delimiter, dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { ModelError, NetworkError } from '../core/errors.js';
 import { logger } from '../core/logger.js';
 import type { ClaudeModel } from '../storage/types.js';
@@ -264,6 +264,18 @@ export async function runClaude(opts: RunOptions): Promise<RunResult> {
     }
   }
 
+  logger.debug('[claude] result', {
+    stdoutLen: result.stdout.length,
+    stdoutHead: result.stdout.slice(0, 200),
+    stdoutTail: result.stdout.length > 400 ? result.stdout.slice(-200) : undefined,
+    envelopeParsed: !!json,
+    envelopeType: json?.type,
+    resultLen: typeof json?.result === 'string' ? json.result.length : undefined,
+    resultHead: typeof json?.result === 'string' ? json.result.slice(0, 200) : undefined,
+    resultTail:
+      typeof json?.result === 'string' && json.result.length > 400 ? json.result.slice(-200) : undefined,
+  });
+
   return { ...result, json };
 }
 
@@ -307,6 +319,89 @@ function resolveWinCommand(command: string): string {
     }
   }
   return command; // fall through; spawn will report ENOENT cleanly
+}
+
+/**
+ * Peek inside an npm-style `.cmd` shim and extract the underlying executable
+ * path so we can spawn it directly (avoiding cmd.exe, which truncates
+ * multi-line argv).
+ *
+ * The npm shim format is essentially:
+ *   "%dp0%\node_modules\<pkg>\bin\<name>.exe"   %*
+ * Some variants use `%~dp0\..\<pkg>\bin\<name>`. We match the last quoted
+ * path on a non-comment line, substitute `%dp0%` / `%~dp0` with the shim
+ * directory, and verify the file exists.
+ *
+ * Returns `undefined` if the shim doesn't match a recognised pattern — the
+ * caller falls back to the cmd.exe wrapper.
+ */
+function resolveCmdShimToExe(cmdPath: string): string | undefined {
+  let body: string;
+  try {
+    body = readFileSync(cmdPath, 'utf8');
+  } catch {
+    return undefined;
+  }
+  const dp0 = dirname(cmdPath);
+  const lines = body.split(/\r?\n/);
+  // Walk bottom-up — the actual call is near the end of npm shims.
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]?.trim();
+    if (!line || line.startsWith(':') || line.startsWith('REM ') || line.startsWith('@')) continue;
+    const m = line.match(/"([^"]+\.(?:exe|cmd|bat))"/i);
+    if (!m) continue;
+    let candidate = m[1]!;
+    // Substitute the common npm-shim variables.
+    candidate = candidate
+      .replace(/%~dp0/gi, dp0 + '\\')
+      .replace(/%dp0%/gi, dp0 + '\\');
+    // Collapse `\\` and resolve `..` segments.
+    const abs = isAbsolute(candidate) ? resolvePath(candidate) : resolvePath(dp0, candidate);
+    if (existsSync(abs) && /\.exe$/i.test(abs)) return abs;
+  }
+  return undefined;
+}
+
+/**
+ * Wrap a `.cmd` / `.bat` invocation so it can be spawned safely on modern
+ * Node (20.12+, 21.7+, 22+) where direct spawn of those files throws EINVAL.
+ *
+ * Strategy: invoke `cmd.exe /d /s /c "<path> <args...>"` with
+ * `windowsVerbatimArguments: true` and quote each argument manually.
+ *
+ * /d   skip AutoRun commands
+ * /s   strip outer quotes from the rest of the command line so we control quoting
+ * /c   run and exit
+ */
+function wrapForCmd(
+  resolved: string,
+  args: string[],
+): { command: string; args: string[]; windowsVerbatimArguments: true } {
+  const commandLine = [resolved, ...args].map(quoteForCmd).join(' ');
+  return {
+    command: process.env.ComSpec || 'cmd.exe',
+    args: ['/d', '/s', '/c', commandLine],
+    windowsVerbatimArguments: true,
+  };
+}
+
+/**
+ * Quote an argument for cmd.exe. Wraps in double quotes when necessary and
+ * escapes embedded `"`, `\`, and `%` per the cmd.exe + CommandLineToArgvW
+ * conventions. Used together with `windowsVerbatimArguments: true` so Node
+ * doesn't re-quote on top.
+ */
+function quoteForCmd(s: string): string {
+  if (s === '') return '""';
+  // No special chars → return as-is.
+  if (!/[\s"&|<>^()%!`]/.test(s)) return s;
+  // Escape backslashes that precede a quote (Windows argv rule).
+  let escaped = s.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1');
+  // Escape `%` so cmd.exe doesn't try to expand it as a variable.
+  escaped = escaped.replace(/%/g, '"^%"');
+  // Caret-escape cmd metacharacters that survive double-quotes in some edge cases.
+  escaped = escaped.replace(/([&|<>^!])/g, '^$1');
+  return `"${escaped}"`;
 }
 
 function parseLastJsonObject(text: string): ClaudeJsonEnvelope | undefined {
@@ -357,15 +452,31 @@ interface SpawnRawResult {
 function spawnRaw(command: string, args: string[], opts: SpawnRawOptions = {}): Promise<SpawnRawResult> {
   return new Promise<SpawnRawResult>((resolve, reject) => {
     const start = Date.now();
-    // On Windows, .cmd / .ps1 shims (which `claude` typically is when installed
-    // via npm) require shell:false + the .cmd extension OR shell:true. Using
-    // the explicit .cmd extension when it resolves keeps args properly escaped
-    // and avoids the DEP0190 deprecation warning from shell:true + args.
-    const resolved = process.platform === 'win32' ? resolveWinCommand(command) : command;
-    const child = spawn(resolved, args, {
+    // On Windows, npm installs `claude` as a `.cmd` shim under %APPDATA%\npm\.
+    // Two problems with that:
+    //   1. Since Node 20.12 / 21.7 / 22 (CVE-2024-27980), spawning `.cmd`
+    //      directly without `shell: true` throws EINVAL.
+    //   2. Routing through `cmd.exe /c` works for short args but **truncates
+    //      multi-line arguments at the first newline** — cmd.exe treats `\n`
+    //      as a command separator even inside quoted strings. Our prompts
+    //      are multi-line.
+    // Fix: peek inside the `.cmd` shim, extract the underlying `.exe` path it
+    // calls, and spawn that directly via argv (binary-safe). Only fall back
+    // to the cmd.exe wrapper if shim parsing fails — and in that case
+    // multi-line prompts will still be broken, so we log a warning.
+    let resolvedRaw = process.platform === 'win32' ? resolveWinCommand(command) : command;
+    if (process.platform === 'win32' && /\.cmd$/i.test(resolvedRaw)) {
+      const realExe = resolveCmdShimToExe(resolvedRaw);
+      if (realExe) resolvedRaw = realExe;
+    }
+    const launch = process.platform === 'win32' && /\.(cmd|bat)$/i.test(resolvedRaw)
+      ? wrapForCmd(resolvedRaw, args)
+      : { command: resolvedRaw, args, windowsVerbatimArguments: false };
+    const child = spawn(launch.command, launch.args, {
       cwd: opts.cwd ?? process.cwd(),
       env: opts.env ? { ...process.env, ...opts.env } : process.env,
       windowsHide: true,
+      windowsVerbatimArguments: launch.windowsVerbatimArguments,
       // Close stdin: the prompt is passed via -p, no piping. Without this,
       // `claude` waits 3s for stdin then prints a warning to stderr.
       stdio: ['ignore', 'pipe', 'pipe'],

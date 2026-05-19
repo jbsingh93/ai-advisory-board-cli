@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json.schemastore.org/mcp.json",
+  "mcpServers": {
+    "playwright": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "node_modules/@playwright/mcp/cli.js",
+        "--browser", "chromium",
+        "--viewport-size", "1280x800",
+        "--caps", "core,testing,storage,devtools",
+        "--allowed-origins", "http://localhost:*;http://127.0.0.1:*",
+        "--output-dir", "test-artifacts/playwright-mcp",
+        "--test-id-attribute", "data-testid",
+        "--timeout-navigation", "15000"
+      ]
+    }
+  }
+}

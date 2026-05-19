@@ -37,6 +37,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@playwright/mcp": "0.0.75",
     "@types/express": "^5.0.0",
     "@types/node": "^22.5.5",
     "@types/proper-lockfile": "^4.1.4",

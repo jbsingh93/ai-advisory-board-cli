@@ -1958,7 +1958,7 @@ The current `BusinessContext` is a flat JSON array of `{category, title, descrip
 
 Karpathy proposed (April 2026, [gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)) that LLMs should *maintain* a markdown knowledge base instead of *retrieving* fresh chunks on every query. The architecture is three layers: `raw/` (immutable sources), `wiki/` (LLM-curated markdown with `[[wikilinks]]` and YAML frontmatter), and a schema file (`wiki/KNOWLEDGE.md`) telling the LLM how to behave. The framing: *"Obsidian is the IDE; the LLM is the programmer; the wiki is the codebase."*
 
-## 7.3 Three locked design choices
+## 7.3 Locked design choices
 
 Confirmed by user 2026-05-10:
 
@@ -1966,7 +1966,35 @@ Confirmed by user 2026-05-10:
 2. **Source-page filenames: humanized + footer reference to id.** A discussion with id `7a3f...` and question "Should we pivot Q3 pricing?" becomes `wiki/sources/q3-pricing-pivot.md`; the discussion id appears once in the page footer (`> Source: discussion 7a3f...`) so it stays traceable without polluting the filename.
 3. **Wiki fully replaces `BusinessContext`.** No coexistence. A one-time `aab knowledge migrate` converts existing data; the old code path is deleted in the same release.
 
-## 7.4 Architecture summary
+Added 2026-05-19 (interlinking design):
+
+4. **Keep `[[slug]]` syntax; ship our own thin runtime instead of relying on Obsidian.** Karpathy's pattern is Obsidian-flavored, but we don't use Obsidian. `[[slug]]` is the right syntax (LLM-friendly, folder-agnostic, Foam-compatible, massive training-data coverage). We own three thin replacement layers Obsidian would otherwise give us for free: **resolution** (`wiki/index.md` carries a lint-maintained slug-map between `<!-- AAB:SLUG-MAP -->` sentinels; Glob is the fallback), **rendering** (`gui/wikilinks.js` preprocessor for the Web UI; `aab knowledge show` pretty-prints for the CLI; lint writes a backlinks section into each page), and **maintenance** (`aab knowledge rename` for atomic cross-file slug rewrites, `aab knowledge related`, `aab knowledge unresolved`). Full design at `KNOWLEDGE_WIKI.md` §11.
+5. **`aab knowledge rename` is the only sanctioned way to rename a slug.** Manual `mv` breaks every `[[slug]]` that points to the page. The rename command atomically rewrites the file, every body reference, every `related:`, every `aliases:`, and the manifest, under the workspace mutex.
+6. **Foam (free VS Code extension) is the recommended human-side editor.** `aab init --foam` writes `.vscode/extensions.json` recommending `foam.foam-vscode`. `aab doctor` surfaces an info-level "consider installing Foam" check. Zero engineering on our side — Foam gives autocomplete + click-navigation + graph view + backlinks panel + unresolved-link highlighting inside VS Code, fully compatible with our `[[slug]]` flavor.
+
+## 7.4 Interlinking — keeping Karpathy's brilliance without Obsidian
+
+Karpathy's pattern was written for Obsidian, but we ship a CLI + custom Web UI. The risk is inheriting `[[wikilink]]` syntax without inheriting the runtime that makes it brilliant — leaving links as dead text. Our answer (full spec at `KNOWLEDGE_WIKI.md` §11):
+
+**The two consumers reframe.** LLM agents (members, orchestrator, ingest/query/lint) are the **primary** consumer — they read the wiki via `Read`/`Grep`/`Glob` and write 95% of it via ingest. Humans (the user, editing in `$EDITOR` or browsing the dashboard) are the secondary consumer. We design the resolution mechanism for the LLM first; we add a thin rendering layer for the human on top.
+
+**The agent-time resolver.** When an agent reads `[[unit-economics]]` and needs the file path, the algorithm is: (1) cheap-pass against the slug-map rendered inside `wiki/index.md` (the agent reads `index.md` first anyway per the §14 addendum), (2) fallback `Glob 'wiki/**/<slug>.md'` if the map is stale (slug uniqueness guarantees ≤1 hit), (3) report unresolved if both fail (lint catches it on the next run). Zero new files, zero new infrastructure.
+
+**The rendering layers for humans.**
+
+| Surface | How `[[slug]]` becomes navigable | Cost |
+|---|---|---|
+| Web UI page detail | `gui/wikilinks.js` preprocessor → `<a href="#/wiki/slug">` with hover tooltip showing target's `summary:`. Unresolved links render red. Block links scroll to anchor. **MVP for the Knowledge tab, not deferred polish.** | ~60 lines of vanilla JS. |
+| `aab knowledge show <slug>` | Replaces `[[slug]]` with `slug ("Target Title")` using the slug-map. | Small; shares the resolver. |
+| `$EDITOR` (vim, VS Code, etc.) | **Recommend Foam** — free, MIT-licensed VS Code extension that speaks `[[wikilinks]]` natively. Gives autocomplete + click-navigation + graph view + backlinks panel + unresolved-link highlighting inside VS Code. `aab init --foam` writes `.vscode/extensions.json`. `aab doctor` adds an info check. | **Zero engineering.** Foam already exists. |
+
+**The maintenance commands.** `aab knowledge rename <old> <new>` (atomic cross-file slug rewrite — the only sanctioned rename path), `aab knowledge related <slug>` (link-graph walker; used by the ingest agent before filing a page so it can link densely), `aab knowledge unresolved` (fast on-demand broken-link surface, no LLM call). Lint owns the bigger health pass and maintains both the slug-map and per-page backlinks sections.
+
+**What we explicitly DON'T do:** bundle Obsidian, require it, write a custom VS Code extension (Foam exists), support transclusion `![[slug]]` in v1 (agents can Read both files), support block IDs `[[slug#^id]]` in v1 (header anchors `[[slug#section]]` cover the common case), allow path-prefixed links. All deferred to `KNOWLEDGE_WIKI.md` §26 or rejected outright.
+
+**Net effect.** The wiki's interlinking gets the Karpathy "knowledge compounds via dense cross-references" property without depending on Obsidian's runtime. The LLM walks `[[slug]]` via the slug-map + Glob; humans get a full Obsidian-style editing experience via Foam (zero code on our side) plus a clickable graph in the Web UI.
+
+## 7.5 Architecture summary
 
 Three layers (full spec at `KNOWLEDGE_WIKI.md` §5–§7):
 
@@ -1985,7 +2013,7 @@ Three workflows (full spec at `KNOWLEDGE_WIKI.md` §15):
 - **Query** — read-only walk of the wiki by member sub-agents, the orchestrator, or the user (`aab knowledge query`). Tiered retrieval: Grep summaries first, only open bodies when needed.
 - **Lint** — static checks (slug uniqueness, broken links, orphans, missing frontmatter) + LLM passes (contradictions, stale claims). Output to `outputs/lint-<date>.md`.
 
-## 7.5 Tool surface (the security boundary)
+## 7.6 Tool surface (the security boundary)
 
 | Agent | Tools | Notes |
 |---|---|---|
@@ -1993,60 +2021,66 @@ Three workflows (full spec at `KNOWLEDGE_WIKI.md` §15):
 | Orchestrator | `Read, Grep, Glob` | **New** — currently `[]` at `src/core/discussion/orchestrator.ts:51`. Read-only. |
 | Ingest agent | `Read, Grep, Glob, Write, Edit, WebFetch` | The only agent allowed to mutate `wiki/`. |
 | Query agent | `Read, Grep, Glob` | Read-only. |
-| Lint agent | `Read, Grep, Glob, Write` | Write only to `outputs/`. |
+| Lint agent | `Read, Grep, Glob, Write` | Write restricted to: (1) `outputs/lint-<date>.md`, (2) the `<!-- AAB:SLUG-MAP -->` section of `wiki/index.md`, (3) the `<!-- AAB:BACKLINKS -->` sections of every page. MUST NOT touch page bodies outside sentinels. |
 
-## 7.6 Auto-ingest hook (the killer feature)
+## 7.7 Auto-ingest hook (the killer feature)
 
 When a discussion concludes, two things fire automatically (both already-decided defaults in seeded settings):
 
 1. **Auto-summarize** (already `autoSummarization: true` at `src/storage/types.ts:328`) — Haiku call producing the `ConversationSummary` payload (already typed at `src/storage/types.ts:126-134`).
-2. **Auto-ingest** — render the transcript to `raw/discussions/<humanized>.md`, render the summary to `raw/summaries/<humanized>.md`, run the ingest agent on both. Toggle: `knowledgeWiki.autoIngestDiscussions` (default true).
+2. **Auto-ingest** — render the transcript to `raw/discussions/<humanized>.md`, render the summary to `raw/summaries/<humanized>.md`, run the ingest agent on both, **then rebuild the slug-map section in `wiki/index.md`** (cheap O(N) — see `KNOWLEDGE_WIKI.md` §11.3 + §15.1 step 5). Toggle: `knowledgeWiki.autoIngestDiscussions` (default true).
 
 Wrapped in try/catch — a failed ingest never blocks discussion completion. User HITL responses (`aab discuss respond` bodies) also auto-ingest as paste-style raw inputs (`knowledgeWiki.autoIngestUserResponses`, default true) so the wiki learns the user's stated preferences and corrections.
 
 This is why the wiki *grows itself*. The user does nothing; discussions compound into permanent linked memory.
 
-## 7.7 What changes in existing code (concrete)
+## 7.8 What changes in existing code (concrete)
 
 - `src/storage/types.ts:242-276` — `BusinessContext`/`BusinessProfile` types stay during transition (chunk 7 of phasing), then deleted.
 - `src/storage/paths.ts:119, 139` — add `wiki`, `raw`, `manifest`, `outputs` paths.
 - `src/storage/fs-storage-service.ts:165-186` — `loadBusinessContext` / `saveBusinessContext` / `updateBusinessContext` / `deleteBusinessContext` deleted after migrate.
 - `src/core/discussion/build-user-message.ts:17, 28, 65-69, 103-123` — inline business-context block deleted; replaced by a one-line system-prompt addendum pointing at `wiki/`.
 - `src/core/discussion/conversation-flow.ts:122, 148, 224-226, 379, 398, 706, 725` — `loadBusinessContextSafe` call sites retired; new `runAutoIngestSafe` hook added at the conclude path.
-- `src/agents/emit-member-agent.ts` — append the §14-of-KNOWLEDGE_WIKI.md system-prompt addendum to every member's body inside the `AAB:GENERATED` block.
+- `src/agents/emit-member-agent.ts` — append the §14-of-KNOWLEDGE_WIKI.md system-prompt addendum to every member's body inside the `AAB:GENERATED` block. The addendum tells members to read `wiki/index.md` first (it contains the slug-map between `<!-- AAB:SLUG-MAP -->` sentinels) and how to fall back to `Glob 'wiki/**/<slug>.md'` for stale entries.
 - `src/core/discussion/orchestrator.ts:51` — `allowedTools = ['Read', 'Grep', 'Glob']`.
-- `src/storage/types.ts:300` — add `knowledgeWiki: { … }` settings namespace (full key list at `KNOWLEDGE_WIKI.md` §23).
-- New code: `src/core/knowledge/{manifest,page,ingest,query,lint,migrate}.ts`, `src/core/prompts/skill-{ingest,query,lint}.ts`.
-- New CLI: `src/commands/knowledge.ts` — `ingest|query|lint|list|show|edit|open|migrate|stats|graph|backfill`.
+- `src/storage/types.ts:300` — add `knowledgeWiki: { … }` settings namespace (full key list at `KNOWLEDGE_WIKI.md` §23, including `recommendFoam`, `slugMapInIndex`, `maxAliasesGlobal`).
+- New code: `src/core/knowledge/{manifest,page,slug-map,rename,ingest,query,lint,migrate}.ts`, `src/core/prompts/skill-{ingest,query,lint}.ts`. (`slug-map.ts` and `rename.ts` are the interlinking-runtime additions.)
+- New CLI: `src/commands/knowledge.ts` — `ingest|query|lint|list|show|edit|open|migrate|stats|graph|backfill|rename|related|unresolved`. (Last three are the §11.4/§17 maintenance commands.)
+- `src/commands/init.ts` — add `--foam` flag that writes `.vscode/extensions.json` recommending `foam.foam-vscode`. Toggleable via `settings.knowledgeWiki.recommendFoam` (default true).
+- `src/commands/doctor.ts` — add info-level check that fires when `wiki/` exists but no `.vscode/extensions.json` recommending Foam is present (suggests `aab init --foam`).
 - New web endpoints: `src/gui/server.ts` — `/api/knowledge/*` plus WS events `wiki_ingest_*`, `wiki_query_*`, `wiki_lint_*`.
+- New frontend: `gui/wikilinks.js` — the `[[slug]]` markdown preprocessor (MVP for the Knowledge tab; see `KNOWLEDGE_WIKI.md` §18.1).
 
-## 7.8 Build phasing — 8 chunks
+## 7.9 Build phasing — 8 chunks
 
 Each independently shippable. Full deliverables at `KNOWLEDGE_WIKI.md` §24.
 
-1. Wiki skeleton + manifest + schema emission on `aab init`.
-2. File / text / paste ingest + dedup + atomic writes (PDF support via Read tool).
+1. Wiki skeleton + manifest + schema emission on `aab init` + **interlinking foundation** (slug-map sentinels in `wiki/index.md`, `src/core/knowledge/slug-map.ts`, `aab knowledge rename`, `aab knowledge show` slug pretty-printing, `aab init --foam`, `aab doctor` Foam check).
+2. File / text / paste ingest + dedup + atomic writes (PDF support via Read tool). Ingest agent reads the slug-map before linking so it links densely.
 3. URL ingest via WebFetch + `.meta.json` cache.
-4. Member + orchestrator integration (system-prompt addendum + orchestrator tool grant).
+4. Member + orchestrator integration (system-prompt addendum with slug-map resolution instructions + orchestrator tool grant).
 5. Auto-ingest hook on conclude + on user HITL response.
-6. `aab knowledge query` + `aab knowledge lint` (static + LLM passes).
+6. `aab knowledge query` + `aab knowledge lint` (static + LLM passes; lint **maintains the slug-map and per-page backlinks sections**) + `aab knowledge unresolved` + `aab knowledge related`.
 7. `aab knowledge migrate` + retire `BusinessContext` from runtime path.
-8. Web UI Knowledge tab (graph, list, detail, ingest, query, lint).
+8. Web UI Knowledge tab (graph, list, detail, ingest, query, lint). **`gui/wikilinks.js` preprocessor is MVP, not deferred polish** — `[[slug]]` becomes a clickable link with hover tooltip; unresolved links render red.
 
-Chunks 1-3 ship the wiki without changing any agent behavior (purely additive). Chunk 4 turns it on for discussions. Chunk 5 makes it self-feeding. 6-7 close the loop. 8 is UI polish.
+Chunks 1-3 ship the wiki without changing any agent behavior (purely additive). Chunk 4 turns it on for discussions. Chunk 5 makes it self-feeding. 6-7 close the loop. 8 is the human-facing UI surface.
 
-## 7.9 Acceptance criteria (Phase 1.5)
+## 7.10 Acceptance criteria (Phase 1.5)
 
-- `aab knowledge ingest <path>` on a markdown source produces ≥1 wiki page, updates `wiki/index.md`, appends to `wiki/log.md`, and adds an entry to `.manifest.json`. Re-running with the same source is a no-op (manifest dedup); `--force` re-ingests.
+- `aab knowledge ingest <path>` on a markdown source produces ≥1 wiki page, updates `wiki/index.md` (including the slug-map between `<!-- AAB:SLUG-MAP -->` sentinels), appends to `wiki/log.md`, and adds an entry to `.manifest.json`. Re-running with the same source is a no-op (manifest dedup); `--force` re-ingests.
 - A 3-member discussion that concludes auto-fires summarize + auto-ingest. The resulting `wiki/sources/<humanized>.md` exists, has frontmatter `type: source-summary`, has `sources: [raw/discussions/<humanized>.md, raw/summaries/<humanized>.md]`, and at least one of `wiki/concepts/`, `wiki/entities/`, `wiki/decisions/` has a new or updated page that wiki-links back to it.
 - A subsequent discussion (different question, same workspace) successfully Greps + Reads at least one wiki page during a member call (verified by checking the member's `sources` field in the structured JSON response).
 - `aab knowledge migrate` on a workspace with N items in `business-context.json` produces ≥1 wiki page per item, marks them in manifest, leaves `business-context.json.migrated.bak` behind, and is idempotent.
 - After migrate, `loadBusinessContextSafe` no longer injects content into `build-user-message.ts` — discussions still work, members get context from the wiki instead.
-- `aab knowledge lint` on a wiki with a known-orphan page and a known-broken `[[wikilink]]` produces an `outputs/lint-<date>.md` listing both with severity `warn` / `error` respectively.
+- `aab knowledge lint` on a wiki with a known-orphan page and a known-broken `[[wikilink]]` produces an `outputs/lint-<date>.md` listing both with severity `warn` / `error` respectively, AND maintains the slug-map and per-page backlinks sections.
+- `aab knowledge rename <old> <new>` on a wiki with ≥3 incoming `[[old]]` references rewrites the file, every body reference, every `related:` and `aliases:`, and the manifest, atomically. Re-running with the new slug as `<old>` is a no-op.
+- `aab knowledge unresolved` on a wiki with a deliberately broken `[[foo-bar]]` lists it within milliseconds (no LLM call).
+- `aab init --foam` writes a `.vscode/extensions.json` recommending `foam.foam-vscode`. Opening the workspace in VS Code surfaces the recommendation prompt.
 
-## 7.10 Net effect
+## 7.11 Net effect
 
-The advisory board stops re-loading a 3.5k-char blob on every member call and starts walking a structured, linked, growing knowledge base — the same way Claude Code walks a codebase. Every discussion compounds. Every URL the user pastes, every PDF dropped in, every clarification answered becomes a permanent linked node. The user gets a human-readable, git-committable, auditable second brain that drives every advisory-board response.
+The advisory board stops re-loading a 3.5k-char blob on every member call and starts walking a structured, linked, growing knowledge base — the same way Claude Code walks a codebase. Every discussion compounds. Every URL the user pastes, every PDF dropped in, every clarification answered becomes a permanent linked node. The user gets a human-readable, git-committable, auditable second brain that drives every advisory-board response — and a full Obsidian-style editing experience inside VS Code via Foam, for zero engineering cost on our side.
 
 ---
 

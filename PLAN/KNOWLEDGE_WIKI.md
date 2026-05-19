@@ -1,7 +1,7 @@
 # Knowledge Wiki — Karpathy-style LLM Wiki for `aabclitool`
 
 > **Status:** authoritative design spec. Written 2026-05-10.
-> **Supersedes:** the `BusinessContext` / `BusinessProfile` flat-JSON storage (`src/storage/types.ts:242-276`) and its inline injection in `src/core/discussion/build-user-message.ts:65-69, :103-123`.
+> **Supersedes:** the `BusinessContext` / `BusinessProfile` flat-JSON storage (`src/storage/types.ts:242-276`) and its inline injection in `src/core/discussion/build-user-message.ts:65-69, :103-123` from `"C:\Users\julia\Downloads\kode\sage-council"`.
 > **Decisions baked in (confirmed by user 2026-05-10):**
 > 1. Wiki lives **inside the workspace dir** (`~/.aabcli/<workspace>/wiki/` for `home` scope; `<projectRoot>/wiki/` for `project` scope — symmetric with how `.claude/agents/` already works).
 > 2. Source-page filenames are **humanized + footer reference to id** (e.g., `wiki/sources/q3-pricing-pivot.md` for discussion `7a3f...` — id appears once in the page footer, not in the filename).
@@ -46,7 +46,7 @@ This document is intentionally long. It exists so any future coding agent (Claud
 
 ## 1. What this is, in one paragraph
 
-The Knowledge Wiki is a **persistent, interlinked, LLM-curated markdown knowledge base** that replaces the flat `BusinessContext` JSON the CLI currently injects into every advisory-board discussion. Every advisory-board member sub-agent (Elon, Julian, Alexandra, plus any custom members) can natively `Read`, `Grep`, and `Glob` the wiki — they already have those tools (`src/agents/emit-member-agent.ts:20`) — the same way Claude Code reads a codebase. The orchestrator can do the same. New information enters the wiki through **ingestion**: a one-shot Claude call that reads a source (a file the user dropped in, a URL the user pasted, a paragraph they typed, or — most importantly — a discussion that just concluded) and writes/updates wiki pages with proper cross-references and provenance. Over time, the wiki **compounds**: round 50 of any discussion benefits from every claim, fact, and conclusion that was ever filed. We're modeling this directly on Andrej Karpathy's "LLM Wiki" pattern, which went viral on X in April 2026 and has multiple reference implementations.
+The Knowledge Wiki is a **persistent, interlinked, LLM-curated markdown knowledge base** that replaces the flat `BusinessContext` JSON the CLI currently injects into every advisory-board discussion, as per the original AI Advisory Board project `"C:\Users\julia\Downloads\kode\sage-council"`. Every advisory-board member sub-agent (Elon, Julian, Alexandra, plus any custom members) can natively `Read`, `Grep`, and `Glob` the wiki — they already have those tools (`src/agents/emit-member-agent.ts:20`) — the same way Claude Code reads a codebase. The orchestrator can do the same. New information enters the wiki through **ingestion**: a one-shot Claude call that reads a source (a file the user dropped in, a URL the user pasted, a paragraph they typed, or — most importantly — a discussion that just concluded) and writes/updates wiki pages with proper cross-references and provenance. Over time, the wiki **compounds**: round 50 of any discussion benefits from every claim, fact, and conclusion that was ever filed. We're modeling this directly on Andrej Karpathy's "LLM Wiki" pattern, which went viral on X in April 2026 and has multiple reference implementations.
 
 ---
 
@@ -63,6 +63,7 @@ If you are picking this up for the first time, read at least the gist (1) and on
 7. **DAIR.AI primer.** [LLM Knowledge Bases](https://academy.dair.ai/blog/llm-knowledge-bases-karpathy). Short conceptual write-up.
 8. **Karpathy quote (the mental model).** *"Obsidian is the IDE; the LLM is the programmer; the wiki is the codebase."* This is the critical framing: **the agent navigates the wiki the same way Claude Code navigates a codebase.** Grep, glob, read, follow links. No vector DB. No special infrastructure.
 9. **`rohitg00/2067ab416f7bbe447c1977edaaa681e2` (LLM Wiki v2).** [Extension of Karpathy's pattern](https://gist.github.com/rohitg00/2067ab416f7bbe447c1977edaaa681e2) with lessons from building agent-memory systems. Good for understanding edge cases (staleness, contradiction handling, provenance).
+10. **Foam (the human-side editor we recommend).** [foambubble.github.io](https://foambubble.github.io/foam/) + [marketplace.visualstudio.com/items?itemName=foam.foam-vscode](https://marketplace.visualstudio.com/items?itemName=foam.foam-vscode). Free, MIT-licensed VS Code extension that speaks `[[wikilinks]]` natively (Obsidian-compatible flavor). Gives users autocomplete, click-to-navigate, backlinks panel, graph view, and unresolved-link highlighting **inside their editor — without us writing a line of code**. Our spec is intentionally written so that a user who installs Foam gets the full Obsidian-style editing experience for free. This is how we bridge the "humans need overview too" requirement without porting Obsidian's runtime ourselves. **`aab doctor` surfaces an info-level "consider installing Foam" check.** See §11 for the agent-side resolver and §17 for the `aab init --foam` flag that emits a `.vscode/extensions.json` recommendation.
 
 In-repo references that this design touches:
 
@@ -134,14 +135,21 @@ Four reasons. Read them — they are the justification for the architectural cha
 └──────────────────────────────────────────────────────────┘
 ┌──────────────────────────────────────────────────────────┐
 │ Layer 2: WIKI  (curated, mutable)                        │
-│   wiki/index.md       (the catalog — entry point)        │
+│   wiki/index.md       (the catalog — entry point;        │
+│                        ALSO carries the slug→path map    │
+│                        between <!-- AAB:SLUG-MAP -->     │
+│                        sentinels, maintained by ingest   │
+│                        and lint; see §11.3)              │
 │   wiki/log.md         (append-only ingest log)           │
 │   wiki/concepts/*.md  (ideas, strategies, patterns)      │
 │   wiki/entities/*.md  (companies, products, people, …)   │
 │   wiki/decisions/*.md (a choice + rationale + sources)   │
 │   wiki/sources/*.md   (1:1 condensation of one raw doc)  │
 │   wiki/comparisons/*.md (side-by-side analyses)          │
-│   Written and updated by the LLM during ingest.          │
+│   Each page carries a <!-- AAB:BACKLINKS --> section     │
+│   at the bottom, regenerated by lint (see §11.5).        │
+│   Written and updated by the LLM during ingest; the      │
+│   sentinel regions are managed by lint only.             │
 └──────────────────────────────────────────────────────────┘
 ┌──────────────────────────────────────────────────────────┐
 │ Layer 1: RAW  (immutable inputs)                         │
@@ -178,6 +186,8 @@ The user confirmed these on 2026-05-10. They are not up for renegotiation withou
 | 4 | Auto-summarization stays **ON by default**. (Already the seeded default at `src/storage/types.ts:328`.) | Cheap (Haiku/`fastModel`) and the summary becomes the seed for auto-ingest into the wiki. Cost is bounded — one Haiku call per concluded discussion. |
 | 5 | Auto-ingest from concluded discussions is **ON by default**. | Same reasoning — cheap, and the entire value of the wiki is that knowledge compounds. Toggle: `knowledgeWiki.autoIngestDiscussions`. |
 | 6 | No vector DB / no embeddings in Phase 1. | Karpathy's pattern works with markdown + Grep/Glob. The obsidian-wiki framework adds optional QMD semantic search; we treat that as a future extension (§26). |
+| 7 | **Keep `[[slug]]` syntax; ship our own thin runtime instead of relying on Obsidian.** | Karpathy's pattern was written for Obsidian, but we're not using Obsidian. `[[slug]]` is the right syntax (LLM-friendly, folder-agnostic, Foam-compatible, massive training-data coverage) — but we own three thin layers Obsidian would otherwise give us for free: **resolution** (`wiki/index.md` is the canonical slug→path map; lint maintains it; agents Glob as a fallback), **rendering** (the Web UI markdown renderer preprocesses `[[slug]]` → `<a>`; `aab knowledge show` pretty-prints; lint writes a backlinks section into each page via `<!-- AAB:BACKLINKS -->` sentinels), and **maintenance** (`aab knowledge rename` for atomic cross-file slug rewrites; `aab knowledge related` to walk neighbors; `aab knowledge unresolved` to surface broken links on demand). For users who want the full Obsidian-style editing experience in `$EDITOR`, we recommend **Foam** (free VS Code extension) — zero code on our side, full graph view + autocomplete + click-navigation + backlinks panel inside VS Code. See §11 for the full interlinking design. |
+| 8 | **`aab knowledge rename` is a first-class CLI command, not optional.** | The spec says slug is canonical and path is incidental (§11). That contract only holds if there's an atomic, namespace-wide way to rewrite slugs without breaking links. Manual `mv` of a wiki page breaks every `[[slug]]` pointing at it. `aab knowledge rename <old> <new>` is the only supported way to rename — it rewrites the file, every `[[old]]` it can find, every `related:` entry, and the manifest entry, all atomically. Lint's broken-link scan recommends `aab knowledge rename --auto-fix` when it detects a manual move. |
 
 ---
 
@@ -247,6 +257,8 @@ Every wiki page must begin with this YAML frontmatter. The LLM emits it on creat
 ---
 title: Pricing Strategy
 slug: pricing-strategy                 # kebab-case, must match filename minus .md
+aliases: [pricing, monetization-strategy]  # optional — alternate slugs that resolve to this page
+                                       # global uniqueness enforced by lint (slug + aliases share one namespace)
 type: concept                          # concept | entity | decision | source-summary | comparison
 summary: One-sentence synopsis used by the cheap-pass tier of query (≤200 chars).
 tags: [pricing, monetization, b2b]     # free-form; lint flags new tags vs. _meta/taxonomy.md (future)
@@ -282,6 +294,7 @@ with `^[ambiguous]` and explain the disagreement.
 **Why each field is here**:
 
 - `title` / `slug`: human title for display, slug for cross-linking. Slug must equal filename so `[[pricing-strategy]]` resolves to `wiki/concepts/pricing-strategy.md` deterministically.
+- `aliases` *(optional)*: alternate slugs that resolve to this page. E.g., a page with `slug: stripe-inc` and `aliases: [stripe]` makes both `[[stripe-inc]]` and `[[stripe]]` resolve here. Lint enforces uniqueness across the *combined* `slug + aliases` namespace — two pages cannot declare the same alias. Use sparingly: every alias is a new entry the LLM has to know about. Common reasons to add one: rename happened but you don't want to break old `raw/` references; canonical form is verbose but a short form is in everyday use; supporting common plural/singular variants.
 - `type`: lets the lint and query passes filter ("show me all decisions").
 - `summary`: the **single most important field** for cheap retrieval. Agents Grep summaries first. Keep ≤200 chars; one well-written sentence beats a paragraph.
 - `tags`: free-form for now; a future `wiki/_meta/taxonomy.md` pass can normalize.
@@ -353,15 +366,115 @@ Locked per user decision §6.2. Concrete rules:
 
 ## 11. Cross-reference / wiki-link syntax
 
-Standard `[[kebab-case-slug]]` everywhere, no exceptions. Resolution rule:
+This is the **single most important section** for understanding how the wiki diverges from Karpathy's Obsidian-flavored reference. Karpathy's pattern assumes Obsidian as the runtime — Obsidian gives you click-navigation, autocomplete, backlinks panel, graph view, unresolved-link highlighting, and rename propagation, all for free. We're not using Obsidian. We need to replicate the *brilliance* of `[[wikilinks]]` without inheriting Obsidian's runtime. Read this whole section before changing anything about link handling.
 
-1. `[[foo-bar]]` resolves to whichever of `wiki/{concepts,entities,decisions,sources,comparisons}/foo-bar.md` exists. Slug uniqueness across folders is **enforced by lint**: two pages with the same slug is an error.
-2. `[[foo-bar|Display Text]]` is allowed (Obsidian-compatible) — display text in the rendered output, slug for resolution.
-3. Never link by path. `[[concepts/foo-bar]]` is wrong. The slug is canonical.
+### 11.1 Syntax (what writers emit)
 
-**Why no path-prefixing**: it lets us move pages between folders (e.g., promote a `concept` to a `decision`) without rewriting backlinks. Lint resolves slug → path on every run.
+Standard `[[kebab-case-slug]]` everywhere, no exceptions. Six concrete rules:
 
-**Backlinks** are computed at lint time and rendered into a "Backlinks" section at the bottom of each page (regenerated, never hand-edited; marked with `<!-- AAB:BACKLINKS -->` sentinel comments so the LLM doesn't overwrite them on regular edits).
+1. `[[foo-bar]]` resolves to whichever of `wiki/{concepts,entities,decisions,sources,comparisons}/foo-bar.md` exists. **Slug uniqueness across the global `slug + aliases` namespace is enforced by lint** — two pages with the same canonical slug, or one page's slug colliding with another's alias, is an error.
+2. `[[foo-bar|Display Text]]` is allowed (Obsidian/Foam-compatible) — display text in the rendered output, slug for resolution.
+3. `[[foo-bar#section-header]]` is allowed — link to a specific markdown header inside the target page. The `section-header` portion is kebab-case-of the literal `## Section Header` text (same anchor rules GitHub Flavored Markdown uses). The Web UI scrolls to the anchor; the CLI's `aab knowledge show` highlights the section; LLM agents simply Read the page and the section text is right there.
+4. **`[[foo-bar#^block-id]]` is NOT supported in v1.** Obsidian's block-level addressing adds runtime complexity (block-id index, sentinel-comment management) that we don't need for our use case. Deferred to §26.
+5. **`![[foo-bar]]` (transclusion / embed) is NOT supported in v1.** Agents can `Read` both files directly; rendering inlined content adds preprocessor complexity. Deferred to §26.
+6. **Never link by path.** `[[concepts/foo-bar]]` is wrong. `[concepts/foo-bar.md](./concepts/foo-bar.md)` is also wrong. The slug is canonical — folder location is incidental and may change.
+
+### 11.2 The "two consumers" reframe — who actually uses these links?
+
+The interlinking has two consumers, and **the design serves them in different ways**:
+
+| Consumer | How they consume `[[slug]]` | What they need from us |
+|---|---|---|
+| **LLM agents** (members, orchestrator, ingest/query/lint — **primary consumer**) | Read `[[slug]]` as plaintext via `Read`/`Grep`/`Glob`. They don't "click" anything. They follow links by performing a tool call to read the target file. | (1) A cheap way to map `[[slug]]` → `wiki/<folder>/<slug>.md` without trial-and-error Globs everywhere. (2) Visible backlinks on each page so they discover related material while reading. (3) Predictable, unique resolution — never "did you mean foo-bar or foo-baz?" |
+| **Humans** (the user, editing in `$EDITOR` or browsing the Web UI dashboard — **secondary consumer**, lower volume) | See `[[slug]]` rendered as a clickable link if their tool supports it; otherwise see literal `[[slug]]` text. | (1) Click navigation in the Web UI. (2) Autocomplete + click + graph view in `$EDITOR` — **delivered free via Foam**, no engineering on our side. (3) Pretty rendering in `aab knowledge show`. |
+
+**The LLM is the primary consumer because the LLM writes 95% of the wiki via ingest and reads it on every discussion round.** Humans edit infrequently. Designing for the human first would over-invest in rendering and under-invest in resolution; we do the inverse.
+
+### 11.3 Agent-time resolution algorithm (the resolver)
+
+When a member, orchestrator, ingest, query, or lint agent reads a wiki page and encounters `[[unit-economics]]`, it needs the file path. There is no Obsidian to resolve it. The algorithm — written into the §14 system-prompt addendum — is:
+
+1. **Cheap-pass: read the slug-map from `wiki/index.md`.** Lint maintains a section in `wiki/index.md` shaped like:
+   ```markdown
+   ## Slug map (auto-maintained — do not hand-edit)
+   <!-- AAB:SLUG-MAP -->
+   | Slug                          | Path                                    | Type             | Summary |
+   |-------------------------------|-----------------------------------------|------------------|---------|
+   | unit-economics                | concepts/unit-economics.md              | concept          | …       |
+   | stripe                        | entities/stripe.md                      | entity           | …       |
+   | 2026-q1-focus-enterprise      | decisions/2026-q1-focus-enterprise.md   | decision         | …       |
+   | …                             |                                         |                  |         |
+   <!-- /AAB:SLUG-MAP -->
+   ```
+   Agents already read `wiki/index.md` first (per §14 addendum) — the map lookup is free. **Aliases also appear in this table**, with the alias in the Slug column and the same path as the canonical slug (lint renders them as `stripe-inc (alias: stripe)` to keep the table tight).
+2. **Fallback: `Glob 'wiki/**/<slug>.md'`.** If the slug-map is missing the entry (stale index after a manual edit), Glob returns ≤1 hit (slug uniqueness is enforced). One extra tool call, deterministic, self-recovering.
+3. **Last resort: if both fail, treat as unresolved.** The agent reports it in its `sources` or `notes` field; lint will flag on its next run.
+
+This is the **whole resolution mechanism**. No vector DB, no special parser, no SQLite index, no graph engine. Just a markdown table maintained by ingest + lint, with Glob as the safety net.
+
+**Who writes the slug-map?** Two writers, both safe because the workspace mutex serializes all wiki writes:
+
+| Writer | When | What it does |
+|---|---|---|
+| **Ingest** (`src/core/knowledge/ingest.ts`) | At the end of every ingest run, after creating/updating pages | Re-renders the entire slug-map between the sentinels in `wiki/index.md`. Cheap: O(N) — Glob `wiki/**/*.md`, read each frontmatter (`slug` + `aliases` + `type` + `summary`), write the table. ~few hundred ms at 500 pages. **Why:** keeps the slug-map fresh between lint runs so the *next* ingest's cheap-pass works for pages created in the *previous* ingest. |
+| **Lint** (`src/core/knowledge/lint.ts`) | On every `aab knowledge lint` run | Idempotent rebuild — same algorithm as ingest, with the addition of contradiction warnings (e.g., a slug declared in the map but no file, or vice versa). Lint is the "always-correct" authority; if ingest drifted, lint corrects. |
+
+Both writers use the `slug-map.ts` module's `renderSlugMap()` function. There is exactly one renderer; the difference is *when* it's called.
+
+**Who writes the backlinks sections?** Only lint. The backlinks regeneration is heavier (O(N²) in the worst case — every page's `[[wikilinks]]` parsed against every page's slug) and not worth running on every ingest. Ingest leaves pre-existing `<!-- AAB:BACKLINKS -->` sections untouched; if a freshly-created page has no backlinks section yet, that's fine — it appears on the next lint run.
+
+### 11.4 Why no path-prefixing — and the rename contract
+
+`[[slug]]` references contain no folder or extension. That lets us:
+
+- Move pages between folders (promote a `concept` to a `decision`, or split `entities/team.md` into per-person `entities/*.md`) without rewriting any links.
+- Rename a page's slug atomically via **`aab knowledge rename <old-slug> <new-slug>`** — the command rewrites every `[[old-slug]]`, every `related:` entry, every `aliases:` reference, and the `.manifest.json` entry, in a single atomic operation (uses the existing `proper-lockfile` workspace mutex).
+
+**Manual `mv` of a wiki page is unsupported and will break links.** Lint detects it (Glob finds no match for an existing `[[slug]]`) and the lint report recommends `aab knowledge rename --auto-fix <broken-slug>`. The `--auto-fix` mode picks the most likely new location via fuzzy match against existing slugs and prompts for confirmation.
+
+### 11.5 Backlinks (rendered into each page by lint)
+
+Lint computes the link graph on every run and writes a **Backlinks** section into the bottom of each page, between sentinel comments:
+
+```markdown
+<!-- AAB:BACKLINKS -->
+## Backlinks
+
+- [[pricing-strategy]] — "How we price the enterprise tier"
+- [[2026-q1-focus-enterprise]] — "Focusing on enterprise customers (Q1 2026)"
+- [[stripe-vs-lemonsqueezy]] — "Payment-provider comparison"
+<!-- /AAB:BACKLINKS -->
+```
+
+The sentinel pair is load-bearing — both ingest and `aab knowledge edit` preserve everything between `<!-- AAB:BACKLINKS -->` and `<!-- /AAB:BACKLINKS -->` and never overwrite it on regular updates. Lint is the only writer of this section.
+
+**Why backlinks are rendered into the file (not stored separately):** LLM agents reading a page see its backlinks inline — they don't need a second tool call or a special API. The cost is one section per page (10-30 lines) which is well under the page-body soft cap.
+
+### 11.6 Rendering for humans (the three surfaces)
+
+| Surface | Implementation | When |
+|---|---|---|
+| **Web UI page detail** (the Knowledge tab in `gui/`) | Markdown renderer preprocesses `[[slug]]` → `<a href="#/wiki/slug">…</a>`. Unresolved links render in red. Tooltip on hover shows the target's `summary:` frontmatter. Block-link anchors (`[[slug#section]]`) scroll to the section. | **MVP for the Knowledge tab** — see §18. Not deferred to polish. |
+| **`aab knowledge show <slug>`** (CLI) | Replaces `[[slug]]` with `slug ("Target Title")` using the slug-map. Unresolved links print as `[[slug]] ⚠ unresolved`. The backlinks section already rendered by lint prints as-is. | Chunk 1 of phasing (§24). |
+| **`$EDITOR` editing** | We don't render — we **recommend Foam** (free VS Code extension). Foam speaks `[[wikilinks]]` natively (Obsidian flavor): graph view, autocomplete, click navigation, backlinks panel, unresolved-link highlighting. `aab init --foam` (§17) emits a `.vscode/extensions.json` recommending Foam. `aab doctor` surfaces a non-blocking info-level "consider installing Foam" check. | Zero engineering. Recommendation only. |
+
+**Why Foam and not "build our own VS Code extension"**: Foam exists, is free, is MIT-licensed, is actively maintained, and is `[[wikilink]]`-compatible with our spec out of the box. Building our own would be weeks of work for a feature one extension install gives users today.
+
+### 11.7 What we explicitly DON'T do (the anti-features)
+
+| Don't | Why |
+|---|---|
+| Don't bundle Obsidian or require it to be installed | We're a CLI + Web UI. Users shouldn't need Obsidian to use the wiki. |
+| Don't write a custom VS Code extension | Foam exists and does the job. |
+| Don't add a vector index over the wiki body | Tiered retrieval (Grep summaries → Read bodies) is enough for our scale. Future extension §26.1. |
+| Don't render `[[slug]]` in source-of-truth markdown files | The files stay portable. Rendering happens only at the consumption surface (Web UI, `aab knowledge show`). |
+| Don't support transclusion `![[slug]]` in v1 | Adds runtime complexity. Agents can Read both files. Deferred §26.6. |
+| Don't support block IDs `[[slug#^block-id]]` in v1 | Adds runtime complexity. Header anchors `[[slug#header]]` cover the common case. Deferred §26.7. |
+| Don't allow path-prefixed links `[[concepts/foo]]` | Couples links to folders. The whole point of slugs is folder-independence. Lint rejects. |
+
+### 11.8 The summary, in one paragraph
+
+`[[slug]]` is the right syntax — LLM-friendly, folder-agnostic, Foam-compatible, massive training-data coverage. The "brilliance" of Karpathy's pattern is not Obsidian's runtime; it's the **convention that an LLM can write and read densely interlinked markdown without any special infrastructure**. We preserve that brilliance by owning three thin layers: a lint-maintained **slug-map in `wiki/index.md`** for cheap agent-time resolution, **lint-maintained backlinks** rendered into each page, and a **Web UI markdown preprocessor** for human navigation. For the rare case of a human editing manually, we recommend **Foam** (zero engineering on our side, full Obsidian-style experience inside VS Code). Manual file moves are unsupported; **`aab knowledge rename` is the only sanctioned way to rewrite a slug** — atomic across the file, every `[[link]]`, every `related:`, every `aliases:`, and the manifest.
 
 ---
 
@@ -399,13 +512,23 @@ the page footer, not the filename.
 
 ## Cross-references
 Use `[[kebab-slug]]` everywhere. `[[slug|Display Text]]` is allowed.
-Slugs are unique across the entire wiki — lint enforces this.
+Block links `[[slug#section-header]]` point to a markdown header inside the
+target. Transclusion `![[slug]]` and block-id refs `[[slug#^id]]` are NOT
+supported in v1. Path-prefixed links `[[concepts/foo]]` are NOT allowed.
+Slugs (plus any aliases) are globally unique — lint enforces this.
+
+**Resolving a `[[wikilink]]` without Obsidian:** the slug→path map lives in
+`wiki/index.md` between the `<!-- AAB:SLUG-MAP -->` sentinels and is
+maintained by lint. Read it first. If a slug is missing from the map (stale
+index), `Glob 'wiki/**/<slug>.md'` returns the file (uniqueness guarantees
+≤1 hit). Manual file moves are unsupported — use `aab knowledge rename`.
 
 ## Frontmatter (every page)
 ```yaml
 ---
 title: …
 slug: …                 # must match filename minus .md
+aliases: []             # optional alternate slugs; share global namespace
 type: concept | entity | decision | source-summary | comparison
 summary: ≤200 chars one-line synopsis
 tags: [free-form]
@@ -536,11 +659,28 @@ A single JSON file at the workspace root tracking every ingestion. Format:
       "lastEditedAt": "2026-05-09T11:14:02.000Z",
       "editorHint": "manual"
     }
+  ],
+  "renames": [
+    {
+      "id": "ren_01H99…",
+      "from": "wiki/concepts/old-slug.md",
+      "to":   "wiki/concepts/new-slug.md",
+      "fromSlug": "old-slug",
+      "toSlug":   "new-slug",
+      "at": "2026-05-19T10:14:55.123Z",
+      "trigger": "manual",
+      "rewroteRefs": 12,
+      "rewroteRelated": 3,
+      "rewroteAliases": 0,
+      "rewroteManifestEntries": 2
+    }
   ]
 }
 ```
 
-**Why a manifest at all**: deduplication (same hash → skip), provenance audit, cost accounting, and to track human-edited pages so the LLM warns before overwriting them. Every ingest call updates the manifest atomically (the existing `writeJsonAtomic` helper at `src/storage/io.ts` handles this).
+**Why a manifest at all**: deduplication (same hash → skip), provenance audit, cost accounting, track human-edited pages so the LLM warns before overwriting them, and **track every rename so producedPages/updatedPages stay coherent**. Every ingest call AND every rename updates the manifest atomically (the existing `writeJsonAtomic` helper at `src/storage/io.ts` handles this; the workspace mutex serializes concurrent updates).
+
+**Rename behavior on the manifest:** when `aab knowledge rename old → new` runs, it (1) rewrites every `entries[*].producedPages` and `entries[*].updatedPages` entry from `wiki/<folder>/old-slug.md` to `wiki/<folder>/new-slug.md`, (2) rewrites every matching `userEditedPages[*].page`, (3) appends a `renames[]` entry recording the move. Lint reads `renames[]` to suggest cleanup of stale `[[old-slug]]` references that might still live in `raw/` for forensic purposes (not rewritten — `raw/` is immutable). `trigger` is `manual` (CLI call), `lint-recommended` (lint surfaced a broken link and the user ran `--auto-fix`), or `foam-reconcile` (lint detected Foam-driven file move + `aab knowledge rename --reconcile` ran to align the manifest).
 
 **`sourceType`** values: `file | url | pasted | discussion | summary | discussion-rerun`.
 
@@ -568,11 +708,18 @@ frontmatter). The schema is in `wiki/KNOWLEDGE.md` — read it first if you
 haven't this session.
 
 **To find context for a question:**
-1. `Read wiki/index.md` — the catalog.
+1. `Read wiki/index.md` — the catalog AND the canonical slug→path map
+   (look for the `<!-- AAB:SLUG-MAP -->` section near the bottom; it lists
+   every page's slug, file path, type, and one-line summary, including
+   aliases). This is your cheap-pass retrieval and your link resolver.
 2. `Grep wiki/` for keywords from the question (target the `summary:` and
-   `tags:` frontmatter fields first; they're the cheap pass).
+   `tags:` frontmatter fields first; they're the next cheap pass).
 3. `Read` 3-10 of the most relevant pages.
-4. Follow `[[wikilinks]]` to connected pages when useful.
+4. Follow `[[wikilinks]]` to connected pages when useful. Resolve them via
+   the slug-map in step 1. If a slug isn't in the slug-map (stale index),
+   fall back to `Glob 'wiki/**/<slug>.md'` — slug uniqueness guarantees ≤1
+   hit. Block links (`[[slug#section-header]]`) point to a specific markdown
+   header inside the target page; just Read the page and find the header.
 
 **When citing in your response:** put the wiki slugs you actually used into
 your `sources` field. E.g., `sources: ["wiki/concepts/pricing-strategy",
@@ -580,7 +727,8 @@ your `sources` field. E.g., `sources: ["wiki/concepts/pricing-strategy",
 
 **Never write to `wiki/`.** The ingest agent owns mutation. If you discover
 something worth filing, mention it in your `actionableInsights` so the user
-can ingest it explicitly.
+can ingest it explicitly. Do not attempt to rename slugs — that's
+`aab knowledge rename`'s job.
 ```
 
 This addendum is appended once at member-emit time. Members read it as part of their system prompt — no extra round-trips.
@@ -606,10 +754,11 @@ This addendum is appended once at member-emit time. Members read it as part of t
    - **Tools:** `Read, Grep, Glob, Write, Edit, WebFetch`.
    - **`maxTurns`:** 30 (a single ingest can touch dozens of pages).
    - **System prompt:** the ingest skill prompt (see template below).
-   - **User message:** "Ingest the source at `<rawPath>`. Read it; read `wiki/KNOWLEDGE.md`; read `wiki/index.md`; create or update wiki pages following the schema; cite this source in `sources` frontmatter; append to `wiki/log.md`."
+   - **User message:** "Ingest the source at `<rawPath>`. Read it; read `wiki/KNOWLEDGE.md`; **read `wiki/index.md` (including the `<!-- AAB:SLUG-MAP -->` section — this is your `[[wikilink]]` resolver and your cheap-pass page catalog)**; create or update wiki pages following the schema; cite this source in `sources` frontmatter; append to `wiki/log.md`."
 4. **Parse the agent's final message.** It must return JSON: `{producedPages: string[], updatedPages: string[], skipped: string[], notes?: string}`. Use `safeParseJSON` (`src/core/parsing/safe-json.ts`) — fall back to a "scan tool calls for write paths" heuristic if JSON fails.
-5. **Atomic manifest update.** Append the new entry, bump `updatedAt`, write atomically via `writeJsonAtomic`.
-6. **Return** the ingest result (cost, pages produced/updated, notes).
+5. **Rebuild the slug-map.** Call `slug-map.ts:renderSlugMap()` to regenerate the `<!-- AAB:SLUG-MAP -->` section of `wiki/index.md`. Cheap O(N). Runs even if the agent emitted no JSON (defensive against partial completions). See §11.3.
+6. **Atomic manifest update.** Append the new entry, bump `updatedAt`, write atomically via `writeJsonAtomic`.
+7. **Return** the ingest result (cost, pages produced/updated, notes).
 
 **Ingest skill prompt template** (proposed; lives at `src/core/prompts/skill-ingest.ts`):
 
@@ -629,18 +778,35 @@ to incorporate its information.
 
 ## Your procedure
 1. Read the source.
-2. Identify the 3-10 most important claims, entities, concepts, decisions.
-3. For each: does a wiki page exist? Decide: create / update / skip.
-4. When creating: pick the right type (concept | entity | decision |
+2. **Read `wiki/index.md` — including the `<!-- AAB:SLUG-MAP -->` section.**
+   This is your resolver: every existing page's slug, file path, type, and
+   one-line summary lives here (aliases too). Use it to decide whether a
+   page already exists and to emit accurate `[[wikilinks]]`.
+3. Identify the 3-10 most important claims, entities, concepts, decisions.
+4. For each: does a wiki page exist (check the slug-map first)? Decide:
+   create / update / skip.
+5. When creating: pick the right type (concept | entity | decision |
    source-summary | comparison). Use `[[wikilinks]]` to connect to existing
-   pages liberally. Write proper frontmatter (see schema).
-5. ALWAYS create a `wiki/sources/<humanized>.md` for this source — even if
+   pages liberally — every connection compounds value. Write proper
+   frontmatter (see schema). Use `aliases:` SPARINGLY — only when there's
+   a real ambiguity (e.g., common short form, recent rename); aliases share
+   the global slug namespace and dilute the slug-map.
+6. **Block links (`[[slug#section-header]]`) are allowed** when you want
+   to point at a specific markdown header. Block IDs (`[[slug#^id]]`) and
+   transclusion (`![[slug]]`) are NOT supported — do not emit them.
+7. **Path-prefixed links (`[[concepts/foo]]`) are NOT allowed.** Slug is
+   canonical. Folder location is incidental.
+8. ALWAYS create a `wiki/sources/<humanized>.md` for this source — even if
    the rest of the ingest is small. The source page is the audit trail.
-6. NEVER overwrite a page where frontmatter `userEdited: true`. Skip and
+9. NEVER overwrite a page where frontmatter `userEdited: true`. Skip and
    list it under `skipped` in your final output.
-7. Update `wiki/index.md`: add new pages to the appropriate sections.
-8. Append a single line to `wiki/log.md` with the ingest timestamp and the
-   list of pages you touched.
+10. Update `wiki/index.md`: add new pages to the appropriate sections of the
+    catalog. **DO NOT touch the `<!-- AAB:SLUG-MAP -->` section** — the
+    orchestrator regenerates that section after your run.
+11. **DO NOT touch any `<!-- AAB:BACKLINKS -->` section** in any page —
+    lint owns those.
+12. Append a single line to `wiki/log.md` with the ingest timestamp and the
+    list of pages you touched.
 
 ## Output
 After all writes, return ONLY this JSON object:
@@ -672,20 +838,31 @@ The user can pipe `--out outputs/query-<ts>.md` to archive the answer; or `--sav
 **Triggered by:** `aab knowledge lint [--write]`. Optionally cron-able by the user (out of scope for v1).
 
 **Pipeline:**
-1. Walk `wiki/` (Glob `wiki/**/*.md`). Parse each page's frontmatter.
-2. Build the link graph: for each page, parse `[[slugs]]` from body + `related:` field. Compute backlinks.
-3. Static checks (no LLM):
-   - Slug uniqueness across all folders.
+1. Walk `wiki/` (Glob `wiki/**/*.md`). Parse each page's frontmatter (`slug`, `aliases`, `type`, `summary`, `sources`, `related`, `confidence`, `provenance`, `created`, `updated`, `userEdited`).
+2. Build the link graph: for each page, parse `[[slugs]]` from body + block-link refs `[[slug#header]]` + `related:` field. Compute backlinks. Resolve every link via the slug+aliases namespace.
+3. **Static checks (no LLM):**
+   - **Slug + alias uniqueness** across the global namespace (slug collisions AND alias-vs-slug collisions are errors).
    - Frontmatter completeness (`title, slug, type, summary, sources, created, updated`).
-   - Broken `[[wikilinks]]` (target slug not found).
+   - Broken `[[wikilinks]]` (target slug + aliases lookup returns nothing).
+   - Broken block-link anchors (`[[slug#section]]` where the target page exists but has no matching `## Section` header — kebab-cased to compare).
+   - **Path-prefixed links** (`[[concepts/foo]]`, `[concepts/foo](./concepts/foo.md)`) — flag as `error`; the agent or human should rewrite to `[[foo]]`.
+   - **Forbidden link forms in source-of-truth markdown:** transclusion `![[slug]]` and block-id refs `[[slug#^id]]` — flag as `warn` (the Web UI preprocessor renders them as deferred-feature placeholders, but they shouldn't accumulate in the corpus).
    - Broken `sources:` (referenced `raw/` file missing).
    - Orphan pages (zero incoming links — except `index.md` and `log.md`).
-4. LLM checks (one `runClaude` call, model = `fastModel`, tools = `Read, Grep, Glob`):
+   - **Manifest drift after manual or Foam-driven file moves:** any `manifest.entries[*].producedPages` or `userEditedPages[*].page` referencing a file that no longer exists on disk → flag as `error` with suggested fix `aab knowledge rename --reconcile`.
+   - **Alias cap:** total aliases across the wiki exceeds `knowledgeWiki.maxAliasesGlobal` (default 100, warn at 80, error past 100).
+   - Sentinel integrity: every page that should have a `<!-- AAB:BACKLINKS -->` ... `<!-- /AAB:BACKLINKS -->` pair has both halves; `wiki/index.md` has both halves of `<!-- AAB:SLUG-MAP -->` (if `slugMapInIndex: true`).
+4. **Maintenance writes (no LLM, lint is the only writer):**
+   - **Rebuild the slug-map** in `wiki/index.md` via `slug-map.ts:renderSlugMap()`. Idempotent. Adds aliases as inline annotations (`stripe-inc (alias: stripe)`).
+   - **Regenerate the `<!-- AAB:BACKLINKS -->` section** at the bottom of every page from the freshly-computed link graph. Pages without the sentinel pair get one appended; pages with the pair get the inner content replaced. Heavier than the slug-map rebuild (O(N²) in worst case); justified because lint is the canonical link-graph authority.
+5. **LLM checks** (one `runClaude` call, model = `fastModel`, tools = `Read, Grep, Glob`):
    - Contradiction scan: any page where two `sources:` say different things on the same claim.
    - Stale-claim scan: pages older than `lintStaleDays` (default 90) where a more recent source contradicts.
    - Missing-concept scan: `[[wikilinks]]` referenced ≥3 times but page doesn't exist.
-5. Write `outputs/lint-<yyyy-mm-dd>.md`. Pretty-print. Group by severity (`error | warn | info`).
-6. Optional: print a summary to stdout (counts per severity).
+6. Write `outputs/lint-<yyyy-mm-dd>.md`. Pretty-print. Group by severity (`error | warn | info`). Each finding includes the suggested fix command (e.g., `aab knowledge rename --auto-fix <slug>`, `aab knowledge ingest --paste`).
+7. Optional: print a summary to stdout (counts per severity).
+
+**Tools allowed:** `Read, Grep, Glob, Write` (last one only to `wiki/index.md` slug-map, per-page backlinks sections, and `outputs/lint-<date>.md` — lint MUST NOT touch page bodies outside of the sentinel regions).
 
 ---
 
@@ -750,8 +927,15 @@ aab knowledge list                       List all wiki pages, grouped by type.
   [--user-edited]                        Only pages marked userEdited: true.
 
 aab knowledge show <slug>                Pretty-print one wiki page (frontmatter + body + backlinks).
+                                         [[slug]] references are resolved via the slug-map and rendered
+                                         as `slug ("Target Title")` for resolved; `[[slug]] ⚠ unresolved`
+                                         for misses. Aliases resolve like canonical slugs.
 
 aab knowledge edit <slug>                Open the page in $EDITOR. Marks userEdited: true on save.
+                                         Preserves content inside <!-- AAB:BACKLINKS --> sentinels
+                                         verbatim. For wiki/index.md specifically, also preserves
+                                         <!-- AAB:SLUG-MAP --> sentinels. (Editing inside sentinels by
+                                         hand is allowed but will be overwritten on the next lint run.)
 
 aab knowledge open <slug>                Print absolute filesystem path (handy for piping into editors).
 
@@ -767,6 +951,69 @@ aab knowledge graph                      Print the link graph in DOT format (for
 
 aab knowledge backfill <discussion-id>   Manually run the auto-ingest hook for one past discussion.
                                          (Useful when the hook was off when it concluded.)
+
+aab knowledge rename <old-slug> <new-slug>   Atomically rename a slug across the entire wiki.
+                                             Rewrites the file path, every [[old-slug]] reference in
+                                             every page body, every `related:` frontmatter entry, every
+                                             `aliases:` declaration, and the .manifest.json entry.
+                                             Uses the workspace mutex (proper-lockfile) — the rename is
+                                             all-or-nothing. This is the ONLY supported way to rename a
+                                             wiki page; manual `mv` breaks links.
+  [--dry-run]                              Print the diff without writing.
+  [--auto-fix]                             Used by lint's broken-link recommendation: takes a single
+                                           slug argument and finds the most likely target via fuzzy
+                                           match, then prompts for confirmation.
+  [--reconcile]                            Reconcile the manifest with the current filesystem state.
+                                           Used after a Foam-driven rename (Foam rewrites [[wikilinks]]
+                                           inside the wiki, but doesn't know about .manifest.json or
+                                           our aliases:). Scans every manifest entry's producedPages /
+                                           updatedPages / userEditedPages.page for stale paths,
+                                           fuzzy-matches each against existing files, and rewrites
+                                           the manifest atomically. Records the resulting rename in
+                                           manifest.renames[] with trigger='foam-reconcile'.
+
+aab knowledge related <slug>             Walk the link neighborhood of a slug — outgoing wiki-links,
+                                         incoming backlinks, and (with --depth N) N hops out.
+  [--depth <n>]                          Default 1. Caps at 5 to prevent explosion.
+  [--out <path>]                         Save as a markdown report.
+                                         (Used by the ingest agent before filing a new page, so it can
+                                         see the local neighborhood — not just `index.md` — when deciding
+                                         where to link.)
+
+aab knowledge unresolved                 List every [[wikilink]] in the wiki whose target slug doesn't
+                                         exist (checked against the union of canonical slugs AND
+                                         aliases — aliases count as resolved). Same check lint performs,
+                                         surfaced as a fast on-demand command (no LLM call, ~milliseconds).
+                                         Output format (markdown by default):
+                                           ## Unresolved wiki-links
+                                           - `[[foo-bar]]` referenced in wiki/concepts/pricing-strategy.md:12
+                                             — closest existing slug: `foo-baz` (Levenshtein 2)
+  [--json]                               Machine-readable output: {unresolved: [{slug, refs: [{file,line}], suggestion?}]}
+  [--suggest-fixes]                      Fuzzy-match each unresolved slug against existing slugs and
+                                         suggest the most likely intended target.
+```
+
+**`aab init` additions (for the wiki):**
+
+```
+aab init [--foam]                        When --foam is passed (or settings.knowledgeWiki.recommendFoam
+                                         is true), `aab init` also writes a `.vscode/extensions.json`
+                                         file recommending `foam.foam-vscode`. The user's VS Code will
+                                         prompt to install Foam on first open of the workspace, giving
+                                         them autocomplete + click-navigation + graph view + backlinks
+                                         panel inside their editor — at zero cost to us.
+                                         The Foam recommendation is non-blocking — the wiki works
+                                         without it. Foam is for editing comfort, not correctness.
+
+                                         Behavior when .vscode/extensions.json already exists:
+                                           - If the file contains foam.foam-vscode in recommendations,
+                                             no-op (idempotent).
+                                           - If the file exists but doesn't list Foam, MERGE: parse JSON,
+                                             append "foam.foam-vscode" to the recommendations array,
+                                             write back atomically. Preserves any other recommendations.
+                                           - If JSON parse fails, refuse to overwrite — print a warning
+                                             and recommend the user fix the file manually.
+                                           - Behind --foam-overwrite (rare), replace the file unconditionally.
 ```
 
 All commands respect global flags (`--workspace`, `--json`, `--verbose`).
@@ -775,7 +1022,7 @@ All commands respect global flags (`--workspace`, `--json`, `--verbose`).
 
 ## 18. Web UI surface
 
-(Phase 6.5 follow-on; not part of the initial wiki Phase 1.5 cut.)
+(Phase 6.5 follow-on; not part of the initial wiki Phase 1.5 cut. **Exception:** the `[[slug]]` preprocessor in the markdown renderer is MVP — see §18.1.)
 
 New sidebar item: **Knowledge** (icon: book / graph). Replaces the "Business Context" item that the current UI may eventually have.
 
@@ -783,27 +1030,67 @@ New sidebar item: **Knowledge** (icon: book / graph). Replaces the "Business Con
 
 1. **Graph view** (default landing). A force-directed graph: nodes are wiki pages (color-coded by type), edges are wiki-links. Hover a node → frontmatter `summary:` in a tooltip. Click a node → opens page detail. Filter by type. Search bar at top.
 2. **Page list** (table view). Columns: title, type, summary, tags, updated, confidence. Sortable. Filter chips for type and orphan status.
-3. **Page detail**. Rendered markdown body, sidebar showing frontmatter + sources (link to `raw/`) + backlinks list. "Edit" opens an inline markdown editor (saves back via `aab knowledge edit` mechanism).
+3. **Page detail**. Rendered markdown body, sidebar showing frontmatter + sources (link to `raw/`) + backlinks list. "Edit" opens an inline markdown editor (saves back via `aab knowledge edit` mechanism). **The markdown renderer preprocesses `[[wikilinks]]` — see §18.1.**
 4. **Raw sources list**. Table of all `raw/` files, showing: filename, source type, ingested at, hash, produced pages (links into the wiki).
 5. **Ingest panel**. Drag-drop file zone, URL input, paste textarea. Posting triggers `POST /api/knowledge/ingest`; the ingest result streams back over WS (same pattern as discussions).
 6. **Query panel**. Question textarea, "Ask" button. Streams the answer with clickable citations (each citation opens the wiki page detail).
 7. **Lint panel**. Run-now button; shows the latest `outputs/lint-*.md` rendered. Severity filter chips.
 
+### 18.1 The `[[slug]]` markdown preprocessor (MVP, not polish)
+
+The Knowledge tab is unusable without `[[slug]]` rendering. A raw `[[unit-economics]]` is dead text for a human; click navigation between pages is the whole point of the graph idea. So the preprocessor ships in the **first** Knowledge-tab cut, not as future polish.
+
+**Behavior:**
+
+| Input | Rendered as | Notes |
+|---|---|---|
+| `[[unit-economics]]` (resolves) | `<a href="#/wiki/unit-economics" data-slug="unit-economics" title="<summary>">Unit Economics</a>` | The title attribute fires a tooltip on hover showing the target's `summary:` frontmatter. The link text is the target's `title:` field. |
+| `[[unit-economics\|UE]]` (display override) | `<a href="#/wiki/unit-economics" data-slug="unit-economics" title="<summary>">UE</a>` | Display text from after the pipe. |
+| `[[foo-bar]]` (unresolved — no such slug) | `<span class="wiki-unresolved" data-slug="foo-bar" title="No page with this slug exists">[[foo-bar]]</span>` | Renders red. Clicking opens the ingest panel with a pre-filled "create page" template. |
+| `[[unit-economics#core-formula]]` (block link) | `<a href="#/wiki/unit-economics#core-formula" …>Unit Economics — Core Formula</a>` | Anchor scrolls the target page detail to the matching `<h2 id="core-formula">`. |
+| `![[slug]]` (transclusion — not supported) | Rendered as literal text with a tooltip explaining transclusion is deferred (§26.6). | Don't silently swallow it. |
+
+**Implementation:** the preprocessor runs after the markdown-to-HTML stage and before the sanitizer. Lives at `gui/wikilinks.js` (vanilla JS, no build step — matches the rest of `gui/`). Uses the slug-map from `GET /api/knowledge/state` (cached client-side, invalidated on `wiki_ingest_done` WS events). ~60 lines.
+
+**Backlinks panel in the page-detail sidebar:** reads the `<!-- AAB:BACKLINKS -->` section already rendered into the page by lint. The Web UI doesn't re-compute backlinks — the file is the source of truth (consistent with the LLM's view).
+
 **API endpoints to add to `src/gui/server.ts`:**
 
 ```
-GET    /api/knowledge/state              { pageCount, byType, lastIngestAt, totalCostUsd }
+GET    /api/knowledge/state              {
+                                           pageCount,
+                                           byType,                       // { concept: N, entity: N, ... }
+                                           lastIngestAt,
+                                           totalCostUsd,
+                                           slugMap: {                    // for the gui/wikilinks.js preprocessor
+                                             [slug]: {
+                                               path:    "concepts/unit-economics.md",
+                                               title:   "Unit Economics",
+                                               type:    "concept",
+                                               summary: "..."
+                                             },
+                                             ...
+                                           },
+                                           aliases: {                    // alias → canonical-slug
+                                             [alias]: "canonical-slug",
+                                             ...
+                                           }
+                                         }
 GET    /api/knowledge/pages              [{ slug, title, type, summary, tags, updated, … }]
 GET    /api/knowledge/pages/:slug        { frontmatter, body, backlinks, rawSources[] }
-POST   /api/knowledge/pages/:slug        Save edits (server marks userEdited:true)
+POST   /api/knowledge/pages/:slug        Save edits (server marks userEdited:true; preserves sentinels)
+POST   /api/knowledge/pages/:slug/rename { newSlug } → triggers `aab knowledge rename` programmatically
 POST   /api/knowledge/ingest             multipart upload OR { url } OR { paste }; streams progress over WS
 POST   /api/knowledge/ingest/discussion/:id  Auto-ingest hook trigger
 POST   /api/knowledge/query              { question } → { answer, citations[], cost }
 POST   /api/knowledge/lint               kicks off lint; streams progress; returns lint-<date>.md content
+POST   /api/knowledge/unresolved         { unresolved: [{slug, refs, suggestion?}] }  (fast, no LLM)
 GET    /api/knowledge/graph              { nodes: [{slug,type}], edges: [{from,to}] }
 GET    /api/knowledge/raw                List raw sources
 GET    /api/knowledge/raw/:hash          Stream raw file content
 ```
+
+**Slug-map caching strategy in the Web UI:** `GET /api/knowledge/state` returns the full slug-map (the entire response is a few KB even at 500 pages). The client caches it in memory; the cache is invalidated on every `wiki_ingest_done` / `wiki_lint_done` WS event by re-fetching `state`. Reads against the cache are synchronous (no round-trip per `[[wikilink]]` render).
 
 WS event types to add:
 - `wiki_ingest_started` `{ rawPath, sourceType }`
@@ -894,6 +1181,15 @@ For each converted item:
 | User changes workspace (`aab workspace switch`) | The wiki is per-workspace; the new workspace has its own (possibly empty) wiki. Member sub-agents read the *current* workspace's wiki. |
 | Wiki gets very large (1000+ pages) | Tiered retrieval keeps cost flat. Optional QMD plugin (§26) for sub-second semantic search. |
 | Ingest produces a contradiction with an existing claim | Both pages get `provenance: ambiguous`; the body of each gets a `^[ambiguous]` marker explaining the disagreement. Lint promotes to `warn`. |
+| User manually renames or moves a wiki page in their editor (e.g., `mv concepts/foo.md decisions/foo.md`, or rename to `bar.md`) | Lint's broken-link scan detects every `[[foo]]` whose Glob hit count is 0. The lint report severity is `error` and the suggested fix is `aab knowledge rename --auto-fix foo` — which fuzzy-matches against existing slug filenames (top hit: the renamed file) and prompts the user to confirm. After confirmation, the rename command rewrites every `[[old]]` → `[[new]]`, every `related:`, every `aliases:`, and the manifest. **The takeaway: `aab knowledge rename` is the only sanctioned rename path; manual moves are not "supported" but ARE recoverable.** |
+| User declares an alias that already exists as another page's slug | Lint flags as `error` (global slug+alias namespace collision). Suggested fix: change the alias, or merge the two pages via `aab knowledge rename`. |
+| User installs Foam in VS Code and uses Foam's rename command on a wiki page | Foam rewrites every `[[wikilink]]` inside the wiki on rename — that's compatible with our spec. However, Foam doesn't know about `.manifest.json` or our `aliases:` frontmatter. Run `aab knowledge lint` after a Foam-driven rename; it'll detect the manifest drift and suggest `aab knowledge rename --reconcile` to fix it. |
+| Agent emits `[[some-slug]]` for a page that doesn't exist yet, intending to create it | Allowed during ingest. The agent should then create the page in the same turn. If the ingest ends with an unresolved `[[slug]]`, lint flags as `warn` (not `error`) and lists under "Missing concepts" — if referenced ≥3 times, lint suggests creating. |
+| Aliases bloat the slug-map until it dominates `wiki/index.md` | Hard cap: 100 total aliases across the wiki. Lint warns at 80. The slug-map in `index.md` renders aliases as inline annotations (`stripe-inc (alias: stripe)`) to keep the row count manageable. |
+| Agent emits a path-prefixed link like `[[concepts/foo]]` or `[concepts/foo](./concepts/foo.md)` | Lint flags as `error` (forbidden by §11.1). Suggested fix: rewrite to `[[foo]]`. The agent's system prompt and the ingest prompt template both forbid path-prefixed forms (§14, §15.1) — recurring violations indicate a prompt regression. |
+| Agent emits `![[slug]]` (transclusion) or `[[slug#^block-id]]` (block ID) | Lint flags as `warn` (forbidden in v1 per §11.1). The Web UI preprocessor renders them as literal text with a deferred-feature tooltip; they shouldn't accumulate in the corpus. Suggested fix: replace with `[[slug]]` (transclusion) or `[[slug#section-header]]` (block ID). |
+| Concurrent ingest + lint runs targeting the same workspace | Workspace mutex (`proper-lockfile`) serializes them. The second to acquire waits. Each completes atomically; the slug-map ends up in whichever state the *last* writer left it (lint is idempotent against ingest's state, so a stale slug-map after concurrent ingest gets corrected on the next lint). |
+| `wiki/index.md` itself has `userEdited: true` because the user manually edited the catalog | Lint preserves the catalog portion verbatim and regenerates only the content between `<!-- AAB:SLUG-MAP -->` / `<!-- /AAB:SLUG-MAP -->`. The `userEdited: true` flag is respected for everything outside the sentinels. |
 
 ---
 
@@ -914,6 +1210,13 @@ knowledgeWiki: {
   summarySoftCap: number;                    // default: 200 chars; lint warns above
   exposeToMemberAgents: boolean;             // default: true (the system-prompt addendum)
   exposeToOrchestrator: boolean;             // default: true (opens orchestrator.allowedTools)
+  recommendFoam: boolean;                    // default: true (aab init writes .vscode/extensions.json
+                                             //   recommending foam.foam-vscode; aab doctor surfaces an
+                                             //   info-level "consider installing Foam" check)
+  slugMapInIndex: boolean;                   // default: true (lint maintains the <!-- AAB:SLUG-MAP --> section
+                                             //   in wiki/index.md). Disable only for debugging — agents rely on it.
+  maxAliasesGlobal: number;                  // default: 100 (lint warns at 80, errors past 100;
+                                             //   bloating aliases dilutes the slug-map's cheap-pass value)
 }
 ```
 
@@ -927,14 +1230,14 @@ Each chunk is independently shippable and testable.
 
 | # | Chunk | Deliverables |
 |---|---|---|
-| 1 | **Wiki skeleton + manifest** | `paths.ts` adds `wiki`, `raw`, `manifest`, `outputs`. `aab init` emits `wiki/KNOWLEDGE.md` + empty `wiki/index.md` + `wiki/log.md`. `.manifest.json` initialized. New `src/core/knowledge/manifest.ts` (load/save/dedup). New `src/core/knowledge/page.ts` (frontmatter parse/serialize, slug helpers). |
-| 2 | **File / text / paste ingest** | `src/core/knowledge/ingest.ts`. `src/core/prompts/skill-ingest.ts` (the prompt template). `aab knowledge ingest <path>` and `aab knowledge ingest --paste`. Manifest dedup. Atomic writes. PDF support via Read tool. |
+| 1 | **Wiki skeleton + manifest + interlinking foundation** | `paths.ts` adds `wiki`, `raw`, `manifest`, `outputs`. `aab init` emits `wiki/KNOWLEDGE.md` + empty `wiki/index.md` (with empty `<!-- AAB:SLUG-MAP -->` and `<!-- /AAB:SLUG-MAP -->` sentinels) + `wiki/log.md`. `.manifest.json` initialized. New `src/core/knowledge/manifest.ts` (load/save/dedup). New `src/core/knowledge/page.ts` (frontmatter parse/serialize including `aliases:`; slug helpers; `[[wikilink]]` extraction; block-link parsing for `[[slug#section]]`). New `src/core/knowledge/slug-map.ts` (build slug-map from wiki, render into `index.md` between sentinels, parse it back). New `src/core/knowledge/rename.ts` + `aab knowledge rename` command (atomic cross-file rewrite of slug + body + related + aliases + manifest, using the workspace mutex). `aab knowledge show <slug>` pretty-prints `[[slug]]` references. `aab init --foam` emits `.vscode/extensions.json` recommending `foam.foam-vscode`. `aab doctor` adds info-level Foam check. |
+| 2 | **File / text / paste ingest** | `src/core/knowledge/ingest.ts`. `src/core/prompts/skill-ingest.ts` (the prompt template). `aab knowledge ingest <path>` and `aab knowledge ingest --paste`. Manifest dedup. Atomic writes. PDF support via Read tool. Ingest agent is instructed to read the slug-map in `wiki/index.md` before creating `[[wikilinks]]` so it can link generously and accurately. |
 | 3 | **URL ingest** | WebFetch path; `raw/urls/<hash>.md` + `.meta.json`. Re-fetch with `--force`. |
-| 4 | **Member + orchestrator integration** | Append the §14 system-prompt addendum to every emitted member agent file (`src/agents/emit-member-agent.ts`). Open `orchestrator.allowedTools = ['Read', 'Grep', 'Glob']`. Settings flag `exposeToMemberAgents`, `exposeToOrchestrator`. |
+| 4 | **Member + orchestrator integration** | Append the §14 system-prompt addendum (with slug-map resolution instructions) to every emitted member agent file (`src/agents/emit-member-agent.ts`). Open `orchestrator.allowedTools = ['Read', 'Grep', 'Glob']`. Settings flag `exposeToMemberAgents`, `exposeToOrchestrator`. |
 | 5 | **Auto-ingest hook on discussion conclude** | `conversation-flow.ts` post-conclude: render transcript + summary to `raw/`, run ingest. Wrapped in try/catch; never blocks discussion completion. Settings flag `autoIngestDiscussions`. |
-| 6 | **Query + lint commands** | `src/core/knowledge/query.ts`, `src/core/knowledge/lint.ts`. `aab knowledge query`, `aab knowledge lint`. Static + LLM lint passes. `outputs/lint-<date>.md`. |
+| 6 | **Query + lint commands** | `src/core/knowledge/query.ts`, `src/core/knowledge/lint.ts`. `aab knowledge query`, `aab knowledge lint` (static checks include slug+alias uniqueness, broken `[[wikilinks]]`, broken block-link anchors, manifest drift after Foam-driven renames; LLM passes for contradictions and stale claims). Lint **maintains the slug-map** in `wiki/index.md` and the **backlinks sections** in every page. `aab knowledge unresolved` (fast on-demand sibling of lint, no LLM call). `aab knowledge related <slug>` (link-graph walker). `outputs/lint-<date>.md`. |
 | 7 | **Migrate + retire BusinessContext** | `aab knowledge migrate`. Update `loadBusinessContextSafe` to no-op when wiki present. Delete inline business-context block from `build-user-message.ts`. Rename `business-context.json` → `business-context.json.migrated.bak`. Drop `BusinessContext` CRUD methods (`fs-storage-service.ts:165-186`). |
-| 8 | **Web UI** | Knowledge tab with graph, list, detail, ingest, query, lint panels. WS events. `/api/knowledge/*` endpoints. |
+| 8 | **Web UI (Knowledge tab) — with `[[slug]]` preprocessor as MVP** | Knowledge tab with graph, list, detail, ingest, query, lint panels. WS events. `/api/knowledge/*` endpoints. **`gui/wikilinks.js` preprocessor is MVP, not deferred polish** — markdown renderer in page-detail view turns `[[slug]]` into `<a>` (with hover tooltip showing target's `summary:`); unresolved links render red; block-link anchors scroll the target. Slug-map fetched from `/api/knowledge/state`, cached client-side, invalidated on `wiki_ingest_done` WS events. Backlinks panel reads the `<!-- AAB:BACKLINKS -->` section from the page file (no re-computation). |
 
 **Order matters**: chunks 1-3 can ship independently of the rest (the wiki exists, you can ingest into it, but agents don't read it yet). Chunk 4 turns it on for discussions. Chunk 5 makes it self-feeding. Chunks 6-7 close the loop. Chunk 8 is UI polish on top.
 
@@ -945,18 +1248,22 @@ Each chunk is independently shippable and testable.
 (Slot into the existing testing plan in PLAN.md §4.7.)
 
 - **Unit tests** (`src/core/knowledge/__tests__/`):
-  - `page.test.ts` — frontmatter round-trip; slug ↔ filename; backlink computation.
-  - `manifest.test.ts` — dedup; atomic update; concurrent ingest (proper-lockfile).
-  - `slug.test.ts` — humanization rules; collision suffixing.
+  - `page.test.ts` — frontmatter round-trip (including `aliases:`); slug ↔ filename; `[[wikilink]]` + `[[slug#header]]` extraction; sentinel preservation on partial-page edits.
+  - `manifest.test.ts` — dedup; atomic update; concurrent ingest (proper-lockfile); `renames[]` append; `producedPages` rewrite-on-rename.
+  - `slug.test.ts` — humanization rules; collision suffixing; reserved-word handling.
+  - **`slug-map.test.ts`** — sentinel render/parse round-trip; alias annotation rendering; idempotency of `renderSlugMap()` (render → parse → render produces identical bytes); large-wiki perf (500 pages < 500ms).
+  - **`rename.test.ts`** — atomic cross-file rewrite of file + body refs + `related:` + `aliases:` + manifest `producedPages`/`updatedPages`/`userEditedPages`; `--dry-run` produces a diff without writing; `--auto-fix` fuzzy-matches; `--reconcile` aligns manifest with current filesystem state after a Foam-driven move; rename of slug that's also an alias on another page errors out.
 - **Integration tests** (mocked Claude):
-  - `ingest-file.test.ts` — feed a small markdown source through the ingest pipeline; assert wiki pages, manifest, log all updated.
-  - `auto-ingest.test.ts` — mock a concluded discussion; assert auto-ingest fires and produces a `wiki/sources/*.md`.
-  - `migrate.test.ts` — feed a fixture `business-context.json`, assert the expected wiki page set.
-  - `lint.test.ts` — fixture wiki with known issues; assert the lint report flags them all.
+  - `ingest-file.test.ts` — feed a small markdown source through the ingest pipeline; assert wiki pages, manifest, log, **and the slug-map section in `wiki/index.md`** all updated.
+  - `auto-ingest.test.ts` — mock a concluded discussion; assert auto-ingest fires and produces a `wiki/sources/*.md`; slug-map reflects the new page.
+  - `migrate.test.ts` — feed a fixture `business-context.json`, assert the expected wiki page set, slug-map populated, manifest seeded.
+  - `lint.test.ts` — fixture wiki with: orphan page, broken `[[wikilink]]`, broken `[[slug#missing-header]]`, path-prefixed link, transclusion attempt, stale manifest entry, alias collision. Assert the lint report flags them all at correct severity AND that the slug-map and backlinks sections are rebuilt.
+- **Frontend tests** (`gui/__tests__/` — vanilla JS, no build step):
+  - **`wikilinks.test.js`** — preprocessor unit tests: resolved → `<a>`; unresolved → `<span class="wiki-unresolved">`; `[[slug|Display]]` honors display text; `[[slug#section]]` produces fragment anchor; `![[slug]]` renders literal with placeholder tooltip; cache invalidation on `wiki_ingest_done` WS event.
 - **Golden-file tests** for prompts:
-  - `skill-ingest.golden.md` — input source + wiki snapshot → expected page diff. Re-baseline with `AAB_UPDATE_GOLDENS=1`.
-  - `skill-query.golden.md` — input question + wiki snapshot → expected answer.
-- **Live test** (`AAB_LIVE_TEST=1`): end-to-end ingest of a real PDF + a real URL + a real discussion conclude → assert manifest grows, agent can answer a query that requires wiki context.
+  - `skill-ingest.golden.md` — input source + wiki snapshot (including slug-map) → expected page diff + slug-map diff. Re-baseline with `AAB_UPDATE_GOLDENS=1`.
+  - `skill-query.golden.md` — input question + wiki snapshot → expected answer (citing slugs).
+- **Live test** (`AAB_LIVE_TEST=1`): end-to-end ingest of a real PDF + a real URL + a real discussion conclude → assert manifest grows, slug-map in `wiki/index.md` reflects every page, `aab knowledge rename` round-trip leaves zero broken links, agent can answer a query that requires wiki context.
 
 ---
 
@@ -972,6 +1279,9 @@ Out of scope for v1, but the architecture supports them cleanly:
 6. **Cross-board sharing.** Export selected wiki pages as a portable bundle for sharing between users or boards.
 7. **Audit log views.** Web UI panel that renders `wiki/log.md` as a timeline.
 8. **Slack / email ingest.** `aab knowledge ingest --from slack-export.zip` to bulk-import past conversations.
+9. **Transclusion / embed (`![[slug]]`).** Inlines a target page's body at the link site. Useful for "shared definitions" patterns where one canonical paragraph appears in multiple pages. Deferred from v1 because (a) agents can `Read` both files directly, (b) it complicates the Web UI preprocessor (recursive expansion + cycle detection + truncation), and (c) lint must also expand to compare claims. Re-evaluate after Phase 1 closeout based on actual user demand.
+10. **Block-level addressing (`[[slug#^block-id]]`).** Obsidian-style block references — link to a specific paragraph or list item, not just a heading. Requires every block to have a stable id, which means either explicit markup (`^block-abc` suffix) or a lint-maintained id index. Header anchors (`[[slug#section]]`) cover ~95% of the use cases at zero runtime cost; the remaining 5% (citing a specific bullet from a long discussion summary) isn't worth the indexing complexity in v1.
+11. **Foam graph view embedded in the Web UI.** Foam already produces a graph view inside VS Code. Phase 6.5+ could embed Foam's open-source graph component directly in `gui/` — sharing the same rendering between editor and dashboard. Investigate once §18's force-directed graph ships and we know the perf characteristics.
 
 ---
 
@@ -994,6 +1304,12 @@ Out of scope for v1, but the architecture supports them cleanly:
 | **Tiered retrieval** | The pattern of Grepping summaries before opening bodies. Performance-critical. |
 | **Auto-ingest hook** | The mechanism that fires ingest on every concluded discussion. |
 | **Cheap pass** | A search restricted to titles, tags, summaries (frontmatter only). Used before opening page bodies. |
+| **Foam** | Free, MIT-licensed VS Code extension ([foambubble.github.io](https://foambubble.github.io/foam/)) that speaks `[[wikilinks]]` natively (Obsidian-compatible flavor). We recommend it for users who edit the wiki manually in `$EDITOR` — gives autocomplete + click-navigation + backlinks panel + graph view inside VS Code at zero engineering cost to us. `aab init --foam` writes a `.vscode/extensions.json` recommending it. |
+| **Slug map** | The lint-maintained section in `wiki/index.md` (between `<!-- AAB:SLUG-MAP -->` sentinel comments) listing every page's slug, path, type, and one-line summary — plus aliases as inline annotations. The agent-time link resolver's cheap pass: agents read this map first to resolve `[[wikilinks]]` without trial-and-error Globs. |
+| **Block link** | `[[slug#section-header]]` — a wiki-link to a specific markdown header inside the target page. Anchor uses GFM kebab-case rules. Supported in v1; the Obsidian-flavored block-id form `[[slug#^id]]` is NOT (deferred §26.10). |
+| **Alias** | An alternate slug declared in a page's `aliases:` frontmatter field. Both the canonical slug and aliases resolve to the same file. Aliases share the global slug namespace — lint enforces uniqueness across the union. |
+| **Resolver** | The agent-time mechanism that turns `[[slug]]` into a file path. Algorithm: cheap-pass via the slug map → fallback via `Glob 'wiki/**/<slug>.md'` → unresolved (report to lint). See §11.3. |
+| **Sentinel comments** | Pairs of HTML comments (e.g., `<!-- AAB:BACKLINKS -->` / `<!-- /AAB:BACKLINKS -->`, `<!-- AAB:SLUG-MAP -->` / `<!-- /AAB:SLUG-MAP -->`) marking lint-managed regions inside a markdown file. Ingest and `aab knowledge edit` preserve content inside sentinels verbatim. Only lint writes inside them. |
 
 ---
 

@@ -92,19 +92,31 @@ Live progress tracker. Each item is a concrete deliverable. Phase numbering matc
 5. Auto-ingest from concluded discussions is **ON by default** (`knowledgeWiki.autoIngestDiscussions: true`).
 6. No vector DB / embeddings in v1 — markdown + Grep/Glob is the retrieval primitive.
 
-### Chunk 1 — Wiki skeleton + manifest
+**Added 2026-05-19 (interlinking design — full spec at `KNOWLEDGE_WIKI.md` §11):**
+7. **Keep `[[slug]]` syntax; ship our own thin runtime** (slug-map in `wiki/index.md` + Glob fallback + Web UI `[[slug]]` preprocessor + lint-maintained backlinks sections). Don't bundle Obsidian. Don't write a custom VS Code extension — **recommend Foam** (free, MIT, Obsidian-compatible) instead.
+8. **`aab knowledge rename` is the only sanctioned slug-rename path** — atomic cross-file rewrite of file + body + `related:` + `aliases:` + manifest, under the workspace mutex. Manual `mv` breaks links and is recoverable only via `aab knowledge rename --auto-fix`.
+9. **Transclusion `![[slug]]` and block IDs `[[slug#^id]]` are NOT supported in v1.** Header anchors `[[slug#section]]` ARE supported. Path-prefixed links `[[concepts/foo]]` are NOT allowed — slug is canonical.
+10. **Foam recommendation defaults ON** (`knowledgeWiki.recommendFoam: true`). `aab init --foam` writes `.vscode/extensions.json`; `aab doctor` adds an info-level check.
+
+### Chunk 1 — Wiki skeleton + manifest + interlinking foundation
 
 - [ ] `src/storage/paths.ts` adds `wiki`, `raw`, `manifest`, `outputs` paths
-- [ ] `src/core/knowledge/page.ts` — frontmatter parse/serialize (YAML), slug ↔ filename helpers, `[[wikilink]]` extraction, body kebab-case humanizer
+- [ ] `src/core/knowledge/page.ts` — frontmatter parse/serialize (YAML, including `aliases:`), slug ↔ filename helpers, `[[wikilink]]` extraction (including block links `[[slug#section]]`), body kebab-case humanizer
 - [ ] `src/core/knowledge/manifest.ts` — load/save (atomic), dedup by hash, append entry, mark `userEditedPagesSkipped`
-- [ ] `src/core/knowledge/schema-emitter.ts` — emits `wiki/KNOWLEDGE.md` from a string template (per `KNOWLEDGE_WIKI.md` §12)
-- [ ] `aab init` writes `wiki/KNOWLEDGE.md`, empty `wiki/index.md`, empty `wiki/log.md`, empty `.manifest.json`, empty `outputs/` and `raw/{files,urls,pasted,discussions,summaries}/` dirs (idempotent — never overwrites existing)
+- [ ] `src/core/knowledge/schema-emitter.ts` — emits `wiki/KNOWLEDGE.md` from a string template (per `KNOWLEDGE_WIKI.md` §12, including the slug-map resolver instructions and the no-transclusion/no-block-id rules)
+- [ ] **`src/core/knowledge/slug-map.ts`** — build slug-map (slug+aliases → path) from a wiki walk; render into `wiki/index.md` between `<!-- AAB:SLUG-MAP -->` and `<!-- /AAB:SLUG-MAP -->` sentinels; parse back from the rendered table (the latter is what query/lint use)
+- [ ] **`src/core/knowledge/rename.ts`** — atomic cross-file slug rewrite: file path, every `[[old]]` in every page body (including block-link forms `[[old#section]]`), every `related:` entry, every `aliases:` declaration on other pages, every `.manifest.json` `entries[*].producedPages` / `entries[*].updatedPages` / `userEditedPages[*].page` entry, and append a `renames[]` log entry (per `KNOWLEDGE_WIKI.md` §13). Uses workspace mutex. Returns a diff for `--dry-run`.
+- [ ] **`aab knowledge rename <old-slug> <new-slug>`** — `[--dry-run]` `[--auto-fix]` `[--reconcile]` (the last reconciles manifest with filesystem after a Foam-driven move; see `KNOWLEDGE_WIKI.md` §17 and §22)
+- [ ] **`aab knowledge show <slug>`** — pretty-prints `[[slug]]` references using the slug-map (`slug ("Target Title")` for resolved, `[[slug]] ⚠ unresolved` for unresolved)
+- [ ] `aab init` writes `wiki/KNOWLEDGE.md`, empty `wiki/index.md` **(with empty `<!-- AAB:SLUG-MAP -->` / `<!-- /AAB:SLUG-MAP -->` sentinels in place)**, empty `wiki/log.md`, empty `.manifest.json`, empty `outputs/` and `raw/{files,urls,pasted,discussions,summaries}/` dirs (idempotent — never overwrites existing)
 - [ ] `aab init`-emitted `.gitignore` template recommends `raw/` (sensitive sources) but NOT `wiki/` (committable curated knowledge)
+- [ ] **`aab init --foam`** writes `.vscode/extensions.json` recommending `foam.foam-vscode` (toggleable via `knowledgeWiki.recommendFoam`, default true)
+- [ ] **`aab doctor`** adds info-level check: if `wiki/` exists but no `.vscode/extensions.json` recommends Foam, suggest `aab init --foam`
 
 ### Chunk 2 — File / text / paste ingest
 
-- [ ] `src/core/prompts/skill-ingest.ts` — the ingest prompt template (per `KNOWLEDGE_WIKI.md` §15.1)
-- [ ] `src/core/knowledge/ingest.ts` — orchestrates: hash → manifest dedup → write to `raw/<bucket>/` → run ingest agent → parse JSON output → atomic manifest update
+- [ ] `src/core/prompts/skill-ingest.ts` — the ingest prompt template (per `KNOWLEDGE_WIKI.md` §15.1). Prompt instructs the agent to **read the slug-map in `wiki/index.md` first** so `[[wikilinks]]` it emits resolve correctly to existing pages.
+- [ ] `src/core/knowledge/ingest.ts` — orchestrates: hash → manifest dedup → write to `raw/<bucket>/` → run ingest agent → parse JSON output → **call `slug-map.ts:renderSlugMap()` to rebuild the `<!-- AAB:SLUG-MAP -->` section in `wiki/index.md`** (per `KNOWLEDGE_WIKI.md` §11.3 + §15.1 step 5) → atomic manifest update
 - [ ] `aab knowledge ingest <path>` — md, txt, pdf paths
 - [ ] `aab knowledge ingest --paste` — read from stdin
 - [ ] `aab knowledge ingest --force` — re-ingest even when hash already in manifest
@@ -119,11 +131,11 @@ Live progress tracker. Each item is a concrete deliverable. Phase numbering matc
 
 ### Chunk 4 — Member + orchestrator integration
 
-- [ ] `src/agents/emit-member-agent.ts` appends the Knowledge Wiki stanza (per `KNOWLEDGE_WIKI.md` §14) to the AAB:GENERATED block of every member file
+- [ ] `src/agents/emit-member-agent.ts` appends the Knowledge Wiki stanza (per `KNOWLEDGE_WIKI.md` §14) to the AAB:GENERATED block of every member file. **The stanza tells members the slug-map lives in `wiki/index.md` between `<!-- AAB:SLUG-MAP -->` sentinels and how to resolve `[[wikilinks]]` (cheap-pass slug-map → Glob fallback).**
 - [ ] `src/core/discussion/orchestrator.ts:51` — `allowedTools = ['Read', 'Grep', 'Glob']`
 - [ ] Settings: `knowledgeWiki.exposeToMemberAgents: true`, `knowledgeWiki.exposeToOrchestrator: true`
 - [ ] `aab members sync-agents` regenerates with the new addendum (one-time op for existing workspaces)
-- [ ] Smoke test: a member call on a wiki-populated workspace shows `Read` / `Grep` tool calls in the stream-json events
+- [ ] Smoke test: a member call on a wiki-populated workspace shows `Read` / `Grep` tool calls in the stream-json events. The member's structured response `sources` field contains at least one resolved wiki slug.
 
 ### Chunk 5 — Auto-ingest hook on discussion conclude
 
@@ -133,13 +145,20 @@ Live progress tracker. Each item is a concrete deliverable. Phase numbering matc
 - [ ] User HITL responses (`aab discuss respond` bodies) auto-ingest as paste-style raw inputs (settings: `knowledgeWiki.autoIngestUserResponses: true`)
 - [ ] `aab knowledge backfill <discussion-id>` — manually run the hook for a past discussion
 
-### Chunk 6 — Query + Lint
+### Chunk 6 — Query + Lint + interlinking-maintenance commands
 
-- [ ] `src/core/prompts/skill-query.ts` — query prompt template
+- [ ] `src/core/prompts/skill-query.ts` — query prompt template (mirrors the §14 member addendum on slug-map resolution)
 - [ ] `src/core/knowledge/query.ts` — one-shot Sonnet call with Read/Grep/Glob, max 15 turns
 - [ ] `aab knowledge query "<question>"` — supports `--max-pages`, `--out`, `--save-as concept|entity|...`
-- [ ] `src/core/knowledge/lint.ts` — static checks (slug uniqueness, broken links, orphans, missing frontmatter, broken sources) + LLM passes (contradictions, stale claims via `fastModel`)
+- [ ] `src/core/knowledge/lint.ts` — full procedure per `KNOWLEDGE_WIKI.md` §15.3:
+  - Static checks: slug+alias uniqueness (global namespace), frontmatter completeness, broken `[[wikilinks]]`, broken `[[slug#header]]` anchors, **forbidden link forms** (path-prefixed `[[concepts/foo]]`, transclusion `![[slug]]`, block IDs `[[slug#^id]]`), broken `sources:`, orphans, **manifest drift** (entries pointing to deleted files → suggest `aab knowledge rename --reconcile`), **alias cap** (warn at 80, error past 100), **sentinel integrity** (both halves of `<!-- AAB:BACKLINKS -->` / `<!-- AAB:SLUG-MAP -->` present where expected)
+  - LLM passes (`fastModel`): contradictions, stale claims, missing concepts (referenced ≥3×)
+- [ ] **Lint maintains the slug-map** in `wiki/index.md` between the `<!-- AAB:SLUG-MAP -->` sentinels (idempotent rebuild — same `renderSlugMap()` function ingest uses)
+- [ ] **Lint maintains per-page backlinks** between `<!-- AAB:BACKLINKS -->` sentinels in every page (regenerated each run; the only writer)
+- [ ] **Lint's allowed tools:** `Read, Grep, Glob, Write` — Write is restricted to slug-map section, backlinks sections, and `outputs/lint-<date>.md`. Lint MUST NOT touch page bodies outside sentinels.
 - [ ] `aab knowledge lint [--write]` — writes `outputs/lint-<yyyy-mm-dd>.md`, prints summary counts
+- [ ] **`aab knowledge unresolved [--json] [--suggest-fixes]`** — fast on-demand sibling of lint, no LLM call (~milliseconds); lists every `[[wikilink]]` whose target slug doesn't exist; `--suggest-fixes` fuzzy-matches against existing slugs
+- [ ] **`aab knowledge related <slug> [--depth N] [--out <path>]`** — link-graph walker (outgoing `[[wikilinks]]` + incoming backlinks; default depth 1, max 5). Used by the ingest agent before filing a page so it sees the local neighborhood.
 
 ### Chunk 7 — Migrate + retire BusinessContext
 
@@ -151,31 +170,38 @@ Live progress tracker. Each item is a concrete deliverable. Phase numbering matc
 - [ ] Drop `loadBusinessContext` / `saveBusinessContext` / `updateBusinessContext` / `deleteBusinessContext` from `src/storage/fs-storage-service.ts:165-186` after migrate
 - [ ] Delete `BusinessContext` and `BusinessProfile` types from `src/storage/types.ts:242-276`
 
-### Chunk 8 — Web UI: Knowledge tab
+### Chunk 8 — Web UI: Knowledge tab (with `[[slug]]` preprocessor as MVP)
 
 - [ ] Sidebar item: **Knowledge** (graph icon)
 - [ ] Default view: graph (force-directed; nodes = pages by type, edges = wiki-links; hover for `summary:`)
 - [ ] Page list view (sortable table; type/orphan filter chips)
 - [ ] Page detail view (rendered markdown + frontmatter sidebar + sources links + backlinks list + edit button)
+- [ ] **`gui/wikilinks.js` — MVP `[[slug]]` preprocessor** (per `KNOWLEDGE_WIKI.md` §18.1): turns resolved `[[slug]]` into `<a href="#/wiki/slug" title="<summary>">Title</a>`; unresolved `[[foo]]` renders as `<span class="wiki-unresolved">[[foo]]</span>` (red); `[[slug|Display]]` honors display text; `[[slug#section]]` block links scroll to the matching `<h2 id>` anchor; `![[slug]]` renders literal with deferred-feature tooltip
+- [ ] Slug-map fetched from `GET /api/knowledge/state`, cached client-side, **invalidated on `wiki_ingest_done` WS event**
+- [ ] Backlinks panel in page-detail sidebar reads the `<!-- AAB:BACKLINKS -->` section from the page file (no re-computation — the file is source of truth)
 - [ ] Raw sources list view (table + filter)
 - [ ] Ingest panel (drag-drop file zone + URL input + paste textarea; streams progress over WS)
 - [ ] Query panel (textarea + answer with clickable citations)
 - [ ] Lint panel (run-now + render latest report)
 - [ ] WS events: `wiki_ingest_started`, `wiki_ingest_page_written`, `wiki_ingest_done`, `wiki_query_started`, `wiki_query_done`, `wiki_lint_done`
-- [ ] REST endpoints: `/api/knowledge/{state,pages,pages/:slug,ingest,ingest/discussion/:id,query,lint,graph,raw,raw/:hash}`
+- [ ] REST endpoints: `/api/knowledge/{state,pages,pages/:slug,ingest,ingest/discussion/:id,query,lint,graph,raw,raw/:hash}`. `state` response includes the slug-map for client-side caching.
 
 ### Cross-cutting (this phase)
 
 - [ ] `aab knowledge list [--type ...] [--orphans] [--user-edited]`
-- [ ] `aab knowledge show <slug>` (rendered: frontmatter + body + backlinks)
-- [ ] `aab knowledge edit <slug>` (opens `$EDITOR`, marks `userEdited: true`)
+- [ ] `aab knowledge show <slug>` (rendered: frontmatter + body + backlinks; `[[slug]]` references pretty-printed via slug-map)
+- [ ] `aab knowledge edit <slug>` (opens `$EDITOR`, marks `userEdited: true`; preserves content inside `<!-- AAB:BACKLINKS -->` and `<!-- AAB:SLUG-MAP -->` sentinels verbatim)
 - [ ] `aab knowledge open <slug>` (prints absolute path)
-- [ ] `aab knowledge stats` (page counts by type, total raw sources, last ingest, total ingest cost)
+- [ ] `aab knowledge stats` (page counts by type, total raw sources, last ingest, total ingest cost, slug count + alias count)
 - [ ] `aab knowledge graph [--out <path>]` (DOT format link graph)
-- [ ] Settings namespace: `knowledgeWiki.{enabled, autoIngestDiscussions, autoIngestUserResponses, ingestModel, queryModel, lintStaleDays, maxAgentPagesPerCall, pageBodySoftCap, summarySoftCap, exposeToMemberAgents, exposeToOrchestrator}` — all overridable via `aab settings set`
+- [ ] **`aab knowledge rename <old> <new> [--dry-run] [--auto-fix]`** (chunk 1)
+- [ ] **`aab knowledge related <slug> [--depth N] [--out <path>]`** (chunk 6)
+- [ ] **`aab knowledge unresolved [--json] [--suggest-fixes]`** (chunk 6)
+- [ ] Settings namespace: `knowledgeWiki.{enabled, autoIngestDiscussions, autoIngestUserResponses, ingestModel, queryModel, lintStaleDays, maxAgentPagesPerCall, pageBodySoftCap, summarySoftCap, exposeToMemberAgents, exposeToOrchestrator, recommendFoam, slugMapInIndex, maxAliasesGlobal}` — all overridable via `aab settings set`
 - [ ] `src/storage/types.ts:300` adds `knowledgeWiki` to `AppSettings` with seeded defaults
-- [ ] Tests: unit (`page.test.ts`, `manifest.test.ts`, `slug.test.ts`), integration (mocked Claude — `ingest-file.test.ts`, `auto-ingest.test.ts`, `migrate.test.ts`, `lint.test.ts`), golden-file (`skill-ingest.golden.md`, `skill-query.golden.md`)
-- [ ] Live test (`AAB_LIVE_TEST=1`): real PDF + URL + discussion conclude → manifest grows, agent answers wiki-grounded query
+- [ ] `aab init [--foam]` flag (chunk 1) and `aab doctor` Foam check (chunk 1)
+- [ ] Tests: unit (`page.test.ts`, `manifest.test.ts`, `slug.test.ts`, **`slug-map.test.ts`** for sentinel render/parse round-trip, **`rename.test.ts`** for atomic cross-file rewrite, **`wikilinks.test.js`** for the Web UI preprocessor), integration (mocked Claude — `ingest-file.test.ts`, `auto-ingest.test.ts`, `migrate.test.ts`, `lint.test.ts`), golden-file (`skill-ingest.golden.md`, `skill-query.golden.md`)
+- [ ] Live test (`AAB_LIVE_TEST=1`): real PDF + URL + discussion conclude → manifest grows, agent answers wiki-grounded query, slug-map in `wiki/index.md` reflects every page, `aab knowledge rename` round-trip leaves zero broken links
 
 ---
 

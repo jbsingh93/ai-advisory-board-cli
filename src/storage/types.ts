@@ -107,6 +107,15 @@ export interface UserResponse {
   targetType?: 'all' | 'specific' | 'subset';
   selectedMemberId?: string;
   selectedMemberIds?: string[];
+  /** When type === 'sparring_injection', the round/turn the injected insight
+   *  refers back to in the main timeline, plus the user's original sparring
+   *  trigger input (the message that prompted the deep-dive). */
+  sourceRoundNumber?: number;
+  sourceTurnNumber?: number;
+  sparringTriggerInput?: string;
+  /** When type === 'sparring_injection', the SparringSession id that produced
+   *  the insight. Useful for the UI to deep-link back to the original session. */
+  sparringSessionId?: string;
 }
 
 export interface ConversationRound {
@@ -233,6 +242,44 @@ export interface DecisionSession {
   status: 'active' | 'decided' | 'reflected';
   createdAt: string;
   updatedAt: string;
+}
+
+// ============================================================
+// Sparring (1:1 deep dive)
+// ============================================================
+
+export interface SparringSource {
+  title: string;
+  url: string;
+}
+
+export interface SparringMessage {
+  id: string;
+  sessionId: string;
+  role: 'user' | 'assistant';
+  content: string;
+  sources: SparringSource[];
+  createdAt: string;
+}
+
+export interface SparringSession {
+  id: string;
+  discussionId: string;
+  memberId: string;
+  memberName: string;
+  anchorRoundNumber: number;
+  anchorTurnNumber: number;
+  anchorResponsePreview: string;
+  title?: string;
+  messages: SparringMessage[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SparringInjectionContext {
+  sourceRoundNumber?: number;
+  sourceTurnNumber?: number;
+  sparringTriggerInput?: string;
 }
 
 // ============================================================
@@ -511,6 +558,21 @@ export interface StorageService {
   savePrinciple(principle: Principle): Promise<void>;
   updatePrinciple(principle: Principle): Promise<void>;
   deletePrinciple(id: string): Promise<void>;
+
+  // Decision sessions (principle-based coaching)
+  loadDecisionSessions(): Promise<DecisionSession[]>;
+  loadDecisionSessionById(id: string): Promise<DecisionSession | null>;
+  saveDecisionSession(session: DecisionSession): Promise<void>;
+  updateDecisionSession(session: DecisionSession): Promise<void>;
+  deleteDecisionSession(id: string): Promise<void>;
+
+  // Sparring sessions (1:1 deep dive)
+  loadSparringSessionsForDiscussion(discussionId: string): Promise<SparringSession[]>;
+  loadSparringSessionById(sessionId: string): Promise<SparringSession | null>;
+  saveSparringSession(session: SparringSession): Promise<void>;
+  updateSparringSession(session: SparringSession): Promise<void>;
+  deleteSparringSession(sessionId: string): Promise<void>;
+  saveSparringMessage(sessionId: string, message: SparringMessage): Promise<void>;
 
   // Business context / profile
   loadBusinessContext(): Promise<BusinessContext[]>;

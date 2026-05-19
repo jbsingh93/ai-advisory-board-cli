@@ -43,11 +43,15 @@
           <span class="nav-icon">👥</span>
           <span>Board members</span>
         </button>
-        <button class="nav-item" data-route="principles">
+        <button class="nav-item" data-route="principles" data-testid="nav-principles">
           <span class="nav-icon">🧭</span>
           <span>Principles</span>
         </button>
-        <button class="nav-item" data-route="knowledge">
+        <button class="nav-item" data-route="coach" data-testid="nav-coach">
+          <span class="nav-icon">🧠</span>
+          <span>Coach</span>
+        </button>
+        <button class="nav-item" data-route="knowledge" data-testid="nav-knowledge">
           <span class="nav-icon">📚</span>
           <span>Knowledge</span>
         </button>
@@ -126,6 +130,21 @@
 
     <!-- Toast container -->
     <div class="toast-container" id="toasts"></div>
+
+    <!-- Principle Explorer wizard modal -->
+    <div class="modal-backdrop" id="explorer-modal" hidden>
+      <div class="modal modal-wide">
+        <div class="modal-header">
+          <h2 id="explorer-modal-title">Principle Explorer</h2>
+          <button class="icon-btn" id="explorer-modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body" id="explorer-modal-body"></div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="explorer-modal-skip">Skip this step</button>
+          <button class="btn-primary" id="explorer-modal-next" hidden>Next step</button>
+        </div>
+      </div>
+    </div>
 
     <script type="module" src="app.js"></script>
   </body>

@@ -5,7 +5,7 @@
  * Writes are atomic; settings/members/principles also snapshot the previous
  * version under .snapshots/ before overwrite.
  */
-import { existsSync, readdirSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   AdvisoryBoardMember,
@@ -14,10 +14,13 @@ import {
   BusinessContext,
   BusinessProfile,
   ActionItem,
+  DecisionSession,
   DEFAULT_SETTINGS,
   Discussion,
   Principle,
   SkillGenerationRun,
+  SparringMessage,
+  SparringSession,
   StorageService,
   TokenUsageLog,
   UserPrompt,
@@ -156,6 +159,109 @@ export class FsStorageService implements StorageService {
       all.filter((p) => p.id !== id),
       { snapshotDir: this.p.snapshots },
     );
+  }
+
+  // ============================================================
+  // Decision sessions (one JSON file per session under decision-sessions/)
+  // ============================================================
+
+  async loadDecisionSessions(): Promise<DecisionSession[]> {
+    if (!existsSync(this.p.decisionSessions)) return [];
+    const files = readdirSync(this.p.decisionSessions)
+      .filter((f) => f.endsWith('.json'))
+      .sort();
+    const out: DecisionSession[] = [];
+    for (const f of files) {
+      const session = readJson<DecisionSession | null>(join(this.p.decisionSessions, f), null);
+      if (session) out.push(session);
+    }
+    out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return out;
+  }
+
+  async loadDecisionSessionById(id: string): Promise<DecisionSession | null> {
+    const path = join(this.p.decisionSessions, `${id}.json`);
+    if (!existsSync(path)) return null;
+    return readJson<DecisionSession | null>(path, null);
+  }
+
+  async saveDecisionSession(session: DecisionSession): Promise<void> {
+    if (!existsSync(this.p.decisionSessions)) mkdirSync(this.p.decisionSessions, { recursive: true });
+    writeJsonAtomic(join(this.p.decisionSessions, `${session.id}.json`), session);
+  }
+
+  async updateDecisionSession(session: DecisionSession): Promise<void> {
+    return this.saveDecisionSession({ ...session, updatedAt: nowIso() });
+  }
+
+  async deleteDecisionSession(id: string): Promise<void> {
+    const path = join(this.p.decisionSessions, `${id}.json`);
+    if (existsSync(path)) unlinkSync(path);
+  }
+
+  // ============================================================
+  // Sparring sessions (sparring/<discussionId>/<sessionId>.json)
+  // ============================================================
+
+  async loadSparringSessionsForDiscussion(discussionId: string): Promise<SparringSession[]> {
+    const dir = join(this.p.sparring, discussionId);
+    if (!existsSync(dir)) return [];
+    const files = readdirSync(dir).filter((f) => f.endsWith('.json')).sort();
+    const out: SparringSession[] = [];
+    for (const f of files) {
+      const session = readJson<SparringSession | null>(join(dir, f), null);
+      if (session) out.push(session);
+    }
+    out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return out;
+  }
+
+  async loadSparringSessionById(sessionId: string): Promise<SparringSession | null> {
+    if (!existsSync(this.p.sparring)) return null;
+    const discussionDirs = readdirSync(this.p.sparring, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+    for (const did of discussionDirs) {
+      const candidate = join(this.p.sparring, did, `${sessionId}.json`);
+      if (existsSync(candidate)) {
+        return readJson<SparringSession | null>(candidate, null);
+      }
+    }
+    return null;
+  }
+
+  async saveSparringSession(session: SparringSession): Promise<void> {
+    const dir = join(this.p.sparring, session.discussionId);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeJsonAtomic(join(dir, `${session.id}.json`), session);
+  }
+
+  async updateSparringSession(session: SparringSession): Promise<void> {
+    return this.saveSparringSession({ ...session, updatedAt: nowIso() });
+  }
+
+  async deleteSparringSession(sessionId: string): Promise<void> {
+    if (!existsSync(this.p.sparring)) return;
+    const discussionDirs = readdirSync(this.p.sparring, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+    for (const did of discussionDirs) {
+      const candidate = join(this.p.sparring, did, `${sessionId}.json`);
+      if (existsSync(candidate)) {
+        unlinkSync(candidate);
+        return;
+      }
+    }
+  }
+
+  async saveSparringMessage(sessionId: string, message: SparringMessage): Promise<void> {
+    const session = await this.loadSparringSessionById(sessionId);
+    if (!session) {
+      throw new Error(`Sparring session ${sessionId} not found`);
+    }
+    session.messages.push(message);
+    session.updatedAt = nowIso();
+    await this.saveSparringSession(session);
   }
 
   // ============================================================

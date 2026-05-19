@@ -205,53 +205,138 @@ Live progress tracker. Each item is a concrete deliverable. Phase numbering matc
 
 ---
 
-## Phase 2 — Members + Principles + Coach ⬜
+## Phase 2 — Members + Principles + Coach ✅
 
 ### Members CRUD
 
-- [ ] `aab members list` — flat or `--json` output
-- [ ] `aab members show <name>` — full persona / voice / tools
-- [ ] `aab members add` — interactive (name, title, expertise, persona OR `--enhance`)
-- [ ] `aab members edit <id|name>` — interactive field-by-field edit
-- [ ] `aab members enhance <id> [--type famous|expert|non-famous]` — AI-fill persona + voiceGuide via claude -p
-- [ ] `aab members delete <id>` — also removes `.claude/agents/<slug>.md`
-- [ ] `aab members sync-agents [--agents-dir <path>]` — regenerate all agent files (preserving `# AAB:GENERATED` marker)
-- [ ] `aab members tools <id> [--allow ... | --deny ...]` — per-member tool allowlist override
-- [ ] `aab members regenerate-voice <id>` — voice-guide-only refresh
+- [x] `aab members list` — flat or `--json` output; `--active` / `--inactive` filters
+- [x] `aab members show <name>` — full persona / voice / tools (resolves by id, short-id, or partial name)
+- [x] `aab members add` — interactive (name, title, expertise, persona OR `--enhance <type>`)
+- [x] `aab members edit <id|name>` — interactive field-by-field edit (also accepts flag-only edits for scripting)
+- [x] `aab members enhance <id> [--type famous|expert|non-famous] [--keep-voice]` — AI-fill persona + voiceGuide via `claude -p`
+- [x] `aab members delete <id> [--yes]` — also removes `.claude/agents/<slug>.md`
+- [x] `aab members sync-agents [--agents-dir <path>] [--all]` — regenerate all agent files (preserving `# AAB:GENERATED` marker)
+- [x] `aab members tools <id> [--allow ... | --deny ... | --reset]` — per-member tool allowlist override
+- [x] `aab members regenerate-voice <id> [--keep-old]` — voice-guide-only refresh
+
+#### Members UI (`gui/`; basic CRUD already shipped in 6.5)
+
+- [x] "Enhance with AI" button in member edit modal — opens type selector (famous / expert / non-famous), streams generation over WS (`member_enhance_started|_progress|_done|_failed`), fills persona + voiceGuide fields on completion
+- [x] Per-member tool allowlist editor — chip-based add/remove for `WebSearch`, `WebFetch`, `Read`, `Grep`, `Glob`; saves to member record + rewrites `.claude/agents/<slug>.md` `tools:` frontmatter. Empty selection coerced to `undefined` server-side so the default palette applies.
+- [x] "Regenerate agent files" button in members header — calls `POST /api/members/sync-agents`; toast confirmation with count
+- [x] "Regenerate voice" button per member card — calls voice-only refresh; preview-before-save dialog (browser `confirm()`)
+
+#### Members MCP regression specs (`specs/`)
+
+- [x] `specs/members-enhance.md` — open edit modal → click "Enhance with AI" → choose type → wait for streamed completion → fields populated → save → reload → persisted
+- [x] `specs/members-tools-allowlist.md` — open member → add a tool chip → save → reopen → persisted → on disk `.claude/agents/<slug>.md` frontmatter `tools:` line reflects the change
+- [x] `specs/members-sync-agents.md` — click "Regenerate agent files" → toast confirmation → `.claude/agents/` directory listing matches active member count
 
 ### Persona generation
 
-- [ ] `src/core/members/ai-enhancer.ts` — three template variants (`enhance_famous_person`, `enhance_top_expert`, `enhance_non_famous`)
-- [ ] `src/core/members/voice-guide.ts` — voice-only generator
-- [ ] `src/core/members/fallback-voice-guides.ts` — hardcoded fallback voices keyed by first name
+- [x] `src/core/members/ai-enhancer.ts` — three template variants (`famous` / `expert` / `non-famous`) calling `runClaude` (no Gemini), tolerant JSON parsing with regex fallback, BFI-2 + Cognitive Process suffix on famous variant
+- [x] `src/core/members/voice-guide.ts` — voice-only generator on the fast model (default Haiku), schema-validated, hardcoded fallback on parse/spawn failure
+- [x] `src/core/members/fallback-voice-guides.ts` — hardcoded fallback voices keyed by first name (Elon, Jobs, Bezos, Buffett, Graham/Reid → distinct prompts; otherwise generic with expertise context)
+- [x] `src/core/parsing/persona-schemas.ts` — zod schemas (`enhancementPayloadSchema`, `voiceGuidePayloadSchema`)
 
 ### Principles
 
-- [ ] `aab principles list [--category ...] [--active|--inactive]`
-- [ ] `aab principles add` — interactive
-- [ ] `aab principles edit <id>` — interactive
-- [ ] `aab principles delete <id>`
-- [ ] `aab principles seed-starters` — re-seed 8 starters into existing workspace
-- [ ] `aab principles explore [--principle <id>]` — Socratic 5-step wizard (behavior → anti-pattern → triggers → examples → priority)
+- [x] `aab principles list [--category ...] [--active|--inactive]`
+- [x] `aab principles show <id|title>` — full detail with description / behavior / anti-pattern / triggers / examples
+- [x] `aab principles add` — interactive
+- [x] `aab principles edit <id|title>` — interactive (and flag-only non-interactive)
+- [x] `aab principles delete <id|title> [--yes]`
+- [x] `aab principles seed-starters [--force]` — re-seed 8 starters into existing workspace
+- [x] `aab principles explore [--principle <id>]` — Socratic 5-step wizard (behavior → anti-pattern → triggers → examples → priority); `--auto-accept` for non-interactive; `--save-as-new` to clone a refined draft
+
+#### Principles UI (`gui/`; basic CRUD already shipped in 6.5)
+
+- [x] "🔎 Explore" button per principle card — opens `#explorer-modal` 5-step Socratic wizard (behavior → anti-pattern → triggers → examples → priority); the working-draft preview updates as steps are accepted; cross-step context posted to `/api/principles/explore-step`
+- [x] "🌱 Seed starters" button in principles header — disabled when principles already exist; one-click seeds the 8 Dalio-inspired starters via `POST /api/principles/seed-starters`
+
+#### Principles MCP regression specs (`specs/`)
+
+- [x] `specs/principles-explore-wizard.md` — click "Explore" on a principle → step 1 renders → answer → step 2 references step 1 answer → ... → step 5 → "Save" persists wizard output back into principle body
+- [x] `specs/principles-seed-starters.md` — empty workspace → "Seed starters" button visible and enabled → click → 8 cards appear → button disabled on second visit
 
 ### Decision Coach
 
-- [ ] `aab coach` — REPL session with streaming responses
-- [ ] `aab coach show <session>` — list past sessions or show one
-- [ ] `aab coach delete <session>`
-- [ ] `src/core/coach/decision-coach.ts` — uses `decision_coach_system` prompt with user's principles injected
-- [ ] `src/core/coach/principle-explorer.ts` — 5-step explorer flow with cross-step context
-- [ ] DecisionSession persistence (already in storage types, just need command wiring)
+- [x] `aab coach [--situation <text>] [--title <text>] [--resume <id>]` — REPL session with persisted state
+- [x] `aab coach send <sessionId> <message>` — one-shot non-interactive turn (used by smokes)
+- [x] `aab coach show [<sessionId>]` — list past sessions or show one
+- [x] `aab coach delete <session> [--yes]`
+- [x] `aab coach decide <session> <decision>` — record a recorded decision + flip status to `decided`
+- [x] `src/core/coach/decision-coach.ts` — `buildDecisionCoachSystemPrompt` injects user's principles ordered by priority desc; `coachReply` builds transcript, calls `runClaude`, persists turns, extracts referenced principle ids
+- [x] `src/core/coach/principle-explorer.ts` — 5-step explorer flow with cross-step context (`renderCrossStepContext` groups by step), `extractSuggested` regex per step, `applyStep` merges synthesized text into the working draft
+- [x] DecisionSession persistence — `loadDecisionSessions / loadDecisionSessionById / saveDecisionSession / updateDecisionSession / deleteDecisionSession` added to `StorageService` interface; one JSON file per session under `decision-sessions/`; updated-desc sort for list display
+
+#### Decision Coach UI (`gui/`)
+
+- [x] Sidebar item: **🧠 Coach** opens chat view (`data-route="coach"`, `data-testid="nav-coach"`)
+- [x] Coach chat view — message bubbles with principle-referenced footnotes (cross-referenced against `state.principles` to render readable names); "Coach thinking…" indicator while WS is in flight
+- [x] Session list panel — past sessions sorted by recency; click to resume; delete button per row with confirm modal
+- [x] "+ New session" button — opens the shared edit modal with `Title` + `Situation` fields; on save posts to `/api/coach/sessions` and auto-fires the opener turn via the WS event
+
+#### Decision Coach MCP regression specs (`specs/`)
+
+- [x] `specs/coach-chat.md` — open Coach → send message → streaming response renders → send follow-up → context preserved (response references prior turn)
+- [x] `specs/coach-session-list.md` — multiple sessions exist → list shows all sorted by recency → click middle → resumes with full history → delete oldest → confirm → removed from list
+
+### Tests
+
+- [x] `src/core/members/__tests__/ai-enhancer.test.ts` (10 tests) — buildPrompt per type, extractEnhancement JSON / fenced / regex / fallback paths, cleanPersonaText, composeEnhancedPersona
+- [x] `src/core/members/__tests__/fallback-voice-guides.test.ts` (5 tests) — name-based recognition + generic expertise fallback
+- [x] `src/core/coach/__tests__/decision-coach.test.ts` (11 tests) — buildDecisionCoachSystemPrompt priority order + inactive skip + empty fallback, renderPrincipleForPrompt, newDecisionSession, extractReferencedPrincipleIds, mergeAppliedPrinciples, buildTranscript
+- [x] `src/core/coach/__tests__/principle-explorer.test.ts` (23 tests) — system prompt + cross-step context, existing fields, extractSuggested per step (including anti-pattern hyphen variant + triggers numbered list), parseNumberedList, applyStep clamping
+- [x] Live CLI smoke (2026-05-19) — `members tools/reset`, `members regenerate-voice "Alexandra"` (real Haiku call), `members enhance "Julian" --type non-famous --keep-voice` (real Sonnet/Opus call), `coach send` (real multi-turn Sonnet flow referencing **Pain + Reflection = Progress**, **Be Direct and Honest**, **Disagree and Commit** by name)
+- [x] Live Playwright MCP smoke (2026-05-19) — `🧠 Coach` nav item visible; coach view renders session list + chat detail + composer; Principles tab renders all 8 starters with `🔎 Explore` button per card and **🌱 Seed starters** disabled; Members tab renders **↻ Regenerate agent files** header button + per-card **Edit / 🔊 Voice / Delete**
 
 ---
 
-## Phase 3 — Sparring (1:1 deep dive) ⬜
+## Phase 3 — Sparring (1:1 deep dive) ✅
 
-- [ ] `src/core/sparring/sparring-service.ts` — port with truncation budgets (14k discussion / 8k history / 4k bcontext / 4k anchor)
-- [ ] `aab discuss spar <id> --member <name> [--round N --turn M]` — opens REPL anchored to a response
-- [ ] `aab discuss inject <id> --from <session>` — write sparring insight back to main timeline as `sparring_injection`
-- [ ] `aab discuss spar list <discussion-id>` — list sparring sessions for a discussion
-- [ ] `aab discuss spar show <session-id>` — view a sparring session
+- [x] `src/core/sparring/sparring-service.ts` — port with truncation budgets (14k discussion / 8k history / 4k bcontext / 4k anchor). Truncation moved to dedicated `src/core/sparring/truncate.ts` for unit-testability; prompt builder is `src/core/sparring/build-sparring-prompt.ts`; inject-back logic is `src/core/sparring/inject-insight.ts`. Service uses researchModel (Opus) with the member's tool allowlist (default `WebSearch, WebFetch, Read, Grep, Glob`) and falls back to primaryModel (Sonnet) on failure. Token usage logged via `feature: 'sparring'`.
+- [x] `aab discuss spar <id> --member <name> [--round N --turn M]` — opens REPL anchored to a response. Also accepts `--message <text>` for one-shot non-interactive mode (used by smokes), `--resume <sessionId>` to continue a saved session, `--title <text>` to label the new session.
+- [x] `aab discuss inject <id> --from <session>` — write sparring insight back to main timeline as `sparring_injection`. Default insight = the latest assistant reply; overridable via `--insight "<text>"`; `--yes` skips confirmation prompt.
+- [x] `aab discuss spar list <discussion-id>` — list sparring sessions for a discussion (sorted by `updatedAt` desc).
+- [x] `aab discuss spar show <session-id>` — view a sparring session transcript (resolves by short-id prefix across all discussions).
+
+### UI (mirrors in `gui/`)
+
+- [x] "Spar" button on each response card in the discussion chat view — `data-testid="spar-btn"` on every `messageBubble`; opens a 1:1 panel anchored to that response's `(memberId, roundNumber, turnNumber)`.
+- [x] Sparring panel/view — `data-testid="sparring-modal"` with the anchored response shown as a sticky banner (`data-testid="sparring-anchor"`), transcript area (`data-testid="sparring-transcript"`) with role-styled bubbles, sources sub-section under each assistant reply, typing indicator (`data-testid="sparring-typing"`), composer (`data-testid="sparring-input"` + `sparring-send-btn`, Cmd/Ctrl+Enter shortcut), "↩ Inject insight back" button in the header (`data-testid="sparring-inject-btn"`).
+- [x] Sparring session list per discussion — accessed from chat-view header via "⚔ Sparring" button (`data-testid="sparring-sessions-btn"`); modal contains `data-testid="sparring-session-list"` with per-row `data-testid="sparring-session-row"` showing member · round · turn · message count · relative timestamp.
+- [x] Inject-confirmation modal — `data-testid="sparring-inject-modal"` with editable textarea (`data-testid="sparring-inject-textarea"`) pre-filled with the latest assistant reply; confirm button `data-testid="sparring-inject-confirm"` posts to `/api/sparring/:id/inject`; on success the sparring_injection lands in the timeline as a user bubble labeled "Sparring insight injected (via <member name>)".
+
+### REST + WS endpoints (`src/gui/server.ts`)
+
+- [x] `GET /api/discussions/:id/sparring` → `{ sessions: SparringSession[] }` (sorted by updatedAt desc).
+- [x] `POST /api/discussions/:id/sparring` → `{ session, reused }` — open or resume a session for (memberId, anchorRoundNumber, anchorTurnNumber); broadcasts `sparring_session_opened`.
+- [x] `GET /api/sparring/:sessionId` → `{ session }`.
+- [x] `DELETE /api/sparring/:sessionId` → 204; broadcasts `sparring_session_deleted`.
+- [x] `POST /api/sparring/:sessionId/messages` → 202 + WS stream `sparring_thinking → sparring_activity → sparring_message` (or `sparring_error` on failure).
+- [x] `POST /api/sparring/:sessionId/inject` → `{ discussion, injectedUserResponse }`; broadcasts `sparring_injected`.
+
+### Storage
+
+- [x] `SparringSession + SparringMessage + SparringSource + SparringInjectionContext` types added to `src/storage/types.ts`. `UserResponse` extended with `sparringSessionId` plus the existing `sourceRoundNumber / sourceTurnNumber / sparringTriggerInput` fields so `sparring_injection` rows carry full provenance.
+- [x] `StorageService` grows `loadSparringSessionsForDiscussion / loadSparringSessionById / saveSparringSession / updateSparringSession / deleteSparringSession / saveSparringMessage`.
+- [x] `FsStorageService` implements those — sessions land at `sparring/<discussionId>/<sessionId>.json` (one JSON file per session, atomic writes, sorted by `updatedAt` desc).
+
+### Playwright MCP regression specs (`specs/`)
+
+- [x] `specs/sparring-anchor-deepdive.md` — open discussion → click "Spar" on response (round 2, turn 1) → panel opens with anchor banner → send a message → response streams → close panel → reopen → state preserved.
+- [x] `specs/sparring-inject-back.md` — sparring session → click "Inject insight back" → preview modal → confirm → main discussion shows a new bubble with `type: 'sparring_injection'` + full provenance fields.
+- [x] `specs/sparring-session-list.md` — discussion with 3 spar sessions → list shows all three sorted by recency → click middle session → resumes with full history.
+
+### Tests
+
+- [x] `src/core/sparring/__tests__/truncate.test.ts` (7 tests) — caps match PLAN §4.3.15 verbatim, head/tail 70/30 split, label-in-marker, minimum-tail-80-chars clamp.
+- [x] `src/core/sparring/__tests__/build-sparring-prompt.test.ts` (12 tests) — member identity headers, voice-guide section visibility, anchor framing, rounds rendering with turn numbers, sparring history role prefixes, pendingUserMessage append, giant-context + giant-anchor truncation, no-JSON-wrap directive.
+- [x] `src/core/sparring/__tests__/inject-insight.test.ts` (10 tests) — empty-insight guard, no-rounds guard, anchor-round attachment, stale-anchor fallback to latest, provenance fields (`sparring_injection` type, sparringSessionId, sourceRoundNumber/Turn, prompt), `userResponses` append, source-round-userResponse no-clobber semantics, storage.updateDiscussion called once, `sourceRoundNumber` override.
+- [x] `src/core/sparring/__tests__/sparring-service.test.ts` (14 tests) — `pickAnchorResponse` (no responses → undefined; exact match; latest-turn-in-round fallback; latest-across-rounds default), `extractSourcesFromText` (no URLs, md links with titles, dedupe, bare-URL fallthrough, 5-source cap, trailing punctuation strip), `openSparringSession` (throws when no anchor; new session creation; idempotency reuse; long-preview truncation with ellipsis).
+- [x] Live CLI smoke (2026-05-19) — `aab discuss spar da720e41 --member "Elon Musk" --round 1 --turn 1 --message "Walk me through the unit economics…"` against the `smoke-kw-2026-05-19` workspace produced a real Opus deep-dive (~6kB markdown reply with tiered targets + cost-of-getting-it-wrong tables + "What I'd Actually Mandate in Your Q3 Plan" numbered list). `aab discuss spar list` showed the persisted session; `aab discuss inject <discussion> --from <session> --yes` wrote the `sparring_injection` UserResponse into the discussion with full provenance (sparringSessionId, selectedMemberId, sourceRoundNumber, sourceTurnNumber, prompt: "Injected from 1:1 Deep Dive with Elon Musk"). `aab discuss spar show` reloaded the transcript.
+- [x] Live Playwright MCP smoke (2026-05-19) — chat view rendered ⚔ Spar buttons on each `messageBubble`, ⚔ Sparring header button, the injected insight as a user bubble labeled "Sparring insight injected (via Elon Musk)"; clicking ⚔ Spar opened the sparring modal with the anchored response banner, full transcript replay (user + assistant from disk), ↩ Inject insight back button, and the composer; clicking ⚔ Sparring opened the session list modal showing "Sparring sessions · 1" with the Elon Musk · round 1 · turn 1 row.
 
 ---
 
@@ -273,6 +358,20 @@ Live progress tracker. Each item is a concrete deliverable. Phase numbering matc
 
 - [ ] `aab actions extract <discussion-id>` — structured-data fast path, LLM fallback when no `structuredData`
 - [ ] `src/core/actions/conversation-analyzer.ts` (port; Phase 1 noted it as supporting)
+
+### UI (mirrors in `gui/`; replaces read-only kanban view)
+
+- [ ] Drag-drop columns (pending → in-progress → completed) — cards reorder + change status; persisted via `/api/actions/:id` PATCH; optimistic update + WS reconciliation
+- [ ] Add-action modal — title, description, priority chip, due-date picker; submits to `/api/actions`
+- [ ] Inline edit (click card → expand to detail panel) — fields editable, save persists, cancel reverts
+- [ ] "Extract actions" button on concluded discussions — runs analyzer, surfaces candidate actions in an accept/reject list; accepted candidates become kanban cards
+- [ ] Card detail panel — linked-discussion link (anchor to round), linked skill-runs list, "Solve" button (Phase 5 dependency)
+
+### Playwright MCP regression specs (`specs/`)
+
+- [ ] `specs/actions-kanban-dragdrop.md` — drag card pending → in-progress → reload → status persisted
+- [ ] `specs/actions-add-edit.md` — open add modal → fill fields → submit → card appears in pending → click card → edit description → save → reload → persisted
+- [ ] `specs/actions-extract-from-discussion.md` — concluded discussion → click "Extract actions" → candidate list renders → accept 2 reject 1 → kanban shows the 2 accepted
 
 ---
 
@@ -335,9 +434,29 @@ The "Solve" action: turn one action item into one installed Claude Code skill.
 - [ ] `aab prompts edit <key>` — open `$EDITOR`, validate placeholders + required fragments
 - [ ] `aab prompts reset <key>` / `reset-all`
 
+### UI (mirrors in `gui/`; the whole skill-creator surface is new in 6.5)
+
+- [ ] "Solve" button on action cards (Phase 4 surface) — launches the skill-creator pipeline, opens the run-detail view, broadcasts step events over WS
+- [ ] Preflight wizard modal — capability detection results, per-capability accept/reject, env-var prompts, MCP server prompts; submits to `/api/actions/:id/solve` with the answered profile
+- [ ] Run-detail view — live telemetry pane (current step, turn count, tool-call list), package-critic score panel (7-dim rubric bars), security-review badge, repair-pass attempt counter, abort button
+- [ ] Runs list per action — past runs with timestamp + final critic score + status pill + click-through to detail
+- [ ] Run export button — produces `.zip` download via `/api/actions/runs/:id/export`
+- [ ] Skill install confirmation panel — preview frontmatter rewrite (claude-code-adapter output) + conflict handling (overwrite / rename / abort)
+- [ ] User-customisable prompts editor — `aab prompts edit` mirrored as a tab under Settings with a default-vs-override diff view
+
+### Playwright MCP regression specs (`specs/`)
+
+- [ ] `specs/skill-solve-launch.md` — action card → click "Solve" → preflight wizard opens → accept all → run starts → live telemetry pane updates → final critic score renders
+- [ ] `specs/skill-preflight-wizard.md` — synthetic action prompt with known capability surface → wizard surfaces every expected category → user answers → answers persist into the run profile
+- [ ] `specs/skill-run-telemetry.md` — running solve → telemetry updates in real time over WS → security badge correct → repair-pass count visible
+- [ ] `specs/skill-install-conflict.md` — install same skill name twice → conflict dialog → choose rename → installs as `<name>-2`; choose abort → no install
+- [ ] `specs/prompts-editor.md` — open `aab prompts` UI → edit a key → validate placeholders → save → reset → defaults restored
+
 ---
 
 ## Phase 6.5 — Web UI (messaging-app dashboard) 🟡
+
+**Scope clarified 2026-05-19:** feature-specific UI now lives in the **owning phase** (Phase 2-5 each carry their own `**UI**` subsection). Phase 6.5 is the **polish + cross-cutting + shipped-views index**: the dashboard shell, the views already shipped (Discussions / Members / Actions / Principles / Settings / Knowledge), and the polish backlog (light theme, mobile responsive, token-usage dashboard, per-member color from frontmatter). Stubs below that name a Phase 2-5 feature are kept here for the at-a-glance index but their **authoritative scope is in the owning phase**.
 
 ### Server + bundled assets ✅
 
@@ -357,16 +476,17 @@ The "Solve" action: turn one action item into one installed Claude Code skill.
 - [x] **Principles** — grid of cards with category, description, priority bar (read-only)
 - [x] **Settings** — read-only key/value table
 - [x] Member edit / add / delete UI (with active toggle, expertise editing, persona/voiceGuide forms; auto-emits + cleans up `.claude/agents/<slug>.md`)
-- [ ] Action add / edit / move / delete UI (drag-drop kanban)
+- [ ] Action add / edit / move / delete UI (drag-drop kanban) _— scope: Phase 4 §UI_
 - [x] Principle edit / add / delete UI (active toggle, category select, priority slider; click-to-edit cards)
 - [x] Settings editing UI (full form: title, max turns/members, models, budget, locale, HITL toggle)
 - [x] Discussion: continue + respond from the UI (Continue button + HITL reply form)
 - [x] Discussion: follow-up from the UI (Follow up button + composer with member-chip selector)
-- [ ] Discussion: spar from the UI
+- [ ] Discussion: spar from the UI _— scope: Phase 3 §UI_
 - [x] Workspace card in sidebar showing scope (home/project), active/total member count, full root path
 - [x] Loud empty-state in new-discussion modal when 0 active members (avoids the silent-empty-chips bug)
-- [ ] Decision Coach chat view
-- [ ] Sparring 1:1 chat view (anchored to a response)
+- [ ] Decision Coach chat view _— scope: Phase 2 §Decision Coach UI_
+- [ ] Sparring 1:1 chat view (anchored to a response) _— scope: Phase 3 §UI_
+- [ ] Skill-creator run-launch + telemetry + preflight-wizard UI _— scope: Phase 5 §UI_
 - [ ] Per-member color from the agent file's `color:` frontmatter (currently uses deterministic hash)
 - [ ] Token-usage / cost dashboard view
 - [ ] Light theme + theme toggle
@@ -408,11 +528,14 @@ The "Solve" action: turn one action item into one installed Claude Code skill.
 
 Each spec lives under `specs/<flow>.md` and is generated by driving the dashboard via Playwright MCP. Format: numbered steps + expected observations + `data-testid` references.
 
+**Scope (added 2026-05-19):** this chunk holds **Phase 1 + cross-cutting** specs only. Phase 2-5 feature specs live in their owning phase's `**Playwright MCP regression specs**` subsection (Phase 2 Members/Principles/Coach, Phase 3 Sparring, Phase 4 Action Board, Phase 5 Skill creator). They land as their feature phase ships — they are not pre-listed here.
+
 - [ ] `specs/discussion-happy-path.md` — new-discussion modal → start with 3 members → wait for round 1 → continue → conclude. No HITL.
 - [ ] `specs/discussion-hitl.md` — start → orchestrator gates → HITL panel appears with options → respond with `--option 1` equivalent → round 2 runs.
 - [ ] `specs/discussion-follow-up.md` — follow-up `all` / `specific` / `subset` variants via member-chip selector.
-- [ ] `specs/members-tab.md` — list / show / activate / deactivate (when editing UI lands).
-- [ ] `specs/principles-tab.md` — equivalent CRUD coverage when UI lands.
+- [ ] `specs/members-tab.md` — list / show / activate / deactivate (basic CRUD UI is already shipped in Phase 6.5).
+- [ ] `specs/principles-tab.md` — equivalent CRUD coverage (basic CRUD UI is already shipped in Phase 6.5).
+- [ ] `specs/knowledge-tab.md` — Phase 1.5 Knowledge tab: page list, page detail with `[[slug]]` resolution, ingest + query + lint panels, slug-map invalidation on `wiki_*` WS events.
 - [ ] `specs/a11y-audit.md` — per-tab snapshot, list of unlabeled elements, top 3 fixes.
 
 ### Chunk 4 — Regression repro library (one entry per CHANGELOG bug fix)
@@ -519,6 +642,7 @@ Each spec lives under `specs/<flow>.md` and is generated by driving the dashboar
 - [x] Atomic JSON writes with snapshot
 - [x] Token-usage logging from `claude --output-format json` envelopes
 - [x] Playwright MCP installed at project scope (`.mcp.json` + `@playwright/mcp@0.0.75` devDep) — every meaningful UI change must be exercised via MCP before being declared done (see Phase 6.6 + `PLAN/PLAYWRIGHT_MCP.md`)
+- [ ] **Per-phase UI + MCP gate (added 2026-05-19):** any CLI feature in Phase 2-5 with a UI surface must list its UI scope **and** its `specs/<flow>.md` MCP plan inside the owning phase, not deferred to Phase 6.5/6.6. Phase 6.5 is now polish + cross-cutting only; Phase 6.6 chunk 3 holds Phase 1 specs only — Phase 2-5 specs live in their owning phase's `**Playwright MCP regression specs**` subsection.
 
 ---
 
@@ -529,9 +653,13 @@ Each spec lives under `specs/<flow>.md` and is generated by driving the dashboar
 - **Phase 1.5 (Knowledge Wiki):** ✅ shipped 2026-05-19. All 8 chunks closed end-to-end. `raw/` (immutable sources) + `wiki/` (curated, linked markdown with `[[wikilinks]]` and YAML frontmatter) + `.manifest.json` (provenance ledger) replace the flat-JSON `BusinessContext`. **Members + orchestrator now read the wiki natively** via Read/Grep/Glob — system-prompt addendum appended to every `.claude/agents/<slug>.md` (§14), orchestrator `allowedTools` opened to `['Read','Grep','Glob']` (`orchestrator.ts:51`). New modules: `src/core/knowledge/{page,manifest,slug-map,rename,foam,schema-emitter,ingest,query,lint,migrate}.ts` (10 files, ~2500 lines) + prompt templates `src/core/prompts/skill-{ingest,query}.ts`. New CLI surface: `aab knowledge {ingest,query,lint,rename,show,list,open,edit,stats,graph,related,unresolved,backfill,migrate}` and `aab members {list,sync-agents}`. Auto-ingest hook fires on `discussion conclude` (and on HITL user-response — wired in `conversation-flow.ts`'s `maybeAutoIngestOnConclude` + `maybeAutoIngestUserResponse`, both wrapped in try/catch so a wiki hiccup never blocks a discussion). `aab init --foam` writes `.vscode/extensions.json` recommending the Foam VS Code extension (free, MIT, Obsidian-compatible `[[wikilinks]]`). `aab doctor` adds info-level Foam check. Web UI ships the **Knowledge tab** at `gui/app.js`'s `renderKnowledgeView` — graph icon in sidebar, type-filter chips, page list, page-detail view with `gui/wikilinks.js` `[[slug]]` preprocessor (resolved → `<a>`, unresolved → red `<span>`, transclusion/block-id → italic placeholder, header anchors → fragment links), sidecar (tags, sources, related, backlinks), ingest panel (paste / URL), query bar streaming answers + citations, lint button. New REST endpoints `/api/knowledge/{state,pages,pages/:slug,pages/:slug/rename,ingest,ingest/discussion/:id,query,lint,graph,raw,raw/:hash}` + WS events `wiki_ingest_{started,page_written,done}`, `wiki_query_{started,done}`, `wiki_lint_done`, `wiki_renamed`. **Unit tests** (`vitest.config.ts` wired; 31 tests across `page.test.ts`, `slug-map.test.ts`, `manifest.test.ts`, `rename.test.ts`) cover frontmatter parse/serialize round-trip including `aliases:`, wikilink extraction (display/anchor/transclusion/block-id/path-prefixed variants), slug-map render→parse round-trip + idempotency, manifest dedup + atomic rewrite, rename refusing slug/alias collisions, `--dry-run` non-mutation. **Live smoke** verified end-to-end: bootstrap → `paste` ingest (Acme Corp profile → 6 pages with proper `[[wikilinks]]`) → `show` (pretty-prints slugs as `slug ("Title")`) → `unresolved --suggest-fixes` (caught honeycomb/datadog/lightstep refs from the agent) → `related --depth 2` (link-graph walker) → `rename tracemesh → trace-mesh` (atomic — 4 body refs + 4 related + 1 manifest path rewritten + slug-map regenerated) → `lint` (slug-map + backlinks rebuilt) → `query` against the wiki (Sonnet read 2 pages, answered with citations) → discussion conclude → auto-ingest fired silently in background (HITL response also auto-ingested into a fresh concept page). **Playwright MCP smoke** verified the Web UI: Knowledge sidebar nav, page list with type chips, page-detail view rendering `[[trace-mesh]]` / `[[ebpf-integration]]` / `[[usage-based-pricing]]` as clickable links via `gui/wikilinks.js`, backlinks panel, query bar producing a real Sonnet-grounded answer.
 - **Phase 6.5 (UI):** Web dashboard ships with `aab ui`. Live-streams typing-dot animations while members respond, then morphs into structured response cards. **Drives multi-round conversations from the browser**: Continue button on open discussions, inline reply form (with option chips) on HITL panels, and a Follow up composer with a member-chip selector that maps to `targetType: all|specific|subset` automatically based on chip count. Server posts to `/api/discussions/:id/continue`, `/respond`, and `/follow-up`, broadcasting the same WS event stream. Read-only views still for Members, Kanban, Principles, Settings. Editing UIs and Coach/Sparring views deferred until their backends land.
 - **Phase 6.6 (Playwright MCP UI tests):** chunk 1 done — `@playwright/mcp@0.0.75` installed as devDep, project-scoped `.mcp.json` committed (cross-platform safe), `PLAN/PLAYWRIGHT_MCP.md` reference doc written. Next: chunk 2 (add `data-testid` registry to existing `gui/` markup + a11y pass), then chunk 3 (smoke flow specs by driving the dashboard via MCP).
-- **Phase 2-6:** not started.
+- **Phase 2 (Members + Principles + Coach):** ✅ closed (2026-05-19). Full members CRUD shipped (`aab members {list,show,add,edit,enhance,delete,sync-agents,tools,regenerate-voice}`) with AI persona enhancement on three template variants (famous → BFI-2 + Cognitive Process; expert → top-1% mastery; non-famous → practical practitioner) calling local `claude` CLI (no Gemini, no API key). Principles CRUD + `seed-starters` + `explore` 5-step Socratic wizard (behavior → anti-pattern → triggers → examples → priority) with cross-step context preserved across turns. Decision Coach (`aab coach`) is a Dalio-style REPL backed by `DecisionSession` storage — `decision-sessions/<id>.json`, one file per session, atomic writes; opener fires automatically on session creation, multi-turn flow preserves full transcript every call, extracts referenced principle ids by title substring match. **Live smoke (2026-05-19):** coach session "$50k pivot" ran end-to-end with real Claude — opener referenced **Embrace Reality (9)** + **Be Radically Open-Minded (9)** + **Believability-Weight Decisions (7)** + **Own Your Mistakes** + **Think for Yourself**, second turn folded in **Be Direct and Honest (8)** + **Disagree and Commit (8)** + **Pain + Reflection = Progress (8)**, all by name. **GUI:** Members tab grows **↻ Regenerate agent files** header button + per-card **🔊 Voice** button (preview-before-save) + Enhance-with-AI inside the edit modal (streams over WS) + per-member tools allowlist chips. Principles tab grows **🌱 Seed starters** (disabled when non-empty) + **🔎 Explore** per card opening the 5-step wizard modal. New sidebar item **🧠 Coach** opens the chat view with session list + bubble stream + Cmd/Ctrl+Enter composer. New WS event family: `member_enhance_*`, `member_voice_*`, `members_sync_done`, `principles_seeded`, `principle_explorer_*`, `coach_thinking|message|error|session_*`. **Tests:** 49 new vitest unit tests across `ai-enhancer.test.ts`, `fallback-voice-guides.test.ts`, `decision-coach.test.ts`, `principle-explorer.test.ts`; full suite at 80/80 passing. Live Playwright MCP smoke verified the new surfaces render correctly with the real backend (smoke-phase2-2026-05-19 workspace).
+- **Phase 3 (Sparring — 1:1 deep dive):** ✅ closed (2026-05-19). 4-layer ship — engine + CLI + GUI + MCP specs + tests. Engine modules: `src/core/sparring/{truncate,build-sparring-prompt,sparring-service,inject-insight}.ts` port sage-council's `sparring-service.ts` 1:1 (truncation budgets verbatim: 14k discussion / 8k history / 4k bcontext / 4k anchor; head-70/tail-30 split with `[<label> truncated to fit context window: omitted N chars]` marker; researchModel → primaryModel fallback). CLI grows `aab discuss spar <id> --member <name> [--round N --turn M --message <text> --resume <sessionId> --title <text>]` (interactive REPL + one-shot mode), `aab discuss inject <id> --from <sessionId> [--insight <text> --yes]`, `aab discuss spar list <discussion-id>`, `aab discuss spar show <session-id>`. Storage adds `SparringSession + SparringMessage + SparringSource + SparringInjectionContext` types and 6 new `StorageService` methods backed by `sparring/<discussionId>/<sessionId>.json` (one file per session, atomic writes); `UserResponse` extended with `sparringSessionId` so injected entries link back. GUI: per-response ⚔ Spar button on every `messageBubble`, chat-header ⚔ Sparring list button, full sparring modal (anchor banner + transcript + composer + ↩ Inject insight back), inject confirmation modal with editable textarea pre-filled from latest assistant reply, sparring sessions list modal. New REST endpoints `/api/discussions/:id/sparring` (list/open), `/api/sparring/:sessionId` (get/delete), `/api/sparring/:sessionId/messages` (send → WS stream), `/api/sparring/:sessionId/inject`. New WS event family: `sparring_session_opened`, `sparring_session_deleted`, `sparring_thinking`, `sparring_activity`, `sparring_message`, `sparring_error`, `sparring_injected`. **Tests:** 43 new vitest unit tests across `truncate.test.ts`, `build-sparring-prompt.test.ts`, `inject-insight.test.ts`, `sparring-service.test.ts`; full suite at 123/123 passing. **Live smoke:** `aab discuss spar da720e41 --member "Elon Musk" --round 1 --turn 1 --message "Walk me through the unit economics…"` against `smoke-kw-2026-05-19` produced a real Opus deep-dive (~6kB markdown reply with tiered targets, cost-of-getting-it-wrong tables, Q3 plan checklist); `aab discuss inject` wrote the `sparring_injection` UserResponse with full provenance (sparringSessionId, selectedMemberId=Elon, sourceRoundNumber=1, sourceTurnNumber=1, prompt="Injected from 1:1 Deep Dive with Elon Musk"). Playwright MCP smoke confirmed: ⚔ Spar buttons on each response card, ⚔ Sparring header button opens the session list modal showing the persisted session, clicking ⚔ Spar opens the sparring modal with anchor banner + full transcript reload from disk + ↩ Inject insight back button, the injected insight appears in the chat timeline as a user bubble labeled "Sparring insight injected (via Elon Musk)".
+- **Phase 4-6:** not started.
 
-**Next sensible chunk:** **Phase 6.6 chunk 2** — `data-testid` registry + a11y pass over the existing `gui/` markup including the new Knowledge tab (so Playwright MCP can catch regressions deterministically). After that: **Phase 4** (Kanban CRUD + auto-extract from discussions — now grounded in the Knowledge Wiki because actionable insights from concluded discussions already live at `wiki/sources/` and `wiki/decisions/`), then **Phase 5** (skill creator — the headline feature; `BusinessProfile` injection becomes "read `wiki/entities/company.md`"). The orphan-page warning from lint (`acme-corp-b2b-saas` has zero incoming links) is expected and harmless for source-summary pages — lint emits it as `info`, not `warn`.
+**Next sensible chunk:** **Phase 4** (Kanban CRUD + auto-extract from discussions) — actionable insights from concluded discussions already live at `wiki/sources/` and `wiki/decisions/`, the Phase 3 sparring-injection mechanism establishes the pattern for writing structured artifacts back to a discussion. Phase 4 needs to (a) add CRUD over `ActionItem` (`aab actions {add,list,board,show,edit,move,delete}`), (b) port `src/core/actions/conversation-analyzer.ts` from sage-council with the structured-data fast-path (no LLM call when `response.structuredData.actionSteps` is present), and (c) replace the read-only kanban view in `gui/` with drag-drop columns + add/edit modal + per-card detail panel + "Extract actions" button on concluded discussions. After that: **Phase 5** (skill creator — the headline feature; `BusinessProfile` injection becomes "read `wiki/entities/company.md`"). The cross-cutting **Phase 6.6 chunk 2** (`data-testid` registry + a11y pass for Phase 1 controls) is still pending but can run in parallel — Phase 2-3's UI already carries `data-testid` on every new control: `nav-coach`, `coach-session-row`, `coach-input`, `coach-send-btn`, `members-sync-btn`, `member-edit-btn`, `member-voice-btn`, `member-delete-btn`, `members-add-btn`, `enhance-with-ai-btn`, `enhance-type-select`, `member-tools-allowlist`, `principles-seed-btn`, `principles-add-btn`, `principle-explore-btn`, `explorer-step-*`, `explorer-input`, `explorer-send`, `response-card`, `spar-btn`, `sparring-modal`, `sparring-title`, `sparring-anchor`, `sparring-transcript`, `sparring-msg-user`, `sparring-msg-assistant`, `sparring-typing`, `sparring-input`, `sparring-send-btn`, `sparring-inject-btn`, `sparring-inject-modal`, `sparring-inject-textarea`, `sparring-inject-confirm`, `sparring-sessions-btn`, `sparring-list-modal`, `sparring-session-list`, `sparring-session-row` — Phase 1 controls still need the audit. The orphan-page warning from lint (`acme-corp-b2b-saas` has zero incoming links) is expected and harmless for source-summary pages — lint emits it as `info`, not `warn`.
+
+**Per-phase UI + MCP gate (2026-05-19):** every Phase 2-5 chunk now lists its own `**UI**` subsection (mirrors the CLI verbs in `gui/`) and `**Playwright MCP regression specs**` subsection (one `specs/<flow>.md` plan per UI flow). Phase 6.5 stops being the catch-all UI bucket — it's now polish + cross-cutting. Phase 6.6 chunk 3 holds Phase 1 + cross-cutting specs only. The structural fix is documented in the Cross-cutting section's "Per-phase UI + MCP gate" line and mirrored in `PLAN/PLAN.md` Part 8 §8.6.
 
 ---
 

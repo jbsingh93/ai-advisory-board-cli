@@ -64,10 +64,24 @@ import { existsSync as fsExistsSync, readFileSync, writeFileSync } from 'node:fs
 import type {
   AdvisoryBoardMember,
   AppSettings,
+  DecisionSession,
   Discussion,
   Principle,
   PrincipleCategory,
 } from '../storage/types.js';
+import { enhancePersona, type EnhancementType } from '../core/members/ai-enhancer.js';
+import { generateVoiceGuide } from '../core/members/voice-guide.js';
+import { coachReply, newDecisionSession } from '../core/coach/decision-coach.js';
+import {
+  EXPLORER_STEPS,
+  applyStep,
+  explorerReply,
+  type ExplorerStep,
+  type ExplorerTurn,
+} from '../core/coach/principle-explorer.js';
+import { openSparringSession, sendSparringMessage } from '../core/sparring/sparring-service.js';
+import { injectSparringInsight } from '../core/sparring/inject-insight.js';
+import { STARTER_PRINCIPLES } from '../starter/starter-principles.js';
 
 const PRINCIPLE_CATEGORIES: PrincipleCategory[] = [
   'life',
@@ -281,7 +295,9 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
           ? { voiceGuide: body.voiceGuide.trim() || undefined }
           : {}),
         ...(typeof body.avatar === 'string' ? { avatar: body.avatar.trim() || undefined } : {}),
-        ...(Array.isArray(body.allowedTools) ? { allowedTools: body.allowedTools } : {}),
+        ...(Array.isArray(body.allowedTools)
+          ? { allowedTools: body.allowedTools.length === 0 ? undefined : body.allowedTools }
+          : {}),
         ...(typeof body.isActive === 'boolean' ? { isActive: body.isActive } : {}),
         updatedAt: nowIso(),
       };
@@ -337,6 +353,137 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
         /* fine */
       }
       res.status(204).end();
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  // ============================================================
+  // Members — AI enhancement, voice refresh, agent-file regen
+  // ============================================================
+
+  function normalizeEnhanceTypeOrThrow(raw: unknown): EnhancementType {
+    const v = String(raw ?? 'non-famous').toLowerCase().trim();
+    if (v === 'famous') return 'famous';
+    if (v === 'expert' || v === 'top-expert' || v === 'top_expert') return 'expert';
+    if (v === 'non-famous' || v === 'non_famous' || v === 'practitioner') return 'non-famous';
+    throw new Error(`Unknown enhance type "${raw}"`);
+  }
+
+  app.post('/api/members/:id/enhance', async (req, res) => {
+    try {
+      const all = await opts.storage.loadBoardMembers();
+      const existing = all.find((m) => m.id === req.params.id);
+      if (!existing) {
+        res.status(404).json({ error: `No member with id ${req.params.id}` });
+        return;
+      }
+      let type: EnhancementType;
+      try {
+        type = normalizeEnhanceTypeOrThrow((req.body ?? {}).type);
+      } catch (err) {
+        res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+        return;
+      }
+      const keepVoice = (req.body ?? {}).keepVoice === true;
+      res.status(202).json({ accepted: true, memberId: existing.id, type });
+      broadcast({ type: 'member_enhance_started', memberId: existing.id, memberName: existing.name, enhanceType: type });
+
+      (async () => {
+        try {
+          const settings = await opts.storage.loadSettings();
+          const result = await enhancePersona(
+            { name: existing.name, title: existing.title, expertise: existing.expertise, type },
+            settings,
+            {
+              currentPersona: existing.persona,
+              onEvent: (event) => {
+                if (event.type === 'assistant' || event.type === 'tool_use') {
+                  broadcast({ type: 'member_enhance_progress', memberId: existing.id, event: { type: event.type, subtype: event.subtype } });
+                }
+              },
+            },
+          );
+          const next: AdvisoryBoardMember = {
+            ...existing,
+            persona: result.persona,
+            voiceGuide: keepVoice ? existing.voiceGuide : result.voiceGuide || existing.voiceGuide,
+            updatedAt: nowIso(),
+          };
+          await opts.storage.updateBoardMember(next);
+          try {
+            emitMemberAgentFile(next, { projectRoot });
+          } catch (err) {
+            logger.warn('[ui] failed to emit agent file:', err);
+          }
+          broadcast({ type: 'member_enhance_done', memberId: existing.id, member: enrichOne(next), enhanceType: type });
+        } catch (error) {
+          broadcast({
+            type: 'member_enhance_failed',
+            memberId: existing.id,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })();
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.post('/api/members/:id/regenerate-voice', async (req, res) => {
+    try {
+      const all = await opts.storage.loadBoardMembers();
+      const existing = all.find((m) => m.id === req.params.id);
+      if (!existing) {
+        res.status(404).json({ error: `No member with id ${req.params.id}` });
+        return;
+      }
+      const settings = await opts.storage.loadSettings();
+      broadcast({ type: 'member_voice_started', memberId: existing.id, memberName: existing.name });
+      const result = await generateVoiceGuide(existing, settings);
+      const preview = (req.body ?? {}).preview === true;
+      if (preview) {
+        broadcast({ type: 'member_voice_preview', memberId: existing.id, voiceGuide: result.voiceGuide, fellBack: result.fellBack });
+        res.json({ voiceGuide: result.voiceGuide, fellBack: result.fellBack, applied: false });
+        return;
+      }
+      const next: AdvisoryBoardMember = {
+        ...existing,
+        voiceGuide: result.voiceGuide,
+        updatedAt: nowIso(),
+      };
+      await opts.storage.updateBoardMember(next);
+      try {
+        emitMemberAgentFile(next, { projectRoot });
+      } catch (err) {
+        logger.warn('[ui] failed to emit agent file:', err);
+      }
+      broadcast({ type: 'member_voice_done', memberId: existing.id, member: enrichOne(next), fellBack: result.fellBack });
+      res.json({ voiceGuide: result.voiceGuide, fellBack: result.fellBack, applied: true, member: enrichOne(next) });
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.post('/api/members/sync-agents', async (req, res) => {
+    try {
+      const includeInactive = (req.body ?? {}).all === true;
+      const members = await opts.storage.loadBoardMembers();
+      let written = 0;
+      let skipped = 0;
+      const skippedDetail: string[] = [];
+      for (const member of members) {
+        if (!includeInactive && !member.isActive) continue;
+        const slug = memberAgentSlug(member.name);
+        const result = emitMemberAgentFile(member, { projectRoot });
+        if (result.written) written++;
+        else {
+          skipped++;
+          skippedDetail.push(`${slug} (${result.reason ?? 'unknown'})`);
+        }
+      }
+      broadcast({ type: 'members_sync_done', written, skipped, total: members.length });
+      res.json({ written, skipped, skippedDetail, total: members.length });
     } catch (error) {
       sendError(res, 500, error);
     }
@@ -412,6 +559,280 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
     try {
       await opts.storage.deletePrinciple(req.params.id);
       res.status(204).end();
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  // ============================================================
+  // Principles — seed-starters + Explorer wizard step endpoint
+  // ============================================================
+
+  app.post('/api/principles/seed-starters', async (req, res) => {
+    try {
+      const existing = await opts.storage.loadPrinciples();
+      const force = (req.body ?? {}).force === true;
+      if (existing.length > 0 && !force) {
+        res.status(409).json({ error: `${existing.length} principle(s) already exist. Pass force=true to seed on top.` });
+        return;
+      }
+      const now = nowIso();
+      let added = 0;
+      const added_ids: string[] = [];
+      for (const starter of STARTER_PRINCIPLES) {
+        const principle: Principle = {
+          id: generateUUID(),
+          category: starter.category,
+          title: starter.title,
+          description: starter.description,
+          behavior: starter.behavior,
+          antiPattern: starter.antiPattern,
+          triggerQuestions: starter.triggerQuestions,
+          priority: starter.priority,
+          examples: starter.examples,
+          isActive: starter.isActive,
+          createdAt: now,
+          updatedAt: now,
+        };
+        await opts.storage.savePrinciple(principle);
+        added++;
+        added_ids.push(principle.id);
+      }
+      broadcast({ type: 'principles_seeded', added, ids: added_ids });
+      res.json({ added, ids: added_ids });
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  // One step turn of the 5-step Principle Explorer. The browser keeps the
+  // running `history` of prior turns and posts it back each call.
+  app.post('/api/principles/explore-step', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as {
+        principle?: Partial<Principle>;
+        history?: ExplorerTurn[];
+        step?: ExplorerStep;
+        userMessage?: string;
+        isFirstMessage?: boolean;
+      };
+      if (!body.principle || !body.principle.title || !body.principle.category) {
+        res.status(400).json({ error: 'principle.title and principle.category are required' });
+        return;
+      }
+      if (!body.step || !(EXPLORER_STEPS as readonly string[]).includes(body.step)) {
+        res.status(400).json({ error: `step must be one of: ${EXPLORER_STEPS.join(', ')}` });
+        return;
+      }
+      const settings = await opts.storage.loadSettings();
+      broadcast({ type: 'principle_explorer_thinking', step: body.step });
+      const result = await explorerReply(
+        {
+          principle: body.principle as Principle,
+          history: Array.isArray(body.history) ? body.history : [],
+          step: body.step,
+          isFirstMessage: !!body.isFirstMessage,
+        },
+        body.userMessage ?? '',
+        settings,
+      );
+      broadcast({
+        type: 'principle_explorer_reply',
+        step: body.step,
+        synthesised: result.synthesised,
+      });
+      res.json(result);
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  // Apply a synthesised step result back to a principle (existing or new).
+  app.post('/api/principles/apply-step', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as {
+        principleId?: string;
+        principle?: Partial<Principle>;
+        step?: ExplorerStep;
+        value?: string;
+      };
+      if (!body.step || !(EXPLORER_STEPS as readonly string[]).includes(body.step)) {
+        res.status(400).json({ error: 'invalid step' });
+        return;
+      }
+      if (!body.value || typeof body.value !== 'string') {
+        res.status(400).json({ error: 'value is required' });
+        return;
+      }
+      let base: Partial<Principle> | Principle | undefined = body.principle;
+      if (body.principleId) {
+        const all = await opts.storage.loadPrinciples();
+        const found = all.find((p) => p.id === body.principleId);
+        if (!found) {
+          res.status(404).json({ error: `No principle with id ${body.principleId}` });
+          return;
+        }
+        base = found;
+      }
+      if (!base || !base.title || !base.category) {
+        res.status(400).json({ error: 'principle (with title + category) is required' });
+        return;
+      }
+      const merged = applyStep(base as Principle, body.step, body.value);
+      res.json({ principle: merged });
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  // ============================================================
+  // Decision Coach — session CRUD + messages
+  // ============================================================
+
+  app.get('/api/coach/sessions', async (_req, res) => {
+    try {
+      const sessions = await opts.storage.loadDecisionSessions();
+      res.json({ sessions });
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.get('/api/coach/sessions/:id', async (req, res) => {
+    try {
+      const session = await opts.storage.loadDecisionSessionById(req.params.id);
+      if (!session) {
+        const all = await opts.storage.loadDecisionSessions();
+        const byShort = all.find((s) => s.id.startsWith(req.params.id));
+        if (!byShort) {
+          res.status(404).json({ error: `No coach session matching "${req.params.id}"` });
+          return;
+        }
+        res.json(byShort);
+        return;
+      }
+      res.json(session);
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.post('/api/coach/sessions', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as { situation?: string; title?: string };
+      if (!body.situation || !body.situation.trim()) {
+        res.status(400).json({ error: 'situation is required' });
+        return;
+      }
+      const session = newDecisionSession(body.situation.trim(), body.title?.trim() || undefined);
+      await opts.storage.saveDecisionSession(session);
+      res.status(202).json({ accepted: true, session });
+      broadcast({ type: 'coach_session_started', session });
+
+      // Kick off the opener turn in the background.
+      (async () => {
+        try {
+          const settings = await opts.storage.loadSettings();
+          const principles = await opts.storage.loadPrinciples();
+          broadcast({ type: 'coach_thinking', sessionId: session.id });
+          const { session: updated, reply } = await coachReply(session, principles, '', settings);
+          await opts.storage.updateDecisionSession(updated);
+          broadcast({ type: 'coach_message', sessionId: updated.id, message: reply, session: updated });
+        } catch (error) {
+          broadcast({
+            type: 'coach_error',
+            sessionId: session.id,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })();
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.post('/api/coach/sessions/:id/messages', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as { content?: string };
+      if (!body.content || !body.content.trim()) {
+        res.status(400).json({ error: 'content is required' });
+        return;
+      }
+      let session: DecisionSession | null = await opts.storage.loadDecisionSessionById(req.params.id);
+      if (!session) {
+        const all = await opts.storage.loadDecisionSessions();
+        const byShort = all.find((s) => s.id.startsWith(req.params.id));
+        if (!byShort) {
+          res.status(404).json({ error: `No coach session matching "${req.params.id}"` });
+          return;
+        }
+        session = byShort;
+      }
+      res.status(202).json({ accepted: true, sessionId: session.id });
+      broadcast({ type: 'coach_thinking', sessionId: session.id });
+
+      (async () => {
+        try {
+          const settings = await opts.storage.loadSettings();
+          const principles = await opts.storage.loadPrinciples();
+          const { session: updated, reply } = await coachReply(session!, principles, body.content!.trim(), settings);
+          await opts.storage.updateDecisionSession(updated);
+          broadcast({ type: 'coach_message', sessionId: updated.id, message: reply, session: updated });
+        } catch (error) {
+          broadcast({
+            type: 'coach_error',
+            sessionId: session!.id,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })();
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.delete('/api/coach/sessions/:id', async (req, res) => {
+    try {
+      let session = await opts.storage.loadDecisionSessionById(req.params.id);
+      if (!session) {
+        const all = await opts.storage.loadDecisionSessions();
+        const byShort = all.find((s) => s.id.startsWith(req.params.id));
+        if (!byShort) {
+          res.status(404).json({ error: `No coach session matching "${req.params.id}"` });
+          return;
+        }
+        session = byShort;
+      }
+      await opts.storage.deleteDecisionSession(session.id);
+      broadcast({ type: 'coach_session_deleted', sessionId: session.id });
+      res.status(204).end();
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.post('/api/coach/sessions/:id/decide', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as { decision?: string; status?: DecisionSession['status'] };
+      let session = await opts.storage.loadDecisionSessionById(req.params.id);
+      if (!session) {
+        const all = await opts.storage.loadDecisionSessions();
+        const byShort = all.find((s) => s.id.startsWith(req.params.id));
+        if (!byShort) {
+          res.status(404).json({ error: `No coach session matching "${req.params.id}"` });
+          return;
+        }
+        session = byShort;
+      }
+      const updated: DecisionSession = {
+        ...session,
+        decision: body.decision ?? session.decision,
+        status: body.status ?? (body.decision ? 'decided' : session.status),
+        updatedAt: nowIso(),
+      };
+      await opts.storage.updateDecisionSession(updated);
+      broadcast({ type: 'coach_session_updated', session: updated });
+      res.json(updated);
     } catch (error) {
       sendError(res, 500, error);
     }
@@ -1150,6 +1571,216 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
         return;
       }
       res.type('text/plain').send(readFileSync(full, 'utf8'));
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  // ============================================================
+  // Sparring (Phase 3) — 1:1 deep dive
+  // ============================================================
+
+  app.get('/api/discussions/:id/sparring', async (req, res) => {
+    try {
+      const sessions = await opts.storage.loadSparringSessionsForDiscussion(req.params.id);
+      res.json({ sessions });
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.post('/api/discussions/:id/sparring', async (req, res) => {
+    try {
+      const discussion = await opts.storage.loadDiscussionById(req.params.id);
+      if (!discussion) {
+        res.status(404).json({ error: 'Discussion not found' });
+        return;
+      }
+      const body = (req.body ?? {}) as {
+        memberId?: string;
+        memberName?: string;
+        anchorRoundNumber?: number;
+        anchorTurnNumber?: number;
+        title?: string;
+      };
+      const allMembers = await opts.storage.loadBoardMembers();
+      const member = body.memberId
+        ? allMembers.find((m) => m.id === body.memberId)
+        : body.memberName
+          ? allMembers.find((m) => m.name.toLowerCase() === body.memberName!.toLowerCase())
+          : undefined;
+      if (!member) {
+        res.status(400).json({ error: 'memberId or memberName must match an existing board member.' });
+        return;
+      }
+      const opened = await openSparringSession({
+        discussion,
+        member,
+        anchorRoundNumber: body.anchorRoundNumber,
+        anchorTurnNumber: body.anchorTurnNumber,
+        title: body.title,
+        storage: opts.storage,
+      });
+      broadcast({
+        type: 'sparring_session_opened',
+        discussionId: discussion.id,
+        session: opened.session,
+        reused: opened.reused,
+      });
+      res.json({ session: opened.session, reused: opened.reused });
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.get('/api/sparring/:sessionId', async (req, res) => {
+    try {
+      const session = await opts.storage.loadSparringSessionById(req.params.sessionId);
+      if (!session) {
+        res.status(404).json({ error: 'Sparring session not found' });
+        return;
+      }
+      res.json({ session });
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.delete('/api/sparring/:sessionId', async (req, res) => {
+    try {
+      const session = await opts.storage.loadSparringSessionById(req.params.sessionId);
+      if (!session) {
+        res.status(404).json({ error: 'Sparring session not found' });
+        return;
+      }
+      await opts.storage.deleteSparringSession(session.id);
+      broadcast({ type: 'sparring_session_deleted', sessionId: session.id, discussionId: session.discussionId });
+      res.status(204).end();
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.post('/api/sparring/:sessionId/messages', async (req, res) => {
+    try {
+      const session = await opts.storage.loadSparringSessionById(req.params.sessionId);
+      if (!session) {
+        res.status(404).json({ error: 'Sparring session not found' });
+        return;
+      }
+      const body = (req.body ?? {}) as { content?: string };
+      const content = (body.content ?? '').toString().trim();
+      if (!content) {
+        res.status(400).json({ error: 'content is required and must be non-empty.' });
+        return;
+      }
+      const discussion = await opts.storage.loadDiscussionById(session.discussionId);
+      if (!discussion) {
+        res.status(404).json({ error: 'Parent discussion not found' });
+        return;
+      }
+      const allMembers = await opts.storage.loadBoardMembers();
+      const member = allMembers.find((m) => m.id === session.memberId);
+      if (!member) {
+        res.status(404).json({ error: 'Member referenced by this sparring session no longer exists.' });
+        return;
+      }
+      const settings = await opts.storage.loadSettings();
+
+      res.status(202).json({ accepted: true, sessionId: session.id });
+      broadcast({ type: 'sparring_thinking', sessionId: session.id, memberName: member.name });
+
+      (async () => {
+        try {
+          const result = await sendSparringMessage({
+            session,
+            member,
+            discussion,
+            userMessage: content,
+            settings,
+            storage: opts.storage,
+            projectRoot,
+            onActivity: (event) => {
+              broadcast({
+                type: 'sparring_activity',
+                sessionId: session.id,
+                activity: event.activity,
+                tool: event.tool,
+                detail: event.detail,
+              });
+            },
+          });
+          if (result.error || !result.assistantMsg) {
+            broadcast({
+              type: 'sparring_error',
+              sessionId: session.id,
+              message: result.error ?? 'No reply',
+            });
+            return;
+          }
+          const updated = await opts.storage.loadSparringSessionById(session.id);
+          broadcast({
+            type: 'sparring_message',
+            sessionId: session.id,
+            message: result.assistantMsg,
+            session: updated,
+            fellBackToPrimary: result.fellBackToPrimary,
+            costUsd: result.costUsd,
+            durationMs: result.durationMs,
+          });
+        } catch (error) {
+          broadcast({
+            type: 'sparring_error',
+            sessionId: session.id,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })();
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.post('/api/sparring/:sessionId/inject', async (req, res) => {
+    try {
+      const session = await opts.storage.loadSparringSessionById(req.params.sessionId);
+      if (!session) {
+        res.status(404).json({ error: 'Sparring session not found' });
+        return;
+      }
+      const discussion = await opts.storage.loadDiscussionById(session.discussionId);
+      if (!discussion) {
+        res.status(404).json({ error: 'Parent discussion not found' });
+        return;
+      }
+      const body = (req.body ?? {}) as { insight?: string; sourceRoundNumber?: number; sourceTurnNumber?: number };
+      let insight = (body.insight ?? '').toString().trim();
+      if (!insight) {
+        const lastAssistant = [...session.messages].reverse().find((m) => m.role === 'assistant');
+        if (!lastAssistant) {
+          res.status(400).json({ error: 'No assistant reply to inject. Pass an explicit insight body.' });
+          return;
+        }
+        insight = lastAssistant.content.trim();
+      }
+      const result = await injectSparringInsight({
+        discussion,
+        session,
+        insight,
+        storage: opts.storage,
+        sourceRoundNumber: body.sourceRoundNumber,
+        sourceTurnNumber: body.sourceTurnNumber,
+      });
+      broadcast({
+        type: 'sparring_injected',
+        discussionId: result.discussion.id,
+        sessionId: session.id,
+        userResponse: result.injectedUserResponse,
+      });
+      res.json({
+        discussion: result.discussion,
+        injectedUserResponse: result.injectedUserResponse,
+      });
     } catch (error) {
       sendError(res, 500, error);
     }

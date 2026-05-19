@@ -1,11 +1,12 @@
 /**
  * `aab discuss start | continue | respond | follow-up | list | show | delete |
- *  archive | unarchive | summarize | export`
+ *  archive | unarchive | summarize | export | spar | inject`
  *
  * Phase 1 surface: kick off a discussion, drive multi-round conversations,
  * answer the orchestrator's HITL questions, ask targeted follow-ups, list /
  * show / delete / archive saved discussions, summarize a concluded discussion,
- * and export it to markdown. Sparring comes next (Phase 3).
+ * and export it to markdown. Phase 3 adds `spar` (1:1 deep-dive) and `inject`
+ * (write a sparring insight back to the main timeline).
  */
 import { Command } from 'commander';
 import { existsSync, writeFileSync } from 'node:fs';
@@ -13,6 +14,7 @@ import { join } from 'node:path';
 import { closeContext, openContext } from './_context.js';
 import { c } from '../ui/colors.js';
 import { spinner } from '../ui/spinner.js';
+import { askConfirm, askText } from '../ui/prompts.js';
 import { renderDiscussion, shortId } from '../ui/render-discussion.js';
 import { renderDiscussionMarkdown, defaultExportFilename } from '../ui/render-discussion-markdown.js';
 import { UserError } from '../core/errors.js';
@@ -26,8 +28,19 @@ import {
   type StartProgressEvent,
 } from '../core/discussion/conversation-flow.js';
 import { summarizeDiscussion } from '../core/discussion/summarize.js';
+import {
+  openSparringSession,
+  sendSparringMessage,
+} from '../core/sparring/sparring-service.js';
+import { injectSparringInsight } from '../core/sparring/inject-insight.js';
 import { memberAgentPath, memberAgentSlug } from '../agents/emit-member-agent.js';
-import type { AdvisoryBoardMember, ConversationSummary, Discussion } from '../storage/types.js';
+import type {
+  AdvisoryBoardMember,
+  ConversationSummary,
+  Discussion,
+  SparringSession,
+  StorageService,
+} from '../storage/types.js';
 
 export function registerDiscussCommand(program: Command): void {
   const discuss = program.command('discuss').description('start, view, and manage advisory-board discussions');
@@ -43,6 +56,8 @@ export function registerDiscussCommand(program: Command): void {
   registerUnarchive(discuss);
   registerSummarize(discuss);
   registerExport(discuss);
+  registerSpar(discuss);
+  registerInject(discuss);
 }
 
 function registerStart(parent: Command): void {
@@ -648,6 +663,406 @@ function registerExport(parent: Command): void {
         await closeContext(ctx);
       }
     });
+}
+
+function registerSpar(parent: Command): void {
+  const spar = parent
+    .command('spar <idOrShort>')
+    .description('open a 1:1 deep-dive sparring session with a board member')
+    .option('--member <name>', 'name, slug, or id of the member to spar with (required unless --resume)')
+    .option('--round <n>', '1-based round number the anchor lives in', (v) => Number(v))
+    .option('--turn <n>', '1-based turn number within that round', (v) => Number(v))
+    .option('--message <text>', 'send one message non-interactively and exit')
+    .option('--resume <sessionId>', 'resume an existing sparring session (id or short id)')
+    .option('--title <text>', 'optional title for a brand-new session')
+    .option('--agents-dir <path>', 'where .claude/agents/ lives (default: cwd)')
+    .action(
+      async (
+        idOrShort: string,
+        opts: {
+          member?: string;
+          round?: number;
+          turn?: number;
+          message?: string;
+          resume?: string;
+          title?: string;
+          agentsDir?: string;
+        },
+      ) => {
+        const ctx = await openContext(parent);
+        try {
+          const discussion = await resolveDiscussion(ctx.storage, idOrShort);
+          const settings = await ctx.storage.loadSettings();
+          const allMembers = await ctx.storage.loadBoardMembers();
+          const projectRoot = opts.agentsDir ?? process.cwd();
+
+          let session: SparringSession;
+          let member: AdvisoryBoardMember | undefined;
+
+          if (opts.resume) {
+            const found = await resolveSparringSession(ctx.storage, discussion.id, opts.resume);
+            session = found;
+            member = allMembers.find((m) => m.id === found.memberId);
+          } else {
+            if (!opts.member) {
+              throw new UserError(
+                'pass --member <name> to open a sparring session (or --resume <sessionId>).',
+                `Available members: ${allMembers.filter((m) => m.isActive).map((m) => m.name).join(', ')}`,
+              );
+            }
+            member = resolveMemberToken(allMembers, opts.member);
+            if (!member) {
+              throw new UserError(`No member matched "${opts.member}".`);
+            }
+            const opened = await openSparringSession({
+              discussion,
+              member,
+              anchorRoundNumber: opts.round,
+              anchorTurnNumber: opts.turn,
+              title: opts.title,
+              storage: ctx.storage,
+            });
+            session = opened.session;
+            if (!ctx.json) {
+              process.stdout.write(
+                `\n${c.brand('AI Advisory Board')}  ${c.hint(opened.reused ? '· resumed sparring' : '· new sparring')}\n`,
+              );
+              process.stdout.write(c.hint(`  member:   ${member.name}\n`));
+              process.stdout.write(c.hint(`  anchor:   round ${session.anchorRoundNumber} · turn ${session.anchorTurnNumber}\n`));
+              process.stdout.write(c.hint(`  session:  ${session.id.slice(0, 8)}\n\n`));
+            }
+          }
+
+          if (!member) {
+            throw new UserError(`No member with id ${session.memberId} exists anymore — cannot continue this session.`);
+          }
+          verifyAgentFiles([member], projectRoot);
+
+          // Replay existing messages so resumed sessions feel continuous.
+          if (!ctx.json && !opts.resume) {
+            renderAnchor(session);
+          }
+          if (session.messages.length > 0 && !ctx.json) {
+            process.stdout.write(c.hint(`  (replaying ${session.messages.length} prior message${session.messages.length === 1 ? '' : 's'})\n\n`));
+            for (const m of session.messages) renderSparringMessage(m.role, m.content);
+          }
+
+          // --message mode: send one shot and exit.
+          if (opts.message) {
+            const trimmed = opts.message.trim();
+            if (!trimmed) throw new UserError('--message cannot be empty.');
+            const result = await runSparringTurn({
+              session,
+              member,
+              discussion,
+              userMessage: trimmed,
+              settings,
+              storage: ctx.storage,
+              projectRoot,
+              json: ctx.json,
+            });
+            if (ctx.json) {
+              process.stdout.write(JSON.stringify({ session: result.session, reply: result.assistant }, null, 2) + '\n');
+            }
+            return;
+          }
+
+          // Interactive REPL.
+          process.stdout.write(
+            c.hint(`  Type your message and press Enter. 'exit' or Ctrl+C to leave.\n  Type 'inject <insight>' to write the latest reply back to the main timeline.\n\n`),
+          );
+          let keepGoing = true;
+          while (keepGoing) {
+            const userInput = await askText('you', {});
+            const trimmed = userInput.trim();
+            if (!trimmed) continue;
+            if (/^(exit|quit|bye)$/i.test(trimmed)) {
+              keepGoing = false;
+              break;
+            }
+            if (trimmed.toLowerCase().startsWith('inject ')) {
+              const insight = trimmed.slice('inject '.length).trim();
+              if (!insight) {
+                process.stdout.write(c.warn('  ! pass the insight text after `inject`.\n'));
+                continue;
+              }
+              await runInjectInline({
+                discussion,
+                session,
+                insight,
+                storage: ctx.storage,
+              });
+              continue;
+            }
+            await runSparringTurn({
+              session,
+              member,
+              discussion,
+              userMessage: trimmed,
+              settings,
+              storage: ctx.storage,
+              projectRoot,
+              json: false,
+            });
+          }
+          process.stdout.write(c.hint(`Sparring session ${session.id.slice(0, 8)} saved.\n`));
+        } finally {
+          await closeContext(ctx);
+        }
+      },
+    );
+
+  // Subcommands of `discuss spar` — `spar list` and `spar show` — must be
+  // attached *after* the action above; commander prefers the action variant
+  // when the first positional arg is an id-like string but routes `spar list`
+  // to the list subcommand because `list` is not a discussion id.
+  spar
+    .command('list <discussionIdOrShort>')
+    .description('list sparring sessions attached to a discussion')
+    .action(async (discussionIdOrShort: string) => {
+      const ctx = await openContext(parent, { lock: false });
+      try {
+        const discussion = await resolveDiscussion(ctx.storage, discussionIdOrShort);
+        const sessions = await ctx.storage.loadSparringSessionsForDiscussion(discussion.id);
+        if (ctx.json) {
+          process.stdout.write(JSON.stringify({ discussionId: discussion.id, sessions }, null, 2) + '\n');
+          return;
+        }
+        if (sessions.length === 0) {
+          process.stdout.write(c.hint(`  (no sparring sessions yet — run \`aab discuss spar ${shortId(discussion.id)} --member "<name>"\`)\n`));
+          return;
+        }
+        process.stdout.write(
+          `\n${c.brand('AI Advisory Board')}  ${c.hint('· ' + sessions.length + ' sparring session(s) on ' + shortId(discussion.id))}\n\n`,
+        );
+        for (const s of sessions) {
+          const ts = new Date(s.updatedAt).toLocaleString();
+          process.stdout.write(
+            `  ${c.cyan(s.id.slice(0, 8))} ${c.hint(ts)} ${c.bold(s.memberName)} ${c.hint(`(round ${s.anchorRoundNumber} · turn ${s.anchorTurnNumber} · ${s.messages.length} msg${s.messages.length === 1 ? '' : 's'})`)}\n`,
+          );
+          if (s.title) process.stdout.write(`    ${c.hint('title:')} ${s.title}\n`);
+        }
+      } finally {
+        await closeContext(ctx);
+      }
+    });
+
+  spar
+    .command('show <sessionIdOrShort>')
+    .description('print a sparring session transcript')
+    .action(async (sessionIdOrShort: string) => {
+      const ctx = await openContext(parent, { lock: false });
+      try {
+        const session = await resolveSparringSessionAnywhere(ctx.storage, sessionIdOrShort);
+        if (ctx.json) {
+          process.stdout.write(JSON.stringify({ session }, null, 2) + '\n');
+          return;
+        }
+        process.stdout.write(
+          `\n${c.bold(session.title ?? `1:1 with ${session.memberName}`)} ${c.hint('· ' + session.id.slice(0, 8))}\n`,
+        );
+        process.stdout.write(`  ${c.hint('member:')} ${session.memberName}\n`);
+        process.stdout.write(`  ${c.hint('anchor:')} round ${session.anchorRoundNumber} · turn ${session.anchorTurnNumber}\n`);
+        process.stdout.write(`  ${c.hint('messages:')} ${session.messages.length}\n\n`);
+        renderAnchor(session);
+        for (const m of session.messages) renderSparringMessage(m.role, m.content);
+      } finally {
+        await closeContext(ctx);
+      }
+    });
+}
+
+function registerInject(parent: Command): void {
+  parent
+    .command('inject <discussionIdOrShort>')
+    .description('write a sparring-deep-dive insight back into the main timeline')
+    .option('--from <sessionIdOrShort>', 'sparring session id to source from (required)')
+    .option('--insight <text>', 'override the insight text (default: latest assistant reply)')
+    .option('--yes', 'skip confirmation')
+    .action(async (discussionIdOrShort: string, opts: { from?: string; insight?: string; yes?: boolean }) => {
+      const ctx = await openContext(parent);
+      try {
+        const discussion = await resolveDiscussion(ctx.storage, discussionIdOrShort);
+        if (!opts.from) {
+          throw new UserError(
+            'pass --from <sparringSessionId>.',
+            `Run \`aab discuss spar list ${shortId(discussion.id)}\` to see available sessions.`,
+          );
+        }
+        const session = await resolveSparringSession(ctx.storage, discussion.id, opts.from);
+
+        let insight: string;
+        if (opts.insight) {
+          insight = opts.insight.trim();
+        } else {
+          const lastAssistant = [...session.messages].reverse().find((m) => m.role === 'assistant');
+          if (!lastAssistant) {
+            throw new UserError(
+              'No assistant reply in this session yet to inject.',
+              'Send a message first, or pass --insight "<text>" explicitly.',
+            );
+          }
+          insight = lastAssistant.content.trim();
+        }
+        if (!insight) throw new UserError('Insight text cannot be empty.');
+
+        if (!opts.yes && !ctx.json) {
+          process.stdout.write(`${c.bold('Insight preview:')}\n${insight.slice(0, 500)}${insight.length > 500 ? '\n…(truncated for preview)' : ''}\n\n`);
+          const ok = await askConfirm(
+            `Inject this back into discussion ${shortId(discussion.id)} at round ${session.anchorRoundNumber}?`,
+            true,
+          );
+          if (!ok) {
+            process.stdout.write(c.hint('  aborted.\n'));
+            return;
+          }
+        }
+
+        const result = await injectSparringInsight({
+          discussion,
+          session,
+          insight,
+          storage: ctx.storage,
+        });
+
+        if (ctx.json) {
+          process.stdout.write(
+            JSON.stringify(
+              { discussionId: result.discussion.id, injected: result.injectedUserResponse },
+              null,
+              2,
+            ) + '\n',
+          );
+        } else {
+          process.stdout.write(
+            `${c.ok('✓')} injected insight into ${shortId(result.discussion.id)} at round ${result.injectedUserResponse.roundNumber}.\n`,
+          );
+        }
+      } finally {
+        await closeContext(ctx);
+      }
+    });
+}
+
+interface RunSparringTurnArgs {
+  session: SparringSession;
+  member: AdvisoryBoardMember;
+  discussion: Discussion;
+  userMessage: string;
+  settings: Awaited<ReturnType<StorageService['loadSettings']>>;
+  storage: StorageService;
+  projectRoot: string;
+  json: boolean;
+}
+
+async function runSparringTurn(args: RunSparringTurnArgs): Promise<{ session: SparringSession; assistant?: string }> {
+  if (!args.json) {
+    renderSparringMessage('user', args.userMessage);
+  }
+  const sp = spinner(`${args.member.name} thinking...`);
+  sp.start();
+  try {
+    const result = await sendSparringMessage({
+      session: args.session,
+      member: args.member,
+      discussion: args.discussion,
+      userMessage: args.userMessage,
+      settings: args.settings,
+      storage: args.storage,
+      projectRoot: args.projectRoot,
+      onActivity: (event) => {
+        sp.text = `${args.member.name} ${event.activity}${event.detail ? ' (' + truncateActivityDetail(event.detail) + ')' : ''}`;
+      },
+    });
+    if (result.error || !result.assistantMsg) {
+      sp.fail(`${args.member.name}: ${result.error ?? 'no response'}`);
+      return { session: args.session };
+    }
+    sp.succeed(
+      `${args.member.name} replied in ${formatDuration(result.durationMs)} (${formatUsd(result.costUsd)})${result.fellBackToPrimary ? c.warn(' · fell back to primary model') : ''}`,
+    );
+    if (!args.json) {
+      renderSparringMessage(result.assistantMsg.role, result.assistantMsg.content);
+    }
+    return { session: args.session, assistant: result.assistantMsg.content };
+  } catch (error) {
+    sp.fail(`${args.member.name}: ${error instanceof Error ? error.message : String(error)}`);
+    return { session: args.session };
+  }
+}
+
+async function runInjectInline(args: {
+  discussion: Discussion;
+  session: SparringSession;
+  insight: string;
+  storage: StorageService;
+}): Promise<void> {
+  try {
+    const result = await injectSparringInsight({
+      discussion: args.discussion,
+      session: args.session,
+      insight: args.insight,
+      storage: args.storage,
+    });
+    process.stdout.write(
+      `${c.ok('✓')} injected insight into ${shortId(result.discussion.id)} at round ${result.injectedUserResponse.roundNumber}.\n`,
+    );
+  } catch (error) {
+    process.stdout.write(c.warn(`  ! inject failed: ${error instanceof Error ? error.message : String(error)}\n`));
+  }
+}
+
+async function resolveSparringSession(
+  storage: StorageService,
+  discussionId: string,
+  sessionIdOrShort: string,
+): Promise<SparringSession> {
+  const direct = await storage.loadSparringSessionById(sessionIdOrShort);
+  if (direct && direct.discussionId === discussionId) return direct;
+  const sessions = await storage.loadSparringSessionsForDiscussion(discussionId);
+  const matches = sessions.filter((s) => s.id.startsWith(sessionIdOrShort));
+  if (matches.length === 0) {
+    throw new UserError(`No sparring session matches "${sessionIdOrShort}" in discussion ${shortId(discussionId)}.`);
+  }
+  if (matches.length > 1) {
+    throw new UserError(`Multiple sparring sessions match "${sessionIdOrShort}". Use a longer prefix.`);
+  }
+  return matches[0]!;
+}
+
+async function resolveSparringSessionAnywhere(
+  storage: StorageService,
+  sessionIdOrShort: string,
+): Promise<SparringSession> {
+  const direct = await storage.loadSparringSessionById(sessionIdOrShort);
+  if (direct) return direct;
+  // Try discussion-by-discussion (no global short-id index — fine because the
+  // sparring/ tree is small and this is only the CLI fallback).
+  const discussions = await storage.loadDiscussions();
+  for (const d of discussions) {
+    const sessions = await storage.loadSparringSessionsForDiscussion(d.id);
+    const match = sessions.find((s) => s.id.startsWith(sessionIdOrShort));
+    if (match) return match;
+  }
+  throw new UserError(`No sparring session matches "${sessionIdOrShort}".`);
+}
+
+function renderSparringMessage(role: 'user' | 'assistant', content: string): void {
+  if (role === 'user') {
+    process.stdout.write(`${c.cyan('you:')}\n${content}\n\n`);
+  } else {
+    process.stdout.write(`${c.green('member:')}\n${content}\n\n`);
+  }
+}
+
+function renderAnchor(session: SparringSession): void {
+  process.stdout.write(`${c.bold('Anchor')} ${c.hint('· round ' + session.anchorRoundNumber + ' · turn ' + session.anchorTurnNumber)}\n`);
+  process.stdout.write(`${c.hint(session.anchorResponsePreview)}\n\n`);
+}
+
+function truncateActivityDetail(detail: string): string {
+  const t = detail.trim();
+  return t.length > 60 ? t.slice(0, 57) + '…' : t;
 }
 
 // ---------------- helpers ----------------

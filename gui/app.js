@@ -54,6 +54,7 @@ async function bootstrap() {
   setupModal();
   setupEditModal();
   setupConfirmModal();
+  setupExplorerModal();
   navigate('discussions');
 }
 
@@ -152,6 +153,24 @@ function handleWsMessage(msg) {
     toast(msg.message, 'err');
     // Re-enable any disabled action buttons so the user can retry
     setActionButtonsBusy(false);
+  } else if (
+    msg.type === 'member_enhance_started' ||
+    msg.type === 'member_enhance_progress' ||
+    msg.type === 'member_enhance_done' ||
+    msg.type === 'member_enhance_failed' ||
+    msg.type === 'member_voice_started' ||
+    msg.type === 'member_voice_done' ||
+    msg.type === 'member_voice_preview' ||
+    msg.type === 'members_sync_done' ||
+    msg.type === 'principles_seeded' ||
+    msg.type === 'principle_explorer_thinking' ||
+    msg.type === 'principle_explorer_reply'
+  ) {
+    window.dispatchEvent(new CustomEvent('aab-member-event', { detail: msg }));
+  } else if (msg.type && msg.type.startsWith('coach_')) {
+    window.dispatchEvent(new CustomEvent('aab-coach-event', { detail: msg }));
+  } else if (msg.type && msg.type.startsWith('sparring_')) {
+    window.dispatchEvent(new CustomEvent('aab-sparring-event', { detail: msg }));
   }
 }
 
@@ -175,6 +194,7 @@ function navigate(route) {
   else if (route === 'actions') renderActionsView(main);
   else if (route === 'principles') renderPrinciplesView(main);
   else if (route === 'knowledge') renderKnowledgeView(main);
+  else if (route === 'coach') renderCoachView(main);
   else if (route === 'settings') renderSettingsView(main);
 }
 
@@ -248,7 +268,20 @@ function openChatView(discussion) {
   back.addEventListener('click', () => navigate('discussions'));
   header.appendChild(back);
   header.appendChild(h('div', { class: 'chat-header-q' }, discussion.question));
-  header.appendChild(h('div', {}, '')); // spacer
+  const headerActions = h('div', { class: 'chat-header-actions' });
+  const sparListBtn = h(
+    'button',
+    {
+      class: 'btn-secondary',
+      type: 'button',
+      'data-testid': 'sparring-sessions-btn',
+      title: 'Open the sparring sessions list for this discussion',
+    },
+    '⚔ Sparring',
+  );
+  sparListBtn.addEventListener('click', () => openSparringListModal(discussion));
+  headerActions.appendChild(sparListBtn);
+  header.appendChild(headerActions);
   view.appendChild(header);
 
   // Stream
@@ -302,6 +335,17 @@ function discussionTimeline(discussion) {
 
     for (const r of round.responses) nodes.push(messageBubble(r));
     if (round.orchestratorDecision) nodes.push(orchestratorBubble(round.orchestratorDecision));
+
+    // Sparring injections attached to THIS round (anywhere in userResponses
+    // whose roundNumber matches and type === 'sparring_injection').
+    const injections = userResponses.filter(
+      (u) => u.type === 'sparring_injection' && u.roundNumber === round.roundNumber,
+    );
+    for (const inj of injections) {
+      const member = state.members.find((m) => m.id === inj.selectedMemberId);
+      const memberLabel = member?.name || 'Board member';
+      nodes.push(userBubble(inj.content, `Sparring insight injected (via ${memberLabel})`));
+    }
   }
   return nodes;
 }
@@ -607,15 +651,49 @@ function messageBubble(r) {
   const color = member.color || colorForMember(r.memberName);
   const initials = member.initials || initialsOf(r.memberName);
 
-  const wrap = h('div', { class: 'message' });
+  const wrap = h('div', {
+    class: 'message',
+    'data-testid': 'response-card',
+    'data-member-id': r.memberId || '',
+    'data-round': r.roundNumber || '',
+    'data-turn': r.turnNumber || '',
+  });
   wrap.appendChild(h('div', { class: 'avatar', 'data-color': color }, initials));
 
   const body = h('div', { class: 'message-body' });
+  const nameRow = h('div', { class: 'message-name-row' });
   const name = h('div', { class: 'message-name' }, r.memberName);
   if (r.turnNumber) {
     name.appendChild(h('span', { class: 'message-meta' }, `turn ${r.turnNumber}`));
   }
-  body.appendChild(name);
+  nameRow.appendChild(name);
+
+  if (r.memberId && state.currentDiscussion) {
+    const sparBtn = h(
+      'button',
+      {
+        class: 'btn-ghost btn-spar',
+        type: 'button',
+        title: `Open 1:1 deep dive with ${r.memberName}`,
+        'data-testid': 'spar-btn',
+        'data-member-id': r.memberId,
+        'data-round': r.roundNumber || '',
+        'data-turn': r.turnNumber || '',
+      },
+      '⚔ Spar',
+    );
+    sparBtn.addEventListener('click', () =>
+      openSparringPanel({
+        discussion: state.currentDiscussion,
+        memberId: r.memberId,
+        memberName: r.memberName,
+        anchorRoundNumber: r.roundNumber,
+        anchorTurnNumber: r.turnNumber,
+      }),
+    );
+    nameRow.appendChild(sparBtn);
+  }
+  body.appendChild(nameRow);
 
   const bubble = h('div', { class: 'bubble' }, r.content);
   body.appendChild(bubble);
@@ -988,9 +1066,31 @@ function renderMembersView(main) {
       h('div', { class: 'view-subtitle' }, `${activeCount} active · ${state.members.length} total`),
     ]),
   ]);
-  const addBtn = h('button', { class: 'btn-primary' }, '+ Add member');
+  const headerActions = h('div', { class: 'header-actions' });
+  const syncBtn = h('button', { class: 'btn-secondary', 'data-testid': 'members-sync-btn', title: 'Regenerate all .claude/agents/<slug>.md files' }, '↻ Regenerate agent files');
+  syncBtn.addEventListener('click', async () => {
+    syncBtn.disabled = true;
+    const prev = syncBtn.textContent;
+    syncBtn.textContent = 'Regenerating…';
+    try {
+      const r = await fetchJSON('/api/members/sync-agents', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ all: false }),
+      });
+      toast(`Wrote ${r.written}/${r.total} agent files (${r.skipped} skipped).`, 'ok');
+    } catch (e) {
+      toast('Sync failed: ' + e.message, 'err');
+    } finally {
+      syncBtn.disabled = false;
+      syncBtn.textContent = prev;
+    }
+  });
+  const addBtn = h('button', { class: 'btn-primary', 'data-testid': 'members-add-btn' }, '+ Add member');
   addBtn.addEventListener('click', () => openMemberEditModal(null));
-  header.appendChild(addBtn);
+  headerActions.appendChild(syncBtn);
+  headerActions.appendChild(addBtn);
+  header.appendChild(headerActions);
   view.appendChild(header);
 
   const body = h('div', { class: 'view-body' });
@@ -1063,9 +1163,37 @@ function memberCard(m) {
 
   // Action buttons row
   const actions = h('div', { class: 'card-actions' });
-  const editBtn = h('button', { class: 'btn-secondary' }, 'Edit');
+  const editBtn = h('button', { class: 'btn-secondary', 'data-testid': 'member-edit-btn' }, 'Edit');
   editBtn.addEventListener('click', () => openMemberEditModal(m));
-  const delBtn = h('button', { class: 'btn-danger-ghost' }, 'Delete');
+  const voiceBtn = h('button', { class: 'btn-secondary', 'data-testid': 'member-voice-btn', title: 'Regenerate voice guide with the fast model' }, '🔊 Voice');
+  voiceBtn.addEventListener('click', async (ev) => {
+    ev.stopPropagation();
+    voiceBtn.disabled = true;
+    const prev = voiceBtn.textContent;
+    voiceBtn.textContent = 'Refreshing…';
+    try {
+      const r = await fetchJSON(`/api/members/${m.id}/regenerate-voice`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ preview: true }),
+      });
+      const ok = window.confirm(`New voice guide:\n\n${r.voiceGuide}\n\nSave?`);
+      if (ok) {
+        await fetchJSON(`/api/members/${m.id}/regenerate-voice`, { method: 'POST' });
+        toast(`${m.name}: voice guide saved.`, 'ok');
+        await refreshState({ silent: true });
+        if (state.route === 'members') navigate('members');
+      } else {
+        toast('Voice guide preview only — not saved.', '');
+      }
+    } catch (e) {
+      toast('Voice failed: ' + e.message, 'err');
+    } finally {
+      voiceBtn.disabled = false;
+      voiceBtn.textContent = prev;
+    }
+  });
+  const delBtn = h('button', { class: 'btn-danger-ghost', 'data-testid': 'member-delete-btn' }, 'Delete');
   delBtn.addEventListener('click', () =>
     openConfirmModal({
       title: `Delete ${m.name}?`,
@@ -1085,6 +1213,7 @@ function memberCard(m) {
     }),
   );
   actions.appendChild(editBtn);
+  actions.appendChild(voiceBtn);
   actions.appendChild(delBtn);
   card.appendChild(actions);
 
@@ -1169,9 +1298,42 @@ function renderPrinciplesView(main) {
       ),
     ]),
   ]);
-  const addBtn = h('button', { class: 'btn-primary' }, '+ Add principle');
+  const headerActions = h('div', { class: 'header-actions' });
+  const seedBtn = h(
+    'button',
+    {
+      class: 'btn-secondary',
+      'data-testid': 'principles-seed-btn',
+      title: state.principles.length > 0 ? 'Already seeded; disabled' : 'Seed 8 Dalio-inspired starter principles',
+    },
+    '🌱 Seed starters',
+  );
+  if (state.principles.length > 0) seedBtn.disabled = true;
+  seedBtn.addEventListener('click', async () => {
+    if (seedBtn.disabled) return;
+    seedBtn.disabled = true;
+    const prev = seedBtn.textContent;
+    seedBtn.textContent = 'Seeding…';
+    try {
+      const r = await fetchJSON('/api/principles/seed-starters', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      toast(`Seeded ${r.added} starter principle${r.added === 1 ? '' : 's'}.`, 'ok');
+      await refreshState({ silent: true });
+      navigate('principles');
+    } catch (e) {
+      toast('Seed failed: ' + e.message, 'err');
+      seedBtn.disabled = false;
+      seedBtn.textContent = prev;
+    }
+  });
+  const addBtn = h('button', { class: 'btn-primary', 'data-testid': 'principles-add-btn' }, '+ Add principle');
   addBtn.addEventListener('click', () => openPrincipleEditModal(null));
-  header.appendChild(addBtn);
+  headerActions.appendChild(seedBtn);
+  headerActions.appendChild(addBtn);
+  header.appendChild(headerActions);
   view.appendChild(header);
 
   const body = h('div', { class: 'view-body' });
@@ -1232,6 +1394,23 @@ function principleCard(p) {
   bar.appendChild(h('div', { class: 'priority-bar-fill', style: `width: ${p.priority * 10}%` }));
   row.appendChild(bar);
   card.appendChild(row);
+
+  const actions = h('div', { class: 'card-actions' });
+  const exploreBtn = h(
+    'button',
+    {
+      class: 'btn-secondary',
+      'data-testid': 'principle-explore-btn',
+      title: '5-step Socratic wizard to refine behavior / anti-pattern / triggers / examples / priority',
+    },
+    '🔎 Explore',
+  );
+  exploreBtn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    openExplorerWizard(p);
+  });
+  actions.appendChild(exploreBtn);
+  card.appendChild(actions);
 
   card.addEventListener('click', () => openPrincipleEditModal(p));
   card.style.cursor = 'pointer';
@@ -1437,6 +1616,103 @@ function openMemberEditModal(member) {
   };
   for (const [k, frag] of Object.entries(fields)) body.appendChild(frag.wrap);
 
+  // ------- AI enhance row -------
+  const enhanceRow = h('div', { class: 'form-field' });
+  enhanceRow.appendChild(h('label', { class: 'field-label' }, 'AI enhance (fills persona + voice)'));
+  const enhanceWrap = h('div', { class: 'enhance-row' });
+  const enhanceTypeSel = h('select', { 'data-testid': 'enhance-type-select' });
+  for (const opt of [
+    { v: 'non-famous', label: 'Practitioner' },
+    { v: 'expert', label: 'Top-1% expert' },
+    { v: 'famous', label: 'Famous leader' },
+  ]) {
+    const o = h('option', { value: opt.v }, opt.label);
+    enhanceTypeSel.appendChild(o);
+  }
+  const enhanceBtn = h('button', { class: 'btn-secondary', 'data-testid': 'enhance-with-ai-btn' }, '✨ Enhance with AI');
+  const enhanceStatus = h('span', { class: 'field-help' }, '');
+  enhanceBtn.addEventListener('click', async () => {
+    const name = fields.name.input.value.trim();
+    const title = fields.title.input.value.trim();
+    if (!name || !title) {
+      toast('Set name + title before enhancing.', 'err');
+      return;
+    }
+    if (!member) {
+      // Need to create a draft first.
+      toast('Save the member first, then click "Enhance with AI" from the edit modal.', 'err');
+      return;
+    }
+    enhanceBtn.disabled = true;
+    enhanceBtn.textContent = 'Enhancing…';
+    enhanceStatus.textContent = 'Calling claude…';
+    try {
+      // Fire-and-watch via WS — server returns 202 + memberId.
+      await fetchJSON(`/api/members/${member.id}/enhance`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: enhanceTypeSel.value, keepVoice: false }),
+      });
+      // Listen for the member_enhance_done WS event.
+      const onEvent = (ev) => {
+        const d = ev.detail || {};
+        if (d.memberId !== member.id) return;
+        if (d.type === 'member_enhance_progress') {
+          enhanceStatus.textContent = `Working… ${d.event?.type || ''}`;
+        } else if (d.type === 'member_enhance_done') {
+          enhanceStatus.textContent = 'Done.';
+          // Fill the modal fields with the new content (don't auto-close).
+          if (d.member?.persona) fields.persona.input.value = d.member.persona;
+          if (d.member?.voiceGuide) fields.voiceGuide.input.value = d.member.voiceGuide;
+          enhanceBtn.disabled = false;
+          enhanceBtn.textContent = '✨ Enhance with AI';
+          window.removeEventListener('aab-member-event', onEvent);
+          refreshState({ silent: true });
+          toast(`${member.name}: AI-enhanced persona ready.`, 'ok');
+        } else if (d.type === 'member_enhance_failed') {
+          enhanceStatus.textContent = 'Failed: ' + (d.message || 'unknown');
+          enhanceBtn.disabled = false;
+          enhanceBtn.textContent = '✨ Enhance with AI';
+          window.removeEventListener('aab-member-event', onEvent);
+          toast('Enhance failed: ' + d.message, 'err');
+        }
+      };
+      window.addEventListener('aab-member-event', onEvent);
+    } catch (e) {
+      enhanceBtn.disabled = false;
+      enhanceBtn.textContent = '✨ Enhance with AI';
+      enhanceStatus.textContent = '';
+      toast('Enhance failed: ' + e.message, 'err');
+    }
+  });
+  enhanceWrap.appendChild(enhanceTypeSel);
+  enhanceWrap.appendChild(enhanceBtn);
+  enhanceWrap.appendChild(enhanceStatus);
+  enhanceRow.appendChild(enhanceWrap);
+  body.appendChild(enhanceRow);
+
+  // ------- Tools allowlist editor -------
+  const toolsRow = h('div', { class: 'form-field' });
+  toolsRow.appendChild(h('label', { class: 'field-label' }, 'Allowed tools (per-member override)'));
+  const toolsHelp = h('div', { class: 'field-help' }, 'Leave all unchecked to use the workspace default (WebSearch, WebFetch, Read, Grep, Glob).');
+  toolsRow.appendChild(toolsHelp);
+  const toolsBox = h('div', { class: 'tools-chips', 'data-testid': 'member-tools-allowlist' });
+  const TOOL_PALETTE = ['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'];
+  const currentAllowed = new Set(member?.allowedTools ?? []);
+  const toolInputs = {};
+  for (const tool of TOOL_PALETTE) {
+    const lbl = h('label', { class: 'tool-chip' });
+    const cb = h('input', { type: 'checkbox', 'data-tool': tool });
+    cb.checked = currentAllowed.has(tool);
+    lbl.appendChild(cb);
+    lbl.appendChild(h('span', {}, tool));
+    toolsBox.appendChild(lbl);
+    toolInputs[tool] = cb;
+  }
+  toolsRow.appendChild(toolsBox);
+  body.appendChild(toolsRow);
+  fields._tools = toolInputs;
+
   if (!isNew) {
     body.appendChild(
       h('label', { class: 'switch-row' }, [
@@ -1493,6 +1769,13 @@ function openMemberEditModal(member) {
       voiceGuide: fields.voiceGuide.input.value.trim() || undefined,
     };
     if (!isNew) payload.isActive = fields.isActive.input.checked;
+    // Tools allowlist — only send if the user explicitly checked some tools
+    // (an empty `allowedTools` means "use the workspace default").
+    const pickedTools = Object.entries(fields._tools || {})
+      .filter(([, cb]) => cb.checked)
+      .map(([t]) => t);
+    if (pickedTools.length > 0) payload.allowedTools = pickedTools;
+    else if (!isNew) payload.allowedTools = []; // explicit clear
 
     if (isNew) {
       await fetchJSON('/api/members', {
@@ -2121,6 +2404,964 @@ window.addEventListener('aab-wiki-event', (ev) => {
         rerenderKnowledge();
       });
     }
+  }
+});
+
+// ------------------------------------------------------------------
+// Principle Explorer wizard
+// ------------------------------------------------------------------
+
+const EXPLORER_STEPS = ['behavior', 'antipattern', 'triggers', 'examples', 'priority'];
+const STEP_LABELS = {
+  behavior: 'Behavior',
+  antipattern: 'Anti-pattern',
+  triggers: 'Trigger questions',
+  examples: 'Examples',
+  priority: 'Priority',
+};
+
+const explorerState = {
+  /** Working principle draft (mutated as we apply step values). */
+  principle: null,
+  /** Cross-step ExplorerTurn[] log. */
+  history: [],
+  /** Same-step turns (re-set when stepping). */
+  currentStepTurns: [],
+  step: 'behavior',
+  isFirstMessage: true,
+  pendingSuggested: null,
+  /** id of the existing principle (when refining one) or null for new draft. */
+  existingId: null,
+};
+
+function setupExplorerModal() {
+  $('#explorer-modal-close').addEventListener('click', closeExplorerModal);
+  $('#explorer-modal-skip').addEventListener('click', () => advanceExplorerStep({ skip: true }));
+  $('#explorer-modal-next').addEventListener('click', () => advanceExplorerStep({}));
+}
+
+function openExplorerWizard(principle) {
+  explorerState.principle = {
+    id: principle?.id,
+    title: principle?.title || '',
+    description: principle?.description || '',
+    category: principle?.category || 'meta',
+    priority: principle?.priority ?? 5,
+    behavior: principle?.behavior || '',
+    antiPattern: principle?.antiPattern,
+    triggerQuestions: principle?.triggerQuestions,
+    examples: principle?.examples,
+    isActive: principle?.isActive ?? true,
+  };
+  explorerState.history = [];
+  explorerState.currentStepTurns = [];
+  explorerState.step = 'behavior';
+  explorerState.isFirstMessage = true;
+  explorerState.pendingSuggested = null;
+  explorerState.existingId = principle?.id || null;
+
+  $('#explorer-modal-title').textContent =
+    `Explore: ${explorerState.principle.title || '(new draft)'} — ${STEP_LABELS[explorerState.step]}`;
+  $('#explorer-modal').hidden = false;
+  $('#explorer-modal-next').hidden = true;
+  renderExplorerStep();
+  // Auto-fire the opener turn.
+  fireExplorerStep('');
+}
+
+function closeExplorerModal() {
+  $('#explorer-modal').hidden = true;
+  $('#explorer-modal-body').innerHTML = '';
+}
+
+function renderExplorerStep() {
+  const body = $('#explorer-modal-body');
+  body.innerHTML = '';
+  const wrap = h('div', { class: 'explorer-wrap', 'data-testid': `explorer-step-${explorerState.step}` });
+  // Step indicator
+  const steps = h('div', { class: 'explorer-steps' });
+  for (const s of EXPLORER_STEPS) {
+    const dot = h('span', { class: 'explorer-step-dot' + (s === explorerState.step ? ' active' : '') }, STEP_LABELS[s]);
+    steps.appendChild(dot);
+  }
+  wrap.appendChild(steps);
+  // Transcript
+  const transcript = h('div', { class: 'explorer-transcript' });
+  for (const turn of explorerState.currentStepTurns) {
+    const div = h('div', { class: `explorer-msg ${turn.role}` });
+    div.appendChild(h('span', { class: 'explorer-role' }, turn.role === 'user' ? 'you' : 'coach'));
+    const content = h('div', { class: 'explorer-content' });
+    content.textContent = turn.content;
+    div.appendChild(content);
+    transcript.appendChild(div);
+  }
+  wrap.appendChild(transcript);
+  // Composer
+  const composer = h('div', { class: 'explorer-composer' });
+  const input = h('textarea', { rows: '3', placeholder: 'Type your answer…', 'data-testid': 'explorer-input' });
+  const sendBtn = h('button', { class: 'btn-primary', 'data-testid': 'explorer-send' }, 'Send');
+  sendBtn.addEventListener('click', () => {
+    const text = input.value.trim();
+    if (!text) return;
+    explorerState.currentStepTurns.push({ step: explorerState.step, role: 'user', content: text });
+    explorerState.isFirstMessage = false;
+    input.value = '';
+    renderExplorerStep();
+    fireExplorerStep(text);
+  });
+  composer.appendChild(input);
+  composer.appendChild(sendBtn);
+  wrap.appendChild(composer);
+  body.appendChild(wrap);
+  // Working draft summary
+  const draft = h('div', { class: 'explorer-draft' });
+  const p = explorerState.principle;
+  const lines = [
+    `Title: ${p.title}`,
+    `Category: ${p.category}`,
+    `Priority: ${p.priority}/10`,
+    p.behavior ? `Behavior: ${truncateForExplorer(p.behavior, 100)}` : '',
+    p.antiPattern ? `Anti-pattern: ${truncateForExplorer(p.antiPattern, 100)}` : '',
+    Array.isArray(p.triggerQuestions) && p.triggerQuestions.length > 0 ? `Triggers: ${p.triggerQuestions.length} q` : '',
+    Array.isArray(p.examples) && p.examples.length > 0 ? `Examples: ${p.examples.length}` : '',
+  ].filter(Boolean);
+  draft.innerHTML = `<strong>Working draft</strong><br>` + lines.map((l) => `<span>${escHtml(l)}</span>`).join('<br>');
+  body.appendChild(draft);
+}
+
+function truncateForExplorer(s, max) {
+  if (!s) return '';
+  return s.length <= max ? s : s.slice(0, max - 1) + '…';
+}
+
+async function fireExplorerStep(userMessage) {
+  const body = $('#explorer-modal-body');
+  const thinking = h('div', { class: 'explorer-thinking' }, 'Coach thinking…');
+  body.appendChild(thinking);
+  try {
+    const result = await fetchJSON('/api/principles/explore-step', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        principle: explorerState.principle,
+        history: explorerState.history,
+        step: explorerState.step,
+        userMessage,
+        isFirstMessage: explorerState.isFirstMessage,
+      }),
+    });
+    explorerState.currentStepTurns.push({ step: explorerState.step, role: 'assistant', content: result.reply });
+    explorerState.isFirstMessage = false;
+    if (result.synthesised && result.suggested) {
+      explorerState.pendingSuggested = result.suggested;
+      $('#explorer-modal-next').hidden = false;
+    }
+    renderExplorerStep();
+  } catch (e) {
+    thinking.remove();
+    toast('Coach failed: ' + e.message, 'err');
+  }
+}
+
+async function advanceExplorerStep(opts) {
+  // Apply the pending suggestion (if any and not skipped).
+  if (!opts.skip && explorerState.pendingSuggested) {
+    try {
+      const r = await fetchJSON('/api/principles/apply-step', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          principle: explorerState.principle,
+          step: explorerState.step,
+          value: explorerState.pendingSuggested,
+        }),
+      });
+      explorerState.principle = { ...explorerState.principle, ...r.principle };
+    } catch (e) {
+      toast('Apply failed: ' + e.message, 'err');
+      return;
+    }
+  }
+  // Move the same-step turns into the global history so the next step has them.
+  explorerState.history = [...explorerState.history, ...explorerState.currentStepTurns];
+  explorerState.currentStepTurns = [];
+  explorerState.pendingSuggested = null;
+  $('#explorer-modal-next').hidden = true;
+  const idx = EXPLORER_STEPS.indexOf(explorerState.step);
+  if (idx === EXPLORER_STEPS.length - 1) {
+    // All steps done — save the principle.
+    await saveExploredPrinciple();
+    return;
+  }
+  explorerState.step = EXPLORER_STEPS[idx + 1];
+  explorerState.isFirstMessage = true;
+  $('#explorer-modal-title').textContent =
+    `Explore: ${explorerState.principle.title || '(new draft)'} — ${STEP_LABELS[explorerState.step]}`;
+  renderExplorerStep();
+  fireExplorerStep('');
+}
+
+async function saveExploredPrinciple() {
+  const p = explorerState.principle;
+  try {
+    if (explorerState.existingId) {
+      await fetchJSON(`/api/principles/${explorerState.existingId}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          behavior: p.behavior,
+          antiPattern: p.antiPattern,
+          triggerQuestions: p.triggerQuestions,
+          examples: p.examples,
+          priority: p.priority,
+        }),
+      });
+      toast(`Saved refined principle "${p.title}".`, 'ok');
+    } else {
+      await fetchJSON('/api/principles', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          title: p.title,
+          description: p.description,
+          category: p.category,
+          behavior: p.behavior,
+          antiPattern: p.antiPattern,
+          triggerQuestions: p.triggerQuestions,
+          examples: p.examples,
+          priority: p.priority,
+        }),
+      });
+      toast(`Created new principle "${p.title}".`, 'ok');
+    }
+    closeExplorerModal();
+    await refreshState({ silent: true });
+    if (state.route === 'principles') navigate('principles');
+  } catch (e) {
+    toast('Save failed: ' + e.message, 'err');
+  }
+}
+
+// ------------------------------------------------------------------
+// Decision Coach view
+// ------------------------------------------------------------------
+
+const coachState = {
+  sessions: [],
+  currentSessionId: null,
+  currentSession: null,
+  thinking: false,
+};
+
+function renderCoachView(main) {
+  const view = h('div', { class: 'view coach-view', 'data-testid': 'coach-view' });
+  view.appendChild(
+    h('div', { class: 'view-header' }, [
+      h('div', {}, [
+        h('div', { class: 'view-title' }, 'Decision Coach'),
+        h('div', { class: 'view-subtitle' }, 'Principle-based decision conversations (Dalio-style).'),
+      ]),
+      (() => {
+        const wrap = h('div', { class: 'header-actions' });
+        const newBtn = h('button', { class: 'btn-primary', 'data-testid': 'coach-new-session-btn' }, '+ New session');
+        newBtn.addEventListener('click', openNewCoachSessionModal);
+        wrap.appendChild(newBtn);
+        return wrap;
+      })(),
+    ]),
+  );
+
+  const body = h('div', { class: 'coach-layout' });
+  const sidebar = h('aside', { class: 'coach-sidebar', 'data-testid': 'coach-session-list' });
+  sidebar.appendChild(h('div', { class: 'coach-sidebar-head' }, 'Sessions'));
+  const sidebarList = h('div', { class: 'coach-session-list' });
+  sidebarList.id = 'coach-session-list';
+  sidebar.appendChild(sidebarList);
+  body.appendChild(sidebar);
+
+  const detail = h('section', { class: 'coach-detail', id: 'coach-detail', 'data-testid': 'coach-detail' });
+  detail.appendChild(h('div', { class: 'coach-empty' }, [
+    h('h2', {}, 'Pick a session, or start a new one'),
+    h('p', {}, 'The coach references your active principles to help you think through hard decisions.'),
+  ]));
+  body.appendChild(detail);
+  view.appendChild(body);
+  main.appendChild(view);
+
+  refreshCoachSessions();
+}
+
+async function refreshCoachSessions() {
+  try {
+    const r = await fetchJSON('/api/coach/sessions');
+    coachState.sessions = r.sessions || [];
+    renderCoachSidebar();
+  } catch (e) {
+    toast('Could not load sessions: ' + e.message, 'err');
+  }
+}
+
+function renderCoachSidebar() {
+  const list = $('#coach-session-list');
+  if (!list) return;
+  list.innerHTML = '';
+  if (coachState.sessions.length === 0) {
+    list.appendChild(h('div', { class: 'hint' }, 'No sessions yet. Click "New session".'));
+    return;
+  }
+  for (const s of coachState.sessions) {
+    const row = h('button', {
+      class: 'coach-session-row' + (s.id === coachState.currentSessionId ? ' active' : ''),
+      'data-testid': 'coach-session-row',
+      'data-session-id': s.id,
+    });
+    const title = s.title || s.situation.slice(0, 60);
+    row.appendChild(h('div', { class: 'coach-session-title' }, title));
+    const meta = h('div', { class: 'coach-session-meta' });
+    meta.appendChild(h('span', {}, `${s.messages.length} msg`));
+    meta.appendChild(h('span', {}, ' · '));
+    meta.appendChild(h('span', {}, s.status));
+    meta.appendChild(h('span', {}, ' · '));
+    meta.appendChild(h('span', {}, formatRelative(s.updatedAt)));
+    row.appendChild(meta);
+    row.addEventListener('click', () => loadCoachSession(s.id));
+    list.appendChild(row);
+  }
+}
+
+async function loadCoachSession(id) {
+  coachState.currentSessionId = id;
+  renderCoachSidebar();
+  const detail = $('#coach-detail');
+  if (!detail) return;
+  detail.innerHTML = '<div class="hint">Loading…</div>';
+  try {
+    const session = await fetchJSON('/api/coach/sessions/' + encodeURIComponent(id));
+    coachState.currentSession = session;
+    renderCoachChat();
+  } catch (e) {
+    detail.innerHTML = `<div class="hint err">${escHtml(e.message)}</div>`;
+  }
+}
+
+function renderCoachChat() {
+  const detail = $('#coach-detail');
+  if (!detail || !coachState.currentSession) return;
+  const s = coachState.currentSession;
+  detail.innerHTML = '';
+  const head = h('div', { class: 'coach-chat-head' });
+  head.appendChild(h('div', { class: 'coach-chat-title' }, s.title || 'Decision session'));
+  head.appendChild(h('div', { class: 'coach-chat-situation' }, s.situation));
+  const headRow = h('div', { class: 'coach-chat-meta' });
+  headRow.appendChild(h('span', {}, s.status));
+  headRow.appendChild(h('span', {}, ' · '));
+  headRow.appendChild(h('span', {}, formatRelative(s.updatedAt)));
+  headRow.appendChild(h('span', {}, ' · '));
+  const delBtn = h('button', { class: 'btn-danger-ghost', 'data-testid': 'coach-delete-btn' }, 'Delete');
+  delBtn.addEventListener('click', () =>
+    openConfirmModal({
+      title: 'Delete this coach session?',
+      message: 'This cannot be undone.',
+      okLabel: 'Delete',
+      onOk: async () => {
+        await fetchJSON('/api/coach/sessions/' + s.id, { method: 'DELETE' });
+        toast('Session deleted.', 'ok');
+        coachState.currentSession = null;
+        coachState.currentSessionId = null;
+        await refreshCoachSessions();
+        renderCoachView($('#main'));
+      },
+    }),
+  );
+  headRow.appendChild(delBtn);
+  head.appendChild(headRow);
+  detail.appendChild(head);
+
+  const stream = h('div', { class: 'coach-stream', 'data-testid': 'coach-stream' });
+  for (const m of s.messages) {
+    const bubble = h('div', { class: `coach-msg ${m.role}` });
+    bubble.appendChild(h('span', { class: 'coach-role' }, m.role === 'user' ? 'you' : 'coach'));
+    const body = h('div', { class: 'coach-msg-body' });
+    body.textContent = m.content;
+    bubble.appendChild(body);
+    if (m.principlesReferenced && m.principlesReferenced.length > 0) {
+      const refs = h('div', { class: 'coach-msg-refs' });
+      const names = m.principlesReferenced
+        .map((pid) => state.principles.find((p) => p.id === pid)?.title)
+        .filter(Boolean);
+      if (names.length > 0) {
+        refs.textContent = 'principles: ' + names.join(', ');
+        bubble.appendChild(refs);
+      }
+    }
+    stream.appendChild(bubble);
+  }
+  if (coachState.thinking) {
+    stream.appendChild(h('div', { class: 'coach-thinking' }, 'Coach thinking…'));
+  }
+  detail.appendChild(stream);
+
+  const composer = h('div', { class: 'coach-composer' });
+  const input = h('textarea', {
+    rows: '2',
+    placeholder: 'Type your message…',
+    'data-testid': 'coach-input',
+  });
+  const sendBtn = h('button', { class: 'btn-primary', 'data-testid': 'coach-send-btn' }, 'Send');
+  const send = async () => {
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    sendBtn.disabled = true;
+    coachState.thinking = true;
+    renderCoachChat();
+    try {
+      await fetchJSON(`/api/coach/sessions/${s.id}/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: text }),
+      });
+      // The actual reply arrives via WS coach_message.
+    } catch (e) {
+      coachState.thinking = false;
+      toast('Send failed: ' + e.message, 'err');
+      renderCoachChat();
+    } finally {
+      sendBtn.disabled = false;
+    }
+  };
+  sendBtn.addEventListener('click', send);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      send();
+    }
+  });
+  composer.appendChild(input);
+  composer.appendChild(sendBtn);
+  detail.appendChild(composer);
+
+  // Auto-scroll to bottom
+  stream.scrollTop = stream.scrollHeight;
+}
+
+function openNewCoachSessionModal() {
+  $('#edit-modal-title').textContent = 'New coach session';
+  const body = $('#edit-modal-body');
+  body.innerHTML = '';
+  const fields = {
+    title: input('Title (optional)', '', 'e.g. Should I pivot?'),
+    situation: textarea(
+      'Situation / decision to think through',
+      '',
+      'Describe the decision and any constraints.',
+      4,
+    ),
+  };
+  body.appendChild(fields.title.wrap);
+  body.appendChild(fields.situation.wrap);
+  $('#edit-modal-delete').hidden = true;
+  $('#edit-modal').hidden = false;
+  fields.situation.input.focus();
+  editModalOnSave = async () => {
+    const situation = fields.situation.input.value.trim();
+    if (!situation) {
+      toast('Situation is required.', 'err');
+      throw new Error('Situation is required.');
+    }
+    const r = await fetchJSON('/api/coach/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ situation, title: fields.title.input.value.trim() || undefined }),
+    });
+    toast('Session started — coach is opening the conversation.', 'ok');
+    coachState.currentSessionId = r.session.id;
+    coachState.currentSession = r.session;
+    coachState.thinking = true;
+    await refreshCoachSessions();
+    if (state.route === 'coach') renderCoachChat();
+  };
+}
+
+// WS bridge for coach events.
+window.addEventListener('aab-coach-event', (ev) => {
+  const d = ev.detail || {};
+  if (d.type === 'coach_thinking') {
+    if (coachState.currentSessionId === d.sessionId) {
+      coachState.thinking = true;
+      if (state.route === 'coach') renderCoachChat();
+    }
+  } else if (d.type === 'coach_message') {
+    if (coachState.currentSessionId === d.sessionId && d.session) {
+      coachState.currentSession = d.session;
+      coachState.thinking = false;
+      if (state.route === 'coach') renderCoachChat();
+    }
+    refreshCoachSessions();
+  } else if (d.type === 'coach_error') {
+    if (coachState.currentSessionId === d.sessionId) {
+      coachState.thinking = false;
+      toast('Coach error: ' + d.message, 'err');
+      if (state.route === 'coach') renderCoachChat();
+    }
+  } else if (d.type === 'coach_session_started' || d.type === 'coach_session_deleted' || d.type === 'coach_session_updated') {
+    refreshCoachSessions();
+  }
+});
+
+// ==================================================================
+// Sparring (Phase 3) — 1:1 deep dive panel anchored to a response
+// ==================================================================
+
+const sparringState = {
+  open: false,
+  session: null,
+  member: null,
+  discussion: null,
+  thinking: false,
+  activity: null,
+};
+
+async function openSparringPanel({ discussion, memberId, memberName, anchorRoundNumber, anchorTurnNumber }) {
+  try {
+    const res = await fetch(`/api/discussions/${encodeURIComponent(discussion.id)}/sparring`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ memberId, memberName, anchorRoundNumber, anchorTurnNumber }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `Failed to open sparring (HTTP ${res.status})`);
+    }
+    const { session, reused } = await res.json();
+    sparringState.open = true;
+    sparringState.session = session;
+    sparringState.member = state.members.find((m) => m.id === memberId) || { name: memberName };
+    sparringState.discussion = discussion;
+    sparringState.thinking = false;
+    sparringState.activity = null;
+    renderSparringModal();
+    if (!reused) toast(`Sparring session opened with ${memberName}.`, 'ok');
+  } catch (err) {
+    toast(err.message || 'Could not open sparring', 'err');
+  }
+}
+
+function renderSparringModal() {
+  let modal = document.getElementById('sparring-modal');
+  if (!modal) {
+    modal = h('div', {
+      class: 'modal-backdrop',
+      id: 'sparring-modal',
+      'data-testid': 'sparring-modal',
+    });
+    document.body.appendChild(modal);
+  }
+  modal.innerHTML = '';
+  modal.hidden = !sparringState.open;
+  if (!sparringState.open) return;
+
+  const inner = h('div', { class: 'modal modal-wide sparring-modal' });
+
+  const header = h('div', { class: 'modal-header' });
+  const titleBlock = h('div', {}, [
+    h('h2', { 'data-testid': 'sparring-title' }, `⚔ 1:1 with ${sparringState.member?.name || sparringState.session?.memberName}`),
+    h(
+      'div',
+      { class: 'message-meta' },
+      `Anchor: round ${sparringState.session.anchorRoundNumber} · turn ${sparringState.session.anchorTurnNumber}`,
+    ),
+  ]);
+  header.appendChild(titleBlock);
+
+  const headerActions = h('div', { class: 'spar-header-actions' });
+  const injectBtn = h(
+    'button',
+    {
+      class: 'btn-secondary',
+      type: 'button',
+      'data-testid': 'sparring-inject-btn',
+      title: 'Write the latest reply back into the main discussion timeline',
+    },
+    '↩ Inject insight back',
+  );
+  injectBtn.addEventListener('click', openSparringInjectModal);
+  headerActions.appendChild(injectBtn);
+
+  const closeBtn = h('button', { class: 'icon-btn', 'aria-label': 'Close', type: 'button' }, '×');
+  closeBtn.addEventListener('click', closeSparringPanel);
+  headerActions.appendChild(closeBtn);
+  header.appendChild(headerActions);
+  inner.appendChild(header);
+
+  const body = h('div', { class: 'modal-body sparring-body' });
+
+  // Sticky anchor banner
+  const anchor = h('div', { class: 'sparring-anchor', 'data-testid': 'sparring-anchor' });
+  anchor.appendChild(h('div', { class: 'sparring-anchor-label' }, 'Anchored response'));
+  anchor.appendChild(h('div', { class: 'sparring-anchor-text' }, sparringState.session.anchorResponsePreview || ''));
+  body.appendChild(anchor);
+
+  // Transcript
+  const transcript = h('div', { class: 'sparring-transcript', 'data-testid': 'sparring-transcript' });
+  const messages = sparringState.session.messages || [];
+  if (messages.length === 0) {
+    transcript.appendChild(
+      h('div', { class: 'message-meta sparring-empty' }, 'No messages yet — type your first sharper question below.'),
+    );
+  }
+  for (const m of messages) {
+    transcript.appendChild(sparringBubble(m, sparringState.member?.name || sparringState.session.memberName));
+  }
+  if (sparringState.thinking) {
+    transcript.appendChild(sparringThinkingBubble(sparringState.member?.name || sparringState.session.memberName, sparringState.activity));
+  }
+  body.appendChild(transcript);
+
+  // Composer
+  const composer = h('div', { class: 'sparring-composer' });
+  const textarea = h('textarea', {
+    id: 'sparring-input',
+    'data-testid': 'sparring-input',
+    rows: '3',
+    placeholder: 'Push back, ask a sharper question, request a counter-example…',
+  });
+  composer.appendChild(textarea);
+  const composerActions = h('div', { class: 'chat-actions sparring-composer-actions' });
+  const sendBtn = h(
+    'button',
+    { class: 'btn-primary', 'data-testid': 'sparring-send-btn', type: 'button' },
+    '↳ Send',
+  );
+  sendBtn.addEventListener('click', () => sendSparringMessageFromUi(textarea));
+  composerActions.appendChild(sendBtn);
+  composer.appendChild(composerActions);
+
+  // Ctrl/Cmd+Enter shortcut
+  textarea.addEventListener('keydown', (ev) => {
+    if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') {
+      ev.preventDefault();
+      sendSparringMessageFromUi(textarea);
+    }
+  });
+
+  body.appendChild(composer);
+
+  inner.appendChild(body);
+  modal.appendChild(inner);
+
+  // Auto-scroll transcript to bottom
+  setTimeout(() => {
+    transcript.scrollTop = transcript.scrollHeight;
+  }, 0);
+}
+
+function sparringBubble(message, memberName) {
+  const isUser = message.role === 'user';
+  const wrap = h('div', {
+    class: 'message' + (isUser ? ' message-user' : ''),
+    'data-testid': isUser ? 'sparring-msg-user' : 'sparring-msg-assistant',
+  });
+  if (!isUser) {
+    const member = state.members.find((m) => m.id === sparringState.session.memberId) || { name: memberName };
+    const color = member.color || colorForMember(memberName);
+    wrap.appendChild(h('div', { class: 'avatar', 'data-color': color }, initialsOf(memberName)));
+  }
+  const body = h('div', { class: 'message-body' + (isUser ? ' user-body' : '') });
+  body.appendChild(h('div', { class: 'message-name' }, isUser ? 'You' : memberName));
+  body.appendChild(h('div', { class: 'bubble' + (isUser ? ' user-bubble' : '') }, message.content));
+  if (!isUser && Array.isArray(message.sources) && message.sources.length > 0) {
+    const sources = h('div', { class: 'sparring-sources' });
+    sources.appendChild(h('div', { class: 'struct-section-title' }, 'Sources'));
+    const ul = h('ul');
+    for (const s of message.sources) {
+      const li = h('li', {});
+      const link = h('a', { href: s.url, target: '_blank', rel: 'noreferrer noopener' }, s.title || s.url);
+      li.appendChild(link);
+      ul.appendChild(li);
+    }
+    sources.appendChild(ul);
+    body.appendChild(sources);
+  }
+  wrap.appendChild(body);
+  if (isUser) {
+    wrap.appendChild(h('div', { class: 'avatar avatar-user', 'data-color': 'brand' }, '👤'));
+  }
+  return wrap;
+}
+
+function sparringThinkingBubble(memberName, activity) {
+  const member = state.members.find((m) => m.id === sparringState.session.memberId) || { name: memberName };
+  const color = member.color || colorForMember(memberName);
+  const wrap = h('div', { class: 'message', 'data-testid': 'sparring-typing' });
+  wrap.appendChild(h('div', { class: 'avatar', 'data-color': color }, initialsOf(memberName)));
+  const body = h('div', { class: 'message-body' });
+  body.appendChild(h('div', { class: 'message-name' }, memberName));
+  const bubble = h('div', { class: 'typing-bubble' });
+  bubble.appendChild(h('span', { class: 'typing-activity' }, (activity || 'thinking').replace(/[.…]+$/, '')));
+  const dots = h('div', { class: 'typing' });
+  dots.appendChild(h('span'));
+  dots.appendChild(h('span'));
+  dots.appendChild(h('span'));
+  bubble.appendChild(dots);
+  body.appendChild(bubble);
+  wrap.appendChild(body);
+  return wrap;
+}
+
+async function sendSparringMessageFromUi(textarea) {
+  const content = (textarea.value || '').trim();
+  if (!content) {
+    toast('Type a message first.', 'err');
+    return;
+  }
+  if (!sparringState.session) return;
+  textarea.value = '';
+  // Optimistic: append user message into local state, mark thinking.
+  sparringState.session.messages.push({
+    id: 'pending-' + Date.now(),
+    sessionId: sparringState.session.id,
+    role: 'user',
+    content,
+    sources: [],
+    createdAt: new Date().toISOString(),
+  });
+  sparringState.thinking = true;
+  sparringState.activity = null;
+  renderSparringModal();
+  try {
+    const res = await fetch(`/api/sparring/${encodeURIComponent(sparringState.session.id)}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    if (res.status !== 202) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `HTTP ${res.status}`);
+    }
+  } catch (err) {
+    sparringState.thinking = false;
+    toast(err.message || 'Send failed', 'err');
+    renderSparringModal();
+  }
+}
+
+function closeSparringPanel() {
+  sparringState.open = false;
+  sparringState.session = null;
+  sparringState.member = null;
+  sparringState.discussion = null;
+  sparringState.thinking = false;
+  sparringState.activity = null;
+  renderSparringModal();
+}
+
+function openSparringInjectModal() {
+  if (!sparringState.session) return;
+  const lastAssistant = [...sparringState.session.messages].reverse().find((m) => m.role === 'assistant');
+  if (!lastAssistant) {
+    toast('Send a message and get a reply first — there is nothing to inject.', 'err');
+    return;
+  }
+  const insight = lastAssistant.content;
+  let modal = document.getElementById('sparring-inject-modal');
+  if (!modal) {
+    modal = h('div', {
+      class: 'modal-backdrop',
+      id: 'sparring-inject-modal',
+      'data-testid': 'sparring-inject-modal',
+    });
+    document.body.appendChild(modal);
+  }
+  modal.innerHTML = '';
+  modal.hidden = false;
+  const inner = h('div', { class: 'modal modal-wide' });
+  inner.appendChild(
+    (() => {
+      const head = h('div', { class: 'modal-header' });
+      head.appendChild(h('h2', {}, '↩ Inject insight back to discussion'));
+      const close = h('button', { class: 'icon-btn', 'aria-label': 'Close', type: 'button' }, '×');
+      close.addEventListener('click', () => (modal.hidden = true));
+      head.appendChild(close);
+      return head;
+    })(),
+  );
+  const body = h('div', { class: 'modal-body' });
+  body.appendChild(
+    h(
+      'div',
+      { class: 'message-meta' },
+      `Will land in discussion at round ${sparringState.session.anchorRoundNumber} as a sparring_injection user response.`,
+    ),
+  );
+  body.appendChild(h('label', { class: 'field-label', for: 'sparring-inject-text' }, 'Insight text (editable)'));
+  const ta = h(
+    'textarea',
+    {
+      id: 'sparring-inject-text',
+      'data-testid': 'sparring-inject-textarea',
+      rows: '8',
+    },
+    insight,
+  );
+  body.appendChild(ta);
+  inner.appendChild(body);
+
+  const footer = h('div', { class: 'modal-footer' });
+  const cancel = h('button', { class: 'btn-secondary', type: 'button' }, 'Cancel');
+  cancel.addEventListener('click', () => (modal.hidden = true));
+  footer.appendChild(cancel);
+  const confirm = h(
+    'button',
+    { class: 'btn-primary', type: 'button', 'data-testid': 'sparring-inject-confirm' },
+    '↩ Inject',
+  );
+  confirm.addEventListener('click', async () => {
+    const text = (ta.value || '').trim();
+    if (!text) {
+      toast('Insight cannot be empty.', 'err');
+      return;
+    }
+    try {
+      const res = await fetch(`/api/sparring/${encodeURIComponent(sparringState.session.id)}/inject`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ insight: text }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || `HTTP ${res.status}`);
+      }
+      const { discussion } = await res.json();
+      modal.hidden = true;
+      toast('Insight injected into the main discussion.', 'ok');
+      // Refresh the underlying discussion if the user still has it open in the
+      // background.
+      if (state.currentDiscussion && state.currentDiscussion.id === discussion.id) {
+        state.currentDiscussion = discussion;
+        updateDiscussionList(discussion);
+        if (state.route === 'discussions') {
+          openChatView(discussion);
+        }
+      }
+    } catch (err) {
+      toast(err.message || 'Inject failed', 'err');
+    }
+  });
+  footer.appendChild(confirm);
+  inner.appendChild(footer);
+
+  modal.appendChild(inner);
+}
+
+async function openSparringListModal(discussion) {
+  let sessions = [];
+  try {
+    const res = await fetch(`/api/discussions/${encodeURIComponent(discussion.id)}/sparring`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json();
+    sessions = body.sessions || [];
+  } catch (err) {
+    toast('Could not load sparring sessions: ' + err.message, 'err');
+    return;
+  }
+
+  let modal = document.getElementById('sparring-list-modal');
+  if (!modal) {
+    modal = h('div', {
+      class: 'modal-backdrop',
+      id: 'sparring-list-modal',
+      'data-testid': 'sparring-list-modal',
+    });
+    document.body.appendChild(modal);
+  }
+  modal.innerHTML = '';
+  modal.hidden = false;
+
+  const inner = h('div', { class: 'modal modal-wide' });
+
+  const header = h('div', { class: 'modal-header' });
+  header.appendChild(h('h2', {}, `⚔ Sparring sessions · ${sessions.length}`));
+  const close = h('button', { class: 'icon-btn', 'aria-label': 'Close', type: 'button' }, '×');
+  close.addEventListener('click', () => (modal.hidden = true));
+  header.appendChild(close);
+  inner.appendChild(header);
+
+  const body = h('div', { class: 'modal-body' });
+  if (sessions.length === 0) {
+    body.appendChild(
+      h(
+        'div',
+        { class: 'message-meta' },
+        'No sparring sessions yet. Click ⚔ Spar on any response in the chat to start one.',
+      ),
+    );
+  } else {
+    const list = h('div', { class: 'sparring-session-list', 'data-testid': 'sparring-session-list' });
+    for (const s of sessions) {
+      const row = h('button', {
+        class: 'sparring-session-row',
+        type: 'button',
+        'data-testid': 'sparring-session-row',
+        'data-session-id': s.id,
+      });
+      row.appendChild(h('div', { class: 'spar-row-title' }, `${s.memberName} · round ${s.anchorRoundNumber} · turn ${s.anchorTurnNumber}`));
+      row.appendChild(
+        h(
+          'div',
+          { class: 'spar-row-meta' },
+          `${s.messages?.length || 0} message${(s.messages?.length || 0) === 1 ? '' : 's'} · ${formatRelative(s.updatedAt)}`,
+        ),
+      );
+      if (s.title) row.appendChild(h('div', { class: 'spar-row-subtitle' }, s.title));
+      row.addEventListener('click', () => {
+        modal.hidden = true;
+        sparringState.open = true;
+        sparringState.session = s;
+        sparringState.member = state.members.find((m) => m.id === s.memberId) || { name: s.memberName };
+        sparringState.discussion = discussion;
+        sparringState.thinking = false;
+        sparringState.activity = null;
+        renderSparringModal();
+      });
+      list.appendChild(row);
+    }
+    body.appendChild(list);
+  }
+  inner.appendChild(body);
+
+  modal.appendChild(inner);
+}
+
+window.addEventListener('aab-sparring-event', (ev) => {
+  const d = ev.detail;
+  if (!d || !sparringState.session || d.sessionId !== sparringState.session.id) return;
+  if (d.type === 'sparring_thinking') {
+    sparringState.thinking = true;
+    sparringState.activity = null;
+    renderSparringModal();
+  } else if (d.type === 'sparring_activity') {
+    sparringState.thinking = true;
+    sparringState.activity = d.activity;
+    renderSparringModal();
+  } else if (d.type === 'sparring_message') {
+    sparringState.thinking = false;
+    sparringState.activity = null;
+    if (d.session) {
+      sparringState.session = d.session;
+    } else {
+      // Append the message into the optimistic transcript.
+      sparringState.session.messages = sparringState.session.messages.filter((m) => !m.id.startsWith('pending-'));
+      sparringState.session.messages.push(d.message);
+    }
+    renderSparringModal();
+  } else if (d.type === 'sparring_error') {
+    sparringState.thinking = false;
+    sparringState.activity = null;
+    toast('Sparring error: ' + d.message, 'err');
+    renderSparringModal();
+  } else if (d.type === 'sparring_session_deleted') {
+    closeSparringPanel();
   }
 });
 

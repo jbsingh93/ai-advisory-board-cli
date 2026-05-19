@@ -28,6 +28,8 @@ import { STARTER_BOARD_MEMBERS } from '../starter/starter-board-members.js';
 import { STARTER_PRINCIPLES } from '../starter/starter-principles.js';
 import { emitMemberAgentFile } from '../agents/emit-member-agent.js';
 import { ResolvedWorkspace } from '../storage/paths.js';
+import { emitWikiSkeleton } from '../core/knowledge/schema-emitter.js';
+import { emitFoamRecommendation } from '../core/knowledge/foam.js';
 
 export function registerInitCommand(program: Command): void {
   program
@@ -40,6 +42,9 @@ export function registerInitCommand(program: Command): void {
     .option('--no-seed', 'skip seeding starter members and principles')
     .option('--no-agents', 'skip writing .claude/agents/<member>.md files')
     .option('--agents-dir <path>', 'where to write .claude/agents/ (default: cwd)')
+    .option('--no-wiki', 'skip emitting wiki/KNOWLEDGE.md + wiki/index.md + raw/')
+    .option('--foam', 'recommend the Foam VS Code extension via .vscode/extensions.json')
+    .option('--foam-overwrite', 'overwrite an unparseable .vscode/extensions.json (rare)')
     .action(async (cmdOpts: InitOptions) => {
       await runInit(cmdOpts);
     });
@@ -53,6 +58,9 @@ interface InitOptions {
   seed?: boolean;
   agents?: boolean;
   agentsDir?: string;
+  wiki?: boolean;
+  foam?: boolean;
+  foamOverwrite?: boolean;
 }
 
 async function runInit(opts: InitOptions): Promise<void> {
@@ -185,11 +193,38 @@ async function runInit(opts: InitOptions): Promise<void> {
     );
   }
 
+  // 7. Bootstrap the Knowledge Wiki (Phase 1.5) — idempotent, never overwrites
+  if (opts.wiki !== false) {
+    const sp4 = spinner('Bootstrapping wiki/ + raw/ + .manifest.json...');
+    sp4.start();
+    const result = emitWikiSkeleton({ workspaceRoot: workspace.root });
+    const total = result.wrote.length + result.skipped.length;
+    sp4.succeed(
+      `Knowledge Wiki ready (${result.wrote.length} new, ${result.skipped.length} preserved; ${total} files total).`,
+    );
+  }
+
+  // 8. Foam recommendation (opt-in via --foam)
+  const wikiSettings = (await storage.loadSettings()).knowledgeWiki;
+  const wantFoam = opts.foam || (opts.foam !== false && wikiSettings?.recommendFoam && opts.here);
+  if (wantFoam) {
+    const projectRootForFoam = opts.agentsDir ?? process.cwd();
+    const result = emitFoamRecommendation({ projectRoot: projectRootForFoam, force: !!opts.foamOverwrite });
+    if (result.action === 'created') {
+      process.stdout.write(`${c.ok('✓')} Foam recommended in ${c.bold(result.path)} ${c.hint('— open in VS Code for [[wikilinks]] support')}\n`);
+    } else if (result.action === 'merged') {
+      process.stdout.write(`${c.ok('✓')} Foam appended to existing ${c.bold(result.path)}\n`);
+    } else {
+      process.stdout.write(`${c.hint('—')} Foam: ${result.reason}\n`);
+    }
+  }
+
   // Next steps
   process.stdout.write('\n' + c.bold('Next steps:') + '\n');
   process.stdout.write(`  ${c.cyan('aab doctor')}                 ${c.hint('— verify everything is wired up')}\n`);
   process.stdout.write(`  ${c.cyan('aab settings get')}\n`);
-  process.stdout.write(`  ${c.cyan('aab discuss start')} ${c.hint('"What should we focus on this quarter?"')}  ${c.dim('(Phase 1 — coming soon)')}\n`);
+  process.stdout.write(`  ${c.cyan('aab discuss start')} ${c.hint('"What should we focus on this quarter?"')}\n`);
+  process.stdout.write(`  ${c.cyan('aab knowledge ingest')} ${c.hint('<path-or-url>  — seed the wiki')}\n`);
   process.stdout.write('\n');
 }
 

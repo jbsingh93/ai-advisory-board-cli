@@ -18,12 +18,16 @@
 import { logger } from '../logger.js';
 import { UserError } from '../errors.js';
 import { generateUUID, nowIso } from '../utils.js';
+import { existsSync } from 'node:fs';
 import { runMember } from './run-member.js';
 import {
   analyzeConversation,
   createInitialOrchestratorState,
   updateOrchestratorState,
 } from './orchestrator.js';
+import { summarizeDiscussion } from './summarize.js';
+import { resolveWorkspace, paths } from '../../storage/paths.js';
+import { ingestDiscussionRaw, ingestPaste } from '../knowledge/ingest.js';
 import type {
   AdvisoryBoardMember,
   AppSettings,
@@ -214,6 +218,9 @@ export async function startDiscussion(opts: StartDiscussionOptions): Promise<Sta
   opts.onProgress?.({ stage: 'finalizing', round: 1 });
   await opts.storage.saveDiscussion(discussion);
 
+  // Phase 1.5: auto-ingest into the Knowledge Wiki on conclude.
+  await maybeAutoIngestOnConclude(discussion, activeMembers, opts.settings, opts.storage);
+
   return {
     discussion,
     totalCostUsd,
@@ -222,11 +229,91 @@ export async function startDiscussion(opts: StartDiscussionOptions): Promise<Sta
 }
 
 async function loadBusinessContextSafe(storage: StorageService): Promise<BusinessContext[]> {
+  // Phase 1.5: if a Knowledge Wiki is present, members read it natively via
+  // Read/Grep/Glob (system-prompt addendum from `emit-member-agent.ts`).
+  // Returning [] here skips the legacy inline business-context block in
+  // `build-user-message.ts`. The legacy JSON path is still functional for
+  // workspaces without a wiki (transition window).
+  try {
+    const root = storage.getWorkspaceRoot();
+    const p = paths(root);
+    if (existsSync(p.wiki) && existsSync(p.wikiKnowledge)) return [];
+  } catch {
+    // fall through to legacy loader
+  }
   try {
     return await storage.loadBusinessContext();
   } catch (error) {
     logger.debug('[conversation-flow] business context load failed (non-blocking):', error);
     return [];
+  }
+}
+
+/**
+ * Auto-ingest a concluded discussion into the Knowledge Wiki. Wrapped in
+ * try/catch — a failed ingest never blocks discussion completion. Logs to
+ * `wiki/log.md` with `[ingest-failed]` prefix on errors.
+ * Reference: `PLAN/KNOWLEDGE_WIKI.md` §16.
+ */
+async function maybeAutoIngestOnConclude(
+  discussion: Discussion,
+  members: AdvisoryBoardMember[],
+  settings: AppSettings,
+  storage: StorageService,
+): Promise<void> {
+  if (!discussion.completedAt) return;
+  if (settings.knowledgeWiki?.enabled === false) return;
+  if (settings.knowledgeWiki?.autoIngestDiscussions === false) return;
+  try {
+    const root = storage.getWorkspaceRoot();
+    const p = paths(root);
+    if (!existsSync(p.wiki) || !existsSync(p.wikiKnowledge)) return; // no wiki = no auto-ingest
+
+    // 1. Generate a summary first if autoSummarization is on and missing.
+    if (settings.autoSummarization && !discussion.summary && discussion.rounds.length > 0) {
+      try {
+        discussion.summary = await summarizeDiscussion({ discussion, members, settings });
+        await storage.saveDiscussion(discussion);
+      } catch (error) {
+        logger.warn('[auto-ingest] summarize failed (non-blocking):', error);
+      }
+    }
+
+    // 2. Resolve workspace for the ingest pipeline.
+    const workspace = resolveWorkspace({ override: storage.getWorkspaceId() });
+    // Override root in case the env doesn't match (storage knows the truth).
+    workspace.root = root;
+
+    await ingestDiscussionRaw({ discussion, workspace, settings, storage });
+  } catch (error) {
+    logger.warn('[auto-ingest] discussion ingest failed (non-blocking):', error);
+  }
+}
+
+/**
+ * Auto-ingest a user's HITL response as a paste-style raw input. Same
+ * non-blocking semantics as discussion ingest.
+ * Reference: `PLAN/KNOWLEDGE_WIKI.md` §16 ("User HITL responses also get
+ * auto-ingested").
+ */
+async function maybeAutoIngestUserResponse(
+  content: string,
+  settings: AppSettings,
+  storage: StorageService,
+): Promise<void> {
+  if (settings.knowledgeWiki?.enabled === false) return;
+  if (settings.knowledgeWiki?.autoIngestUserResponses === false) return;
+  const trimmed = content.trim();
+  if (trimmed.length < 40) return; // tiny replies aren't worth a wiki entry
+  try {
+    const root = storage.getWorkspaceRoot();
+    const p = paths(root);
+    if (!existsSync(p.wiki) || !existsSync(p.wikiKnowledge)) return;
+    const workspace = resolveWorkspace({ override: storage.getWorkspaceId() });
+    workspace.root = root;
+    await ingestPaste({ text: trimmed, workspace, settings });
+  } catch (error) {
+    logger.warn('[auto-ingest] user-response ingest failed (non-blocking):', error);
   }
 }
 
@@ -475,6 +562,11 @@ export async function continueDiscussion(
   opts.onProgress?.({ stage: 'finalizing', round: nextRoundNumber });
   await opts.storage.saveDiscussion(discussion);
 
+  // Phase 1.5: auto-ingest into the Knowledge Wiki on conclude.
+  if (concluded) {
+    await maybeAutoIngestOnConclude(discussion, activeMembers, opts.settings, opts.storage);
+  }
+
   return {
     discussion,
     totalCostUsd,
@@ -534,6 +626,10 @@ export async function respondToUserRequest(
   // Persist the cleared HITL state immediately so a crash mid-round
   // doesn't leave the discussion stuck "awaiting input" forever.
   await opts.storage.saveDiscussion(discussion);
+
+  // Phase 1.5: auto-ingest the user's HITL reply as a paste-style raw input
+  // (fire-and-forget so a wiki hiccup never blocks the discussion).
+  void maybeAutoIngestUserResponse(trimmed, opts.settings, opts.storage);
 
   // Drive the next round, threading the user's reply as a follow-up question.
   // Skip the pre-round gate — the orchestrator just asked for this exact
@@ -811,6 +907,11 @@ export async function addFollowUpQuestion(
 
   opts.onProgress?.({ stage: 'finalizing', round: nextRoundNumber });
   await opts.storage.saveDiscussion(discussion);
+
+  // Phase 1.5: auto-ingest into the Knowledge Wiki on conclude.
+  if (concluded) {
+    await maybeAutoIngestOnConclude(discussion, activeMembers, opts.settings, opts.storage);
+  }
 
   return {
     discussion,

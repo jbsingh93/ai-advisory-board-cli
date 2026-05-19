@@ -6,6 +6,8 @@
  * progress. No build step — served directly by the server.
  */
 
+import { rewriteWikiLinks, renderWikiBody, setKnowledgeState, refreshKnowledgeState } from './wikilinks.js';
+
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
@@ -115,6 +117,11 @@ function setWsStatus(label, kind) {
 // ------------------------------------------------------------------
 
 function handleWsMessage(msg) {
+  // Forward wiki events to the Knowledge view (decoupled via a custom event)
+  if (typeof msg.type === 'string' && msg.type.startsWith('wiki_')) {
+    window.dispatchEvent(new CustomEvent('aab-wiki-event', { detail: msg }));
+    return;
+  }
   if (msg.type === 'member_thinking') {
     addTypingBubble(msg.memberName);
   } else if (msg.type === 'member_activity') {
@@ -167,6 +174,7 @@ function navigate(route) {
   else if (route === 'members') renderMembersView(main);
   else if (route === 'actions') renderActionsView(main);
   else if (route === 'principles') renderPrinciplesView(main);
+  else if (route === 'knowledge') renderKnowledgeView(main);
   else if (route === 'settings') renderSettingsView(main);
 }
 
@@ -1757,6 +1765,364 @@ function toast(message, kind = '') {
   $('#toasts').appendChild(t);
   setTimeout(() => t.remove(), 4500);
 }
+
+// ------------------------------------------------------------------
+// Knowledge Wiki view (Phase 1.5 chunk 8)
+// ------------------------------------------------------------------
+
+const wikiState = {
+  pages: [],
+  currentSlug: null,
+  currentPage: null, // { frontmatter, body, backlinks }
+  filter: 'all',
+  search: '',
+  ingesting: false,
+  querying: false,
+  linting: false,
+};
+
+function renderKnowledgeView(main) {
+  // Trigger an async load + slug-map refresh, render skeleton synchronously.
+  refreshKnowledgeState();
+  fetch('/api/knowledge/pages')
+    .then((r) => r.json())
+    .then((data) => {
+      wikiState.pages = data.pages || [];
+      rerenderKnowledge();
+    })
+    .catch((err) => toast(`Failed to load wiki pages: ${err.message}`, 'error'));
+
+  main.innerHTML = `
+    <div class="view view-knowledge">
+      <header class="view-header">
+        <div>
+          <h1>Knowledge</h1>
+          <p class="view-sub">Karpathy-style LLM wiki — your advisors read it. <code>[[wikilinks]]</code> render as clickable links.</p>
+        </div>
+        <div class="view-actions">
+          <input type="search" id="wiki-search" placeholder="Search slug / title / summary..." />
+          <button class="btn-secondary" id="wiki-lint-btn">Lint</button>
+          <button class="btn-primary" id="wiki-ingest-btn">+ Ingest</button>
+        </div>
+      </header>
+      <div class="wiki-layout">
+        <aside class="wiki-sidebar">
+          <div class="wiki-filters">
+            <button class="chip-filter active" data-filter="all">All</button>
+            <button class="chip-filter" data-filter="concept">Concepts</button>
+            <button class="chip-filter" data-filter="entity">Entities</button>
+            <button class="chip-filter" data-filter="decision">Decisions</button>
+            <button class="chip-filter" data-filter="source-summary">Sources</button>
+            <button class="chip-filter" data-filter="comparison">Comparisons</button>
+          </div>
+          <div class="wiki-page-list" id="wiki-page-list">
+            <div class="hint">Loading…</div>
+          </div>
+        </aside>
+        <section class="wiki-detail" id="wiki-detail">
+          <div class="wiki-detail-empty">
+            <h2>Pick a page</h2>
+            <p>Or run <code>aab knowledge query "..."</code> from the terminal, or click <strong>+ Ingest</strong> above.</p>
+          </div>
+        </section>
+      </div>
+      <div class="wiki-ingest-panel" id="wiki-ingest-panel" hidden>
+        <div class="panel-header">
+          <h2>Ingest</h2>
+          <button class="icon-btn" id="wiki-ingest-close" aria-label="Close">×</button>
+        </div>
+        <div class="panel-body">
+          <div class="field-group">
+            <label class="field-label" for="wiki-ingest-paste">Paste markdown / text</label>
+            <textarea id="wiki-ingest-paste" rows="8" placeholder="Drop any context, notes, or research here…"></textarea>
+          </div>
+          <div class="field-group">
+            <label class="field-label" for="wiki-ingest-url">…or a URL</label>
+            <input type="url" id="wiki-ingest-url" placeholder="https://example.com/article" />
+          </div>
+          <div class="panel-actions">
+            <button class="btn-secondary" id="wiki-ingest-cancel">Cancel</button>
+            <button class="btn-primary" id="wiki-ingest-go">Ingest</button>
+          </div>
+        </div>
+      </div>
+      <div class="wiki-query-bar">
+        <input type="text" id="wiki-query-input" placeholder="Ask the wiki a question…" />
+        <button class="btn-primary" id="wiki-query-go">Ask</button>
+      </div>
+      <div class="wiki-query-answer" id="wiki-query-answer" hidden></div>
+    </div>
+  `;
+  // Wire events
+  $('#wiki-search').addEventListener('input', (e) => {
+    wikiState.search = e.target.value.trim().toLowerCase();
+    rerenderKnowledge();
+  });
+  $$('.chip-filter').forEach((b) => {
+    b.addEventListener('click', () => {
+      $$('.chip-filter').forEach((x) => x.classList.toggle('active', x === b));
+      wikiState.filter = b.dataset.filter;
+      rerenderKnowledge();
+    });
+  });
+  $('#wiki-ingest-btn').addEventListener('click', () => $('#wiki-ingest-panel').hidden = false);
+  $('#wiki-ingest-close').addEventListener('click', () => $('#wiki-ingest-panel').hidden = true);
+  $('#wiki-ingest-cancel').addEventListener('click', () => $('#wiki-ingest-panel').hidden = true);
+  $('#wiki-ingest-go').addEventListener('click', () => doIngest());
+  $('#wiki-lint-btn').addEventListener('click', () => doLint());
+  $('#wiki-query-go').addEventListener('click', () => doQuery());
+  $('#wiki-query-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') doQuery(); });
+}
+
+function rerenderKnowledge() {
+  const list = $('#wiki-page-list');
+  if (!list) return;
+  let pages = wikiState.pages;
+  if (wikiState.filter !== 'all') {
+    pages = pages.filter((p) => p.type === wikiState.filter);
+  }
+  if (wikiState.search) {
+    pages = pages.filter((p) =>
+      (p.slug || '').toLowerCase().includes(wikiState.search) ||
+      (p.title || '').toLowerCase().includes(wikiState.search) ||
+      (p.summary || '').toLowerCase().includes(wikiState.search)
+    );
+  }
+  if (pages.length === 0) {
+    list.innerHTML = '<div class="hint">No pages match. Try <strong>+ Ingest</strong> above.</div>';
+    return;
+  }
+  list.innerHTML = pages
+    .sort((a, b) => (a.slug || '').localeCompare(b.slug || ''))
+    .map((p) => {
+      const tag = p.userEdited ? '<span class="badge badge-warn">user-edited</span>' : '';
+      const active = p.slug === wikiState.currentSlug ? ' active' : '';
+      return `<button class="wiki-page-item${active}" data-slug="${escAttr(p.slug)}">
+        <span class="wiki-page-type type-${p.type}">${escHtml(p.type || '?')}</span>
+        <span class="wiki-page-slug">${escHtml(p.slug || '?')}</span>
+        ${tag}
+        ${p.summary ? `<span class="wiki-page-summary">${escHtml(truncate(p.summary, 80))}</span>` : ''}
+      </button>`;
+    })
+    .join('');
+  $$('.wiki-page-item', list).forEach((btn) => {
+    btn.addEventListener('click', () => loadPage(btn.dataset.slug));
+  });
+}
+
+function loadPage(slug) {
+  wikiState.currentSlug = slug;
+  rerenderKnowledge();
+  const detail = $('#wiki-detail');
+  detail.innerHTML = '<div class="hint">Loading…</div>';
+  fetch(`/api/knowledge/pages/${encodeURIComponent(slug)}`)
+    .then((r) => r.json())
+    .then((data) => {
+      if (data.error) {
+        detail.innerHTML = `<div class="hint">${escHtml(data.error)}</div>`;
+        return;
+      }
+      wikiState.currentPage = data;
+      const fm = data.frontmatter || {};
+      const bodyHtml = renderWikiBody(data.body || '');
+      detail.innerHTML = `
+        <header class="wiki-page-header">
+          <h1>${escHtml(fm.title || data.slug)}</h1>
+          <div class="wiki-page-meta">
+            <span class="badge badge-type type-${escAttr(fm.type)}">${escHtml(fm.type || '')}</span>
+            ${fm.confidence ? `<span class="badge">${escHtml(fm.confidence)} confidence</span>` : ''}
+            ${fm.provenance ? `<span class="badge">${escHtml(fm.provenance)}</span>` : ''}
+            ${fm.updated ? `<span class="hint">updated ${escHtml(fm.updated)}</span>` : ''}
+          </div>
+          ${fm.summary ? `<p class="wiki-page-summary-large">${escHtml(fm.summary)}</p>` : ''}
+        </header>
+        <div class="wiki-page-content">${bodyHtml}</div>
+        ${renderSidecar(fm, data)}
+      `;
+      // Hook clicks on resolved wikilinks to load their page.
+      $$('a.wiki-link', detail).forEach((a) => {
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          const targetSlug = a.dataset.slug;
+          if (targetSlug) loadPage(targetSlug);
+        });
+      });
+      $$('span.wiki-unresolved', detail).forEach((s) => {
+        s.addEventListener('click', () => {
+          const slug = s.dataset.slug;
+          if (!slug) return;
+          $('#wiki-ingest-panel').hidden = false;
+          $('#wiki-ingest-paste').value = `# ${slug.replace(/-/g, ' ')}\n\n(Filled in stub — replace with real content and click Ingest to create the page.)\n`;
+          $('#wiki-ingest-paste').focus();
+        });
+      });
+    })
+    .catch((err) => {
+      detail.innerHTML = `<div class="hint">Failed: ${escHtml(err.message)}</div>`;
+    });
+}
+
+function renderSidecar(fm, data) {
+  const out = [];
+  out.push('<aside class="wiki-sidecar">');
+  if (Array.isArray(fm.tags) && fm.tags.length > 0) {
+    out.push('<section><h3>Tags</h3><div class="wiki-tag-row">');
+    for (const t of fm.tags) out.push(`<span class="wiki-tag">${escHtml(t)}</span>`);
+    out.push('</div></section>');
+  }
+  if (Array.isArray(fm.aliases) && fm.aliases.length > 0) {
+    out.push('<section><h3>Aliases</h3><div class="wiki-tag-row">');
+    for (const a of fm.aliases) out.push(`<span class="wiki-tag">${escHtml(a)}</span>`);
+    out.push('</div></section>');
+  }
+  if (Array.isArray(fm.sources) && fm.sources.length > 0) {
+    out.push('<section><h3>Sources</h3><ul class="wiki-source-list">');
+    for (const s of fm.sources) out.push(`<li><code>${escHtml(s)}</code></li>`);
+    out.push('</ul></section>');
+  }
+  if (Array.isArray(fm.related) && fm.related.length > 0) {
+    out.push('<section><h3>Related</h3><div class="wiki-related">');
+    for (const r of fm.related) {
+      const html = rewriteWikiLinks(typeof r === 'string' ? r : String(r));
+      out.push(`<div>${html}</div>`);
+    }
+    out.push('</div></section>');
+  }
+  if (data.backlinks) {
+    out.push('<section><h3>Backlinks</h3><div class="wiki-backlinks">');
+    out.push(rewriteWikiLinks(data.backlinks));
+    out.push('</div></section>');
+  }
+  out.push('</aside>');
+  return out.join('');
+}
+
+async function doIngest() {
+  if (wikiState.ingesting) return;
+  const paste = $('#wiki-ingest-paste').value.trim();
+  const url = $('#wiki-ingest-url').value.trim();
+  if (!paste && !url) {
+    toast('Provide pasted text or a URL', 'error');
+    return;
+  }
+  wikiState.ingesting = true;
+  const btn = $('#wiki-ingest-go');
+  btn.disabled = true;
+  btn.textContent = 'Ingesting…';
+  try {
+    const res = await fetch('/api/knowledge/ingest', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(paste ? { paste } : { url }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    const total = (data.producedPages?.length || 0) + (data.updatedPages?.length || 0);
+    toast(`Ingest complete — ${total} pages touched`, 'ok');
+    $('#wiki-ingest-panel').hidden = true;
+    $('#wiki-ingest-paste').value = '';
+    $('#wiki-ingest-url').value = '';
+    await refreshKnowledgeState();
+    const pages = await fetch('/api/knowledge/pages').then((r) => r.json());
+    wikiState.pages = pages.pages || [];
+    rerenderKnowledge();
+  } catch (err) {
+    toast(`Ingest failed: ${err.message}`, 'error');
+  } finally {
+    wikiState.ingesting = false;
+    btn.disabled = false;
+    btn.textContent = 'Ingest';
+  }
+}
+
+async function doQuery() {
+  if (wikiState.querying) return;
+  const question = $('#wiki-query-input').value.trim();
+  if (!question) return;
+  wikiState.querying = true;
+  const ans = $('#wiki-query-answer');
+  ans.hidden = false;
+  ans.innerHTML = '<div class="hint">Asking…</div>';
+  try {
+    const res = await fetch('/api/knowledge/query', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ question }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    const citationsHtml = Array.isArray(data.citations) && data.citations.length > 0
+      ? `<div class="wiki-citations">${data.citations.map((c) => `<a href="#" data-slug="${escAttr(c)}" class="wiki-link wiki-citation">[[${escHtml(c)}]]</a>`).join(' ')}</div>`
+      : '';
+    ans.innerHTML = `
+      <div class="wiki-answer-body">${renderWikiBody(data.answer || '')}</div>
+      ${citationsHtml}
+      <div class="hint">cost: ${(data.costUsd || 0).toFixed(4)} USD</div>
+    `;
+    $$('.wiki-citation', ans).forEach((a) => {
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        loadPage(a.dataset.slug);
+      });
+    });
+  } catch (err) {
+    ans.innerHTML = `<div class="hint">Query failed: ${escHtml(err.message)}</div>`;
+  } finally {
+    wikiState.querying = false;
+  }
+}
+
+async function doLint() {
+  if (wikiState.linting) return;
+  wikiState.linting = true;
+  const btn = $('#wiki-lint-btn');
+  btn.disabled = true;
+  btn.textContent = 'Linting…';
+  try {
+    const res = await fetch('/api/knowledge/lint', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ runLlm: false }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    const errs = (data.findings || []).filter((f) => f.severity === 'error').length;
+    const warns = (data.findings || []).filter((f) => f.severity === 'warn').length;
+    toast(`Lint complete — ${errs} errors, ${warns} warnings, slug-map refreshed`, errs > 0 ? 'warn' : 'ok');
+  } catch (err) {
+    toast(`Lint failed: ${err.message}`, 'error');
+  } finally {
+    wikiState.linting = false;
+    btn.disabled = false;
+    btn.textContent = 'Lint';
+  }
+}
+
+function escHtml(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function escAttr(s) {
+  return escHtml(s).replace(/"/g, '&quot;');
+}
+function truncate(s, n) {
+  const str = String(s ?? '');
+  return str.length <= n ? str : str.slice(0, n - 1) + '…';
+}
+
+// Refresh slug-map on relevant WS events.
+window.addEventListener('aab-wiki-event', (ev) => {
+  if (!ev || !ev.detail) return;
+  const t = ev.detail.type;
+  if (t === 'wiki_ingest_done' || t === 'wiki_lint_done' || t === 'wiki_renamed') {
+    refreshKnowledgeState();
+    if (state.route === 'knowledge') {
+      fetch('/api/knowledge/pages').then((r) => r.json()).then((data) => {
+        wikiState.pages = data.pages || [];
+        rerenderKnowledge();
+      });
+    }
+  }
+});
 
 // ------------------------------------------------------------------
 // Go

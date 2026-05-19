@@ -126,7 +126,27 @@ export function paths(root: string): {
   logs: string;
   versionFile: string;
   lockFile: string;
+  // Knowledge Wiki (Phase 1.5)
+  wiki: string;
+  wikiKnowledge: string;
+  wikiIndex: string;
+  wikiLog: string;
+  wikiConcepts: string;
+  wikiEntities: string;
+  wikiDecisions: string;
+  wikiSources: string;
+  wikiComparisons: string;
+  raw: string;
+  rawFiles: string;
+  rawUrls: string;
+  rawPasted: string;
+  rawDiscussions: string;
+  rawSummaries: string;
+  outputs: string;
+  manifest: string;
 } {
+  const wiki = join(root, 'wiki');
+  const raw = join(root, 'raw');
   return {
     settings: join(root, 'settings.json'),
     members: join(root, 'members.json'),
@@ -146,6 +166,24 @@ export function paths(root: string): {
     logs: join(root, 'logs'),
     versionFile: join(root, '.version'),
     lockFile: join(root, '.lock'),
+    // Knowledge Wiki
+    wiki,
+    wikiKnowledge: join(wiki, 'KNOWLEDGE.md'),
+    wikiIndex: join(wiki, 'index.md'),
+    wikiLog: join(wiki, 'log.md'),
+    wikiConcepts: join(wiki, 'concepts'),
+    wikiEntities: join(wiki, 'entities'),
+    wikiDecisions: join(wiki, 'decisions'),
+    wikiSources: join(wiki, 'sources'),
+    wikiComparisons: join(wiki, 'comparisons'),
+    raw,
+    rawFiles: join(raw, 'files'),
+    rawUrls: join(raw, 'urls'),
+    rawPasted: join(raw, 'pasted'),
+    rawDiscussions: join(raw, 'discussions'),
+    rawSummaries: join(raw, 'summaries'),
+    outputs: join(root, 'outputs'),
+    manifest: join(root, '.manifest.json'),
   };
 }
 
@@ -164,6 +202,31 @@ export function ensureWorkspaceDirs(root: string): void {
     p.jobs,
     p.snapshots,
     p.logs,
+  ]) {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  }
+}
+
+/**
+ * Ensure the wiki + raw + outputs directory tree exists (Phase 1.5).
+ * Idempotent — never overwrites existing files.
+ */
+export function ensureWikiDirs(root: string): void {
+  const p = paths(root);
+  for (const dir of [
+    p.wiki,
+    p.wikiConcepts,
+    p.wikiEntities,
+    p.wikiDecisions,
+    p.wikiSources,
+    p.wikiComparisons,
+    p.raw,
+    p.rawFiles,
+    p.rawUrls,
+    p.rawPasted,
+    p.rawDiscussions,
+    p.rawSummaries,
+    p.outputs,
   ]) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   }

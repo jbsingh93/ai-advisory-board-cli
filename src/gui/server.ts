@@ -52,6 +52,15 @@ import { logger } from '../core/logger.js';
 import { generateUUID, nowIso } from '../core/utils.js';
 import type { FsStorageService } from '../storage/fs-storage-service.js';
 import { DEFAULT_SETTINGS } from '../storage/types.js';
+import { paths, resolveWorkspace } from '../storage/paths.js';
+import { walkWikiPages, parsePage, serializePage, extractWikiLinks, toPosix, type PageType } from '../core/knowledge/page.js';
+import { buildSlugMap, resolveSlug, extractBacklinksSection } from '../core/knowledge/slug-map.js';
+import { loadManifest, markUserEdited } from '../core/knowledge/manifest.js';
+import { renameSlug } from '../core/knowledge/rename.js';
+import { ingestFile, ingestPaste, ingestUrl, ingestDiscussionRaw } from '../core/knowledge/ingest.js';
+import { queryWiki } from '../core/knowledge/query.js';
+import { lintWiki } from '../core/knowledge/lint.js';
+import { existsSync as fsExistsSync, readFileSync, writeFileSync } from 'node:fs';
 import type {
   AdvisoryBoardMember,
   AppSettings,
@@ -830,6 +839,317 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
             message: error instanceof Error ? error.message : String(error),
           });
         });
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  // ============================================================
+  // Knowledge Wiki (Phase 1.5)
+  // ============================================================
+
+  function resolveWorkspaceForWiki() {
+    const ws = resolveWorkspace({ override: opts.storage.getWorkspaceId() });
+    // Storage knows the actual root; align in case resolver picked a different scope.
+    ws.root = opts.storage.getWorkspaceRoot();
+    return ws;
+  }
+
+  app.get('/api/knowledge/state', async (_req, res) => {
+    try {
+      const p = paths(opts.storage.getWorkspaceRoot());
+      const pages = walkWikiPages(p.wiki, opts.storage.getWorkspaceRoot());
+      const manifest = loadManifest(p.manifest);
+      const map = buildSlugMap(p.wiki, opts.storage.getWorkspaceRoot());
+      const byType: Record<string, number> = {};
+      const slugMap: Record<string, { path: string; title?: string; type: string; summary?: string }> = {};
+      const aliases: Record<string, string> = {};
+      for (const page of pages) {
+        const t = String(page.frontmatter.type ?? 'unknown');
+        byType[t] = (byType[t] ?? 0) + 1;
+      }
+      for (const [slug, entry] of map.canonical) {
+        slugMap[slug] = { path: entry.path, title: entry.title, type: String(entry.type), summary: entry.summary };
+      }
+      for (const [alias, canonical] of map.aliasToCanonical) {
+        if (alias !== canonical) aliases[alias] = canonical;
+      }
+      res.json({
+        pageCount: pages.length,
+        byType,
+        lastIngestAt: manifest.entries[manifest.entries.length - 1]?.ingestedAt,
+        totalCostUsd: manifest.entries.reduce((sum, e) => sum + (e.ingestCostUsd ?? 0), 0),
+        ingestCount: manifest.entries.length,
+        renameCount: manifest.renames.length,
+        userEditedCount: manifest.userEditedPages.length,
+        slugMap,
+        aliases,
+      });
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.get('/api/knowledge/pages', async (_req, res) => {
+    try {
+      const p = paths(opts.storage.getWorkspaceRoot());
+      const pages = walkWikiPages(p.wiki, opts.storage.getWorkspaceRoot());
+      const out = pages.map((page) => ({
+        slug: page.frontmatter.slug,
+        title: page.frontmatter.title,
+        type: page.frontmatter.type,
+        summary: page.frontmatter.summary,
+        tags: page.frontmatter.tags ?? [],
+        path: toPosix(`wiki/${page.wikiRelPath}`),
+        userEdited: page.frontmatter.userEdited ?? false,
+        updated: page.frontmatter.updated,
+      }));
+      res.json({ pages: out });
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.get('/api/knowledge/pages/:slug', async (req, res) => {
+    try {
+      const p = paths(opts.storage.getWorkspaceRoot());
+      const map = buildSlugMap(p.wiki, opts.storage.getWorkspaceRoot());
+      const entry = resolveSlug(map, req.params.slug);
+      if (!entry) {
+        res.status(404).json({ error: `No page with slug "${req.params.slug}"` });
+        return;
+      }
+      const full = join(p.wiki, entry.path);
+      const raw = readFileSync(full, 'utf8');
+      const parsed = parsePage(raw);
+      if (!parsed) {
+        res.status(500).json({ error: `Page has no parseable frontmatter: ${entry.path}` });
+        return;
+      }
+      const backlinks = extractBacklinksSection(parsed.body);
+      res.json({
+        slug: entry.slug,
+        path: toPosix(`wiki/${entry.path}`),
+        frontmatter: parsed.frontmatter,
+        body: parsed.body,
+        backlinks,
+      });
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.post('/api/knowledge/pages/:slug', async (req, res) => {
+    try {
+      const p = paths(opts.storage.getWorkspaceRoot());
+      const map = buildSlugMap(p.wiki, opts.storage.getWorkspaceRoot());
+      const entry = resolveSlug(map, req.params.slug);
+      if (!entry) {
+        res.status(404).json({ error: `No page with slug "${req.params.slug}"` });
+        return;
+      }
+      const body = (req.body ?? {}) as { body?: string; frontmatter?: Record<string, unknown> };
+      const full = join(p.wiki, entry.path);
+      const existing = parsePage(readFileSync(full, 'utf8'));
+      if (!existing) {
+        res.status(500).json({ error: `Page has no parseable frontmatter: ${entry.path}` });
+        return;
+      }
+      const nextFm = { ...existing.frontmatter, ...(body.frontmatter ?? {}), userEdited: true, updated: nowIso().slice(0, 10) };
+      const nextBody = typeof body.body === 'string' ? body.body : existing.body;
+      writeFileSync(full, serializePage(nextFm as any, nextBody), 'utf8');
+      markUserEdited(p.manifest, toPosix(`wiki/${entry.path}`), 'ui');
+      res.json({ ok: true });
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.post('/api/knowledge/pages/:slug/rename', async (req, res) => {
+    try {
+      const p = paths(opts.storage.getWorkspaceRoot());
+      const newSlug = (req.body?.newSlug ?? '').toString().trim();
+      if (!newSlug) {
+        res.status(400).json({ error: 'newSlug is required' });
+        return;
+      }
+      const result = await renameSlug({
+        wikiRoot: p.wiki,
+        manifestPath: p.manifest,
+        indexPath: p.wikiIndex,
+        workspaceRoot: opts.storage.getWorkspaceRoot(),
+        fromSlug: req.params.slug,
+        toSlug: newSlug,
+        trigger: 'manual',
+      });
+      broadcast({ type: 'wiki_renamed', fromSlug: result.fromSlug, toSlug: result.toSlug });
+      res.json(result);
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.post('/api/knowledge/ingest', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as { paste?: string; url?: string; path?: string; force?: boolean; type?: string };
+      const workspace = resolveWorkspaceForWiki();
+      const settings = await opts.storage.loadSettings();
+      broadcast({ type: 'wiki_ingest_started', sourceType: body.url ? 'url' : body.path ? 'file' : 'pasted' });
+      let result;
+      if (body.paste) {
+        result = await ingestPaste({ text: body.paste, workspace, settings, force: body.force, hintType: body.type as PageType | undefined });
+      } else if (body.url) {
+        result = await ingestUrl({ url: body.url, workspace, settings, force: body.force, hintType: body.type as PageType | undefined });
+      } else if (body.path) {
+        result = await ingestFile({ path: body.path, workspace, settings, force: body.force, hintType: body.type as PageType | undefined });
+      } else {
+        res.status(400).json({ error: 'Provide paste, url, or path.' });
+        return;
+      }
+      for (const page of result.producedPages) broadcast({ type: 'wiki_ingest_page_written', path: page, action: 'created' });
+      for (const page of result.updatedPages) broadcast({ type: 'wiki_ingest_page_written', path: page, action: 'updated' });
+      broadcast({
+        type: 'wiki_ingest_done',
+        producedPages: result.producedPages,
+        updatedPages: result.updatedPages,
+        costUsd: result.costUsd,
+      });
+      res.json(result);
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.post('/api/knowledge/ingest/discussion/:id', async (req, res) => {
+    try {
+      const id = req.params.id;
+      let discussion = await opts.storage.loadDiscussionById(id);
+      if (!discussion) {
+        const all = await opts.storage.loadDiscussions();
+        const matches = all.filter((d) => d.id.startsWith(id));
+        if (matches.length === 0) {
+          res.status(404).json({ error: `No discussion matching "${id}"` });
+          return;
+        }
+        discussion = matches[0]!;
+      }
+      const workspace = resolveWorkspaceForWiki();
+      const settings = await opts.storage.loadSettings();
+      broadcast({ type: 'wiki_ingest_started', sourceType: 'discussion', discussionId: discussion.id });
+      const result = await ingestDiscussionRaw({
+        discussion,
+        workspace,
+        settings,
+        storage: opts.storage,
+        force: !!req.body?.force,
+      });
+      broadcast({
+        type: 'wiki_ingest_done',
+        producedPages: result.producedPages,
+        updatedPages: result.updatedPages,
+        costUsd: result.costUsd,
+      });
+      res.json(result);
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.post('/api/knowledge/query', async (req, res) => {
+    try {
+      const question = (req.body?.question ?? '').toString().trim();
+      if (!question) {
+        res.status(400).json({ error: 'question is required' });
+        return;
+      }
+      broadcast({ type: 'wiki_query_started', question });
+      const settings = await opts.storage.loadSettings();
+      const result = await queryWiki({
+        question,
+        workspace: resolveWorkspaceForWiki(),
+        settings,
+        maxPages: req.body?.maxPages,
+      });
+      broadcast({ type: 'wiki_query_done', costUsd: result.costUsd, citations: result.citations });
+      res.json(result);
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.post('/api/knowledge/lint', async (req, res) => {
+    try {
+      const settings = await opts.storage.loadSettings();
+      const result = await lintWiki({
+        workspace: resolveWorkspaceForWiki(),
+        settings,
+        writeReport: req.body?.writeReport !== false,
+        runLlm: req.body?.runLlm !== false,
+        maxPages: req.body?.maxPages,
+      });
+      broadcast({
+        type: 'wiki_lint_done',
+        reportPath: result.reportPath,
+        errorCount: result.findings.filter((f) => f.severity === 'error').length,
+        warnCount: result.findings.filter((f) => f.severity === 'warn').length,
+      });
+      res.json(result);
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.get('/api/knowledge/graph', async (_req, res) => {
+    try {
+      const p = paths(opts.storage.getWorkspaceRoot());
+      const pages = walkWikiPages(p.wiki, opts.storage.getWorkspaceRoot());
+      const map = buildSlugMap(p.wiki, opts.storage.getWorkspaceRoot());
+      const nodes = pages.map((page) => ({
+        slug: page.frontmatter.slug,
+        type: page.frontmatter.type,
+        title: page.frontmatter.title,
+        summary: page.frontmatter.summary,
+      }));
+      const edges: Array<{ from: string; to: string }> = [];
+      for (const page of pages) {
+        const from = (page.frontmatter.slug ?? '').toLowerCase();
+        if (!from) continue;
+        for (const link of extractWikiLinks(page.body)) {
+          const to = map.aliasToCanonical.get(link.slug);
+          if (to && to !== from) edges.push({ from, to });
+        }
+      }
+      res.json({ nodes, edges });
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.get('/api/knowledge/raw', async (_req, res) => {
+    try {
+      const p = paths(opts.storage.getWorkspaceRoot());
+      const manifest = loadManifest(p.manifest);
+      res.json({ entries: manifest.entries });
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.get('/api/knowledge/raw/:hash', async (req, res) => {
+    try {
+      const p = paths(opts.storage.getWorkspaceRoot());
+      const manifest = loadManifest(p.manifest);
+      const entry = manifest.entries.find((e) => e.hash.startsWith(req.params.hash));
+      if (!entry) {
+        res.status(404).json({ error: `No raw source with hash starting "${req.params.hash}"` });
+        return;
+      }
+      const full = join(opts.storage.getWorkspaceRoot(), entry.rawPath);
+      if (!fsExistsSync(full)) {
+        res.status(404).json({ error: `Raw file missing on disk: ${entry.rawPath}` });
+        return;
+      }
+      res.type('text/plain').send(readFileSync(full, 'utf8'));
     } catch (error) {
       sendError(res, 500, error);
     }

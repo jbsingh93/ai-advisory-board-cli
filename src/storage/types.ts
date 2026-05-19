@@ -297,6 +297,40 @@ export interface UsageBudgetSettings {
  */
 export type ClaudeModelAlias = 'opus' | 'sonnet' | 'haiku' | 'inherit';
 
+export interface KnowledgeWikiSettings {
+  enabled: boolean;
+  autoIngestDiscussions: boolean;
+  autoIngestUserResponses: boolean;
+  ingestModel: ClaudeModelAlias | ClaudeModel;
+  queryModel: ClaudeModelAlias | ClaudeModel;
+  lintStaleDays: number;
+  maxAgentPagesPerCall: number;
+  pageBodySoftCap: number;
+  summarySoftCap: number;
+  exposeToMemberAgents: boolean;
+  exposeToOrchestrator: boolean;
+  recommendFoam: boolean;
+  slugMapInIndex: boolean;
+  maxAliasesGlobal: number;
+}
+
+export const DEFAULT_KNOWLEDGE_WIKI_SETTINGS: KnowledgeWikiSettings = {
+  enabled: true,
+  autoIngestDiscussions: true,
+  autoIngestUserResponses: true,
+  ingestModel: 'haiku',
+  queryModel: 'sonnet',
+  lintStaleDays: 90,
+  maxAgentPagesPerCall: 10,
+  pageBodySoftCap: 4000,
+  summarySoftCap: 200,
+  exposeToMemberAgents: true,
+  exposeToOrchestrator: true,
+  recommendFoam: true,
+  slugMapInIndex: true,
+  maxAliasesGlobal: 100,
+};
+
 export interface AppSettings {
   boardTitle: string;
   maxMembersPerDiscussion: number;
@@ -318,6 +352,8 @@ export interface AppSettings {
   budgetSettings?: UsageBudgetSettings;
   /** Locale for narrative-event messages and date formatting. */
   locale?: string;
+  /** Knowledge Wiki (Phase 1.5) — replaces BusinessContext. */
+  knowledgeWiki?: KnowledgeWikiSettings;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -336,6 +372,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   perCallBudgetUsd: 5.0,
   budgetSettings: { warningThresholdPercent: 80 },
   locale: 'en',
+  knowledgeWiki: { ...DEFAULT_KNOWLEDGE_WIKI_SETTINGS },
 };
 
 // ============================================================

@@ -112,6 +112,29 @@ function pickColor(name: string): string {
   return palette[hash % palette.length]!;
 }
 
+/**
+ * Knowledge Wiki addendum — appended to every member's agent body so they
+ * know the wiki is at `wiki/`, how to resolve `[[wikilinks]]` via the
+ * slug-map, and that they must cite slugs they actually read.
+ * Reference: `PLAN/KNOWLEDGE_WIKI.md` §14.
+ */
+const KNOWLEDGE_WIKI_ADDENDUM = [
+  '',
+  '## Knowledge Wiki',
+  '',
+  'Your project has a knowledge wiki at `wiki/` (markdown files with YAML frontmatter). The schema is in `wiki/KNOWLEDGE.md` — read it first if you haven\'t this session.',
+  '',
+  '**To find context for a question:**',
+  '1. `Read wiki/index.md` — the catalog AND the canonical slug→path map (look for the `<!-- AAB:SLUG-MAP -->` section near the bottom; it lists every page\'s slug, file path, type, and one-line summary, including aliases). This is your cheap-pass retrieval and your link resolver.',
+  '2. `Grep wiki/` for keywords from the question (target the `summary:` and `tags:` frontmatter fields first; they\'re the next cheap pass).',
+  '3. `Read` 3-10 of the most relevant pages.',
+  '4. Follow `[[wikilinks]]` to connected pages when useful. Resolve them via the slug-map in step 1. If a slug isn\'t in the slug-map (stale index), fall back to `Glob \'wiki/**/<slug>.md\'` — slug uniqueness guarantees ≤1 hit. Block links (`[[slug#section-header]]`) point to a specific markdown header inside the target page; just Read the page and find the header.',
+  '',
+  '**When citing in your response:** put the wiki slugs you actually used into your `sources` field. E.g., `sources: [{"title": "Pricing Strategy", "url": "wiki/concepts/pricing-strategy"}]`. Do not invent slugs you didn\'t read.',
+  '',
+  '**Never write to `wiki/`.** The ingest agent owns mutation. If you discover something worth filing, mention it in your `actionableInsights` so the user can ingest it explicitly. Do not attempt to rename slugs — that\'s `aab knowledge rename`\'s job.',
+].join('\n');
+
 function buildAgentBody(member: AdvisoryBoardMember): string {
   const expertiseLine = member.expertise.join(', ');
   const voiceGuide = member.voiceGuide?.trim() || `Sound distinctly like ${member.name} — direct, methodical, in-character.`;
@@ -178,5 +201,6 @@ function buildAgentBody(member: AdvisoryBoardMember): string {
     `- Be bold with recommendations that align with your philosophy.`,
     ``,
     `Remember: you're not just giving advice — you're bringing your unique worldview and proven methodologies to bear on this challenge. Return ONLY the JSON object.`,
+    KNOWLEDGE_WIKI_ADDENDUM,
   ].join('\n');
 }

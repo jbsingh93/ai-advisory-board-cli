@@ -43,11 +43,17 @@ export async function analyzeConversation(opts: AnalyzeOptions): Promise<Orchest
   });
 
   try {
+    // Phase 1.5: open Read/Grep/Glob so the orchestrator can ground its
+    // decision in the Knowledge Wiki when one is present. Settings flag
+    // `knowledgeWiki.exposeToOrchestrator` defaults true; toggling false
+    // collapses to the old empty-allowlist behaviour.
+    const expose = opts.settings.knowledgeWiki?.exposeToOrchestrator !== false;
+    const orchestratorTools = expose ? ['Read', 'Grep', 'Glob'] : [];
     const result = await runClaude({
       prompt: context,
       // No --agent: this is a one-shot orchestrator call without persona
       model: typeof opts.settings.fastModel === 'string' ? opts.settings.fastModel : 'haiku',
-      allowedTools: [], // orchestrator never needs tools
+      allowedTools: orchestratorTools,
       maxTurns: 1,
       maxBudgetUsd: opts.settings.perCallBudgetUsd,
       signal: opts.signal,

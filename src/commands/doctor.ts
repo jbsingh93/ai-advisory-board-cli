@@ -17,6 +17,7 @@ import { detectClaudeCode } from '../env/detect-claude-code.js';
 import { detectClaudeCli } from '../llm/claude-code-runner.js';
 import { paths } from '../storage/paths.js';
 import { memberAgentPath, memberAgentSlug } from '../agents/emit-member-agent.js';
+import { foamAlreadyRecommended } from '../core/knowledge/foam.js';
 
 interface CheckResult {
   label: string;
@@ -120,6 +121,30 @@ export function registerDoctorCommand(program: Command): void {
             ? 'present'
             : 'will be created on first write',
         });
+
+        // Knowledge Wiki (Phase 1.5)
+        const wikiPaths = paths(ctx.workspace.root);
+        const wikiPresent = existsSync(wikiPaths.wiki) && existsSync(wikiPaths.wikiKnowledge);
+        checks.push({
+          label: 'Knowledge Wiki',
+          ok: true,
+          detail: wikiPresent
+            ? `present at ${wikiPaths.wiki}`
+            : 're-run `aab init` to bootstrap wiki/ + raw/ + .manifest.json',
+        });
+
+        // Foam recommendation (info-only — never fails doctor)
+        const settings = await ctx.storage.loadSettings();
+        if (wikiPresent && settings.knowledgeWiki?.recommendFoam !== false) {
+          const foam = foamAlreadyRecommended(projectRoot);
+          checks.push({
+            label: 'Foam (VS Code)',
+            ok: true,
+            detail: foam
+              ? 'recommended in .vscode/extensions.json'
+              : 'consider `aab init --foam` for [[wikilinks]] support in VS Code',
+          });
+        }
       } finally {
         await closeContext(ctx);
       }

@@ -44,6 +44,19 @@ aab --debug discuss start "<q>"   # see spawn args + stderr
 
 Note: there are currently no test files (`*.test.ts` / `*.spec.ts`) checked in — `npm test` succeeds vacuously. Likewise no `eslint.config.*` is present; `npm run lint` requires one before it does anything useful. Don't claim "tests pass" or "lint clean" as verification.
 
+## Verification — live smoke is mandatory
+
+Typecheck + build is necessary but **not sufficient**. After every meaningful change to `src/`, run a live smoke against the real `aab` binary against real Claude calls. See **`PLAN/SMOKE_TESTING.md`** (authoritative reference, mirrors `PLAN/PLAYWRIGHT_MCP.md` for the UI side).
+
+The non-negotiable rules:
+- **CLI changes** → run a live CLI smoke from the external test folder at `C:\Users\julia\Downloads\kode\ai-advisoryboardclitestfolder` (Windows) / `~/aab-smoke/` (macOS+Linux). **Never smoke from the project root** — it pollutes the source tree with `.claude/agents/<slug>.md` files, triggers project-mount detection that hijacks the next invocation, and contends for the workspace mutex with your dev workspace.
+- **UI changes** (anything in `gui/` or `src/gui/server.ts`) → run a Playwright MCP smoke (`PLAN/PLAYWRIGHT_MCP.md`).
+- **Invocation**: `cd <test-folder>; node <projectRoot>/dist/bin/aab.js <args>`. Bootstrap once with `aab init --non-interactive --home --name smoke-<yyyy-mm-dd>` so the workspace lands under `~/.aabcli/<slug>/` (isolated, disposable). The test folder gets only `.claude/agents/*.md` written to it.
+- **PowerShell prompt quoting**: single-quote prompts that contain `$` (e.g. `'Should we ship the $50k pivot?'`). Double quotes expand `$50` as a variable.
+- **The reference smoke catches**: silent `cmd.exe` newline truncation on `.cmd` shims (commit `80f07ab`), Haiku ellipsis-cutoff prompt fragility, fallback-decision orchestrator failures, malformed JSON contracts. Typecheck catches none of these.
+
+If you're unsure whether your change needs a smoke: smoke it. Tokens are cheap; shipping a silently broken CLI is expensive.
+
 ## Architecture — the big picture
 
 ### Execution model: shell out, not SDK

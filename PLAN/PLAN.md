@@ -2158,3 +2158,51 @@ The phasing is intentional so Playwright MCP doesn't block Phase 1 closeout.
 ## 8.8 Net effect
 
 The dashboard stops being the unverified surface in this repo. Every UI change ships with at least one MCP-driven smoke flow demonstrating the change works in a real browser; significant changes ship with a committed `@playwright/test` spec the CI re-runs on every PR. The human-in-the-loop reduces to *reviewing AI-generated test code*, not *driving Click → Inspect → Click loops*. By the time Phase 5 (skill creator) lands, the dashboard's regression suite is the same shape as the CLI's: deterministic, mocked, parallelizable, fast.
+
+---
+
+# Part 9 — CLI live-smoke testing
+
+User decision (2026-05-19): every meaningful change to the **CLI** (`src/` excluding `src/gui/`) **must** be exercised via a live smoke against the real `aab` binary and real Claude calls before being declared done. Typecheck + build is necessary but not sufficient — the May 2026 Phase 1 closeout shipped past typecheck-only verification with two stacked Windows runner bugs that silently broke every multi-line LLM call. Both surfaced **only** when a live smoke was run; both are now permanently captured as reference regressions in `PLAN/SMOKE_TESTING.md` §9.
+
+> **The full reference lives in `PLAN/SMOKE_TESTING.md`.** That document is the authoritative source for the test-folder convention, init bootstrap, the canonical smoke flow, PowerShell + Bash gotchas, verification signals, cleanup, and the reference-regression log. This Part 9 is the rationale + the locked decisions; for any detail not covered here, defer to `SMOKE_TESTING.md`.
+
+## 9.1 Why a separate test folder
+
+Three concrete reasons (full discussion in `SMOKE_TESTING.md` §2):
+
+1. **`.claude/agents/*.md` pollution** — `aab init` writes one per starter member to `cwd`. Smoking from the project root contaminates the source tree.
+2. **Project-mount detection in `resolveWorkspace()`** (`src/storage/paths.ts:80-83`) — if you smoke in the project root and an `.aabcli/` lands there, subsequent CLI invocations from the project root find the smoke workspace instead of your dev workspace.
+3. **Workspace mutex collisions** — `proper-lockfile` acquires `<workspace>/.lock`; debugging in one shell while smoking in another in the same workspace serialises every operation, with bonus chance of stale locks.
+
+## 9.2 Two locked design choices
+
+Confirmed by user 2026-05-19:
+
+1. **Test folder lives outside the repo.** Windows: `C:\Users\<you>\Downloads\kode\ai-advisoryboardclitestfolder`. macOS/Linux: `~/aab-smoke/`. Empty at rest. Never committed.
+2. **Bootstrap workspace via `--non-interactive --home --name smoke-<yyyy-mm-dd>`.** `--home` forces `~/.aabcli/<slug>/` (workspace data isolated under home). `--non-interactive` skips the (false-positive on Windows) "claude CLI not found" prompt that `detectClaudeCli()` emits. Date-stamped slug → each smoke is disposable.
+
+## 9.3 What CLI smoke is allowed to touch
+
+- The external test folder — full read/write.
+- `~/.aabcli/<smoke-slug>/` — full read/write. Cleanup is on the smoker.
+- The project root — **read only** (the binary is read from `dist/bin/aab.js`). Never `init` in the project root.
+- Real Claude calls — yes, that's the point. ~$0 on a Claude Max subscription per full smoke; ~$0.10-0.20 API-equivalent.
+
+## 9.4 When to smoke (summary; full table in `SMOKE_TESTING.md` §7)
+
+- **Always smoke**: any change to `src/llm/`, `src/core/discussion/`, `src/agents/`, `src/storage/paths.ts`, `src/commands/<new-or-modified-verb>`, `src/core/parsing/`, `src/ui/render-*.ts`.
+- **Smoke is enough** (no MCP needed): CLI-only changes.
+- **MCP instead** (per Part 8): changes to `gui/` or `src/gui/server.ts`.
+- **Skip smoke**: pure docs (`PLAN/`, `CLAUDE.md`, `README.md`), comment-only edits, renames.
+
+## 9.5 Acceptance criteria (every CLI change shipped from 2026-05-19 onward)
+
+- A live smoke of the changed flow was run from the external test folder.
+- All seven verification signals in `SMOKE_TESTING.md` §5 are green — especially "Orchestrator parses" and "Summarize parses" (these are the load-bearing checks; the May 2026 bugs failed both silently).
+- If the smoke surfaces a regression, it's fixed *and* re-smoked clean before commit.
+- New silent-fail bugs are documented in `SMOKE_TESTING.md` §9 (the reference-regression log) so future contributors learn from them.
+
+## 9.6 Net effect
+
+The CLI stops being verified by "typecheck + build" — which catches type errors but not silently-truncated argv, fallback-decision-papered orchestrator failures, or LLM contract drift. Every CLI change ships with at least one live smoke against the real binary. The discipline pairs with Part 8's UI testing to give every surface of `aab` (terminal + browser) the same verification bar: real binary, real calls, real assertions. The reference-regression log (`SMOKE_TESTING.md` §9) is the institutional memory — every silent-fail bug we catch goes in, every future change checks itself against the list.

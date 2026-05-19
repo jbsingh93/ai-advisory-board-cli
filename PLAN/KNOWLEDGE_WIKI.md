@@ -1264,6 +1264,7 @@ Each chunk is independently shippable and testable.
   - `skill-ingest.golden.md` — input source + wiki snapshot (including slug-map) → expected page diff + slug-map diff. Re-baseline with `AAB_UPDATE_GOLDENS=1`.
   - `skill-query.golden.md` — input question + wiki snapshot → expected answer (citing slugs).
 - **Live test** (`AAB_LIVE_TEST=1`): end-to-end ingest of a real PDF + a real URL + a real discussion conclude → assert manifest grows, slug-map in `wiki/index.md` reflects every page, `aab knowledge rename` round-trip leaves zero broken links, agent can answer a query that requires wiki context.
+- **Live CLI smoke** (mandatory, per `PLAN/SMOKE_TESTING.md`): every Phase 1.5 implementation chunk that lands a new CLI verb (`aab knowledge ingest|query|lint|rename|show|edit|open|stats|graph|related|unresolved|backfill|migrate`) gets a live smoke from the external test folder against a real Claude session before being declared done. The canonical flow for wiki work: bootstrap a fresh smoke workspace → ingest one file + one URL + one paste → `aab knowledge query` → `aab knowledge lint --write` → `aab knowledge rename` (round-trip) → assert zero broken links, slug-map rebuilt, manifest renames[] appended. See `SMOKE_TESTING.md` §4 for the bootstrap pattern and §9 for the reference-regression log new bugs feed into.
 
 ---
 

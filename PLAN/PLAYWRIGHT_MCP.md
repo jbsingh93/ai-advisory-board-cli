@@ -4,6 +4,8 @@ Authoritative reference for using **Playwright MCP** (the official Microsoft pac
 
 Companion to `PLAN.md` **Part 8**. Status entries live in `PLAN/CHECKLIST.md` **Phase 6.6**.
 
+> **CLI-side counterpart: `PLAN/SMOKE_TESTING.md`.** Same verification discipline for the headless CLI surface — external test folder, real `aab` binary, real Claude calls. Run the relevant one (or both) before declaring a change done. The pairing is: UI changes (`gui/`, `src/gui/server.ts`) → Playwright MCP smoke; CLI changes (the rest of `src/`) → live CLI smoke per `SMOKE_TESTING.md`.
+
 ---
 
 ## 1. TL;DR — the 60-second version

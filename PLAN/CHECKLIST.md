@@ -340,117 +340,147 @@ Live progress tracker. Each item is a concrete deliverable. Phase numbering matc
 
 ---
 
-## Phase 4 — Action Board (Kanban) ⬜
+## Phase 4 — Action Board (Kanban) ✅
 
 (Per Part 6 scope cut: kanban tracking + skill-only solve. Multi-agent solve / artifact mode / deliverable types are NOT in scope.)
 
 ### Kanban CRUD
 
-- [ ] `aab actions add "<title>" [--description] [--priority high|medium|low] [--due YYYY-MM-DD]`
-- [ ] `aab actions list [--status pending|in-progress|completed] [--priority ...]`
-- [ ] `aab actions board [--watch] [--filter ...]` — 3-column ANSI Kanban view
-- [ ] `aab actions show <id>` — detail: title, description, status, linked discussion, linked skill runs
-- [ ] `aab actions edit <id>` — interactive
-- [ ] `aab actions move <id> pending|in-progress|completed`
-- [ ] `aab actions delete <id> [--cascade]`
+- [x] `aab actions add "<title>" [--description] [--priority high|medium|low] [--due YYYY-MM-DD]`
+- [x] `aab actions list [--status pending|in-progress|completed] [--priority ...]`
+- [x] `aab actions board [--watch] [--filter ...]` — 3-column ANSI Kanban view
+- [x] `aab actions show <id>` — detail: title, description, status, linked discussion, linked skill runs
+- [x] `aab actions edit <id>` — interactive
+- [x] `aab actions move <id> pending|in-progress|completed`
+- [x] `aab actions delete <id> [--cascade]`
 
 ### Auto-extract from discussions
 
-- [ ] `aab actions extract <discussion-id>` — structured-data fast path, LLM fallback when no `structuredData`
-- [ ] `src/core/actions/conversation-analyzer.ts` (port; Phase 1 noted it as supporting)
+- [x] `aab actions extract <discussion-id>` — structured-data fast path, LLM fallback when no `structuredData`
+- [x] `src/core/actions/conversation-analyzer.ts` (port; Phase 1 noted it as supporting)
 
 ### UI (mirrors in `gui/`; replaces read-only kanban view)
 
-- [ ] Drag-drop columns (pending → in-progress → completed) — cards reorder + change status; persisted via `/api/actions/:id` PATCH; optimistic update + WS reconciliation
-- [ ] Add-action modal — title, description, priority chip, due-date picker; submits to `/api/actions`
-- [ ] Inline edit (click card → expand to detail panel) — fields editable, save persists, cancel reverts
-- [ ] "Extract actions" button on concluded discussions — runs analyzer, surfaces candidate actions in an accept/reject list; accepted candidates become kanban cards
-- [ ] Card detail panel — linked-discussion link (anchor to round), linked skill-runs list, "Solve" button (Phase 5 dependency)
+- [x] Drag-drop columns (pending → in-progress → completed) — cards reorder + change status; persisted via `/api/actions/:id` PATCH; optimistic update + WS reconciliation
+- [x] Add-action modal — title, description, priority chip, due-date picker; submits to `/api/actions`
+- [x] Inline edit (click card → expand to detail panel) — fields editable, save persists, cancel reverts
+- [x] "Extract actions" button on concluded discussions — runs analyzer, surfaces candidate actions in an accept/reject list; accepted candidates become kanban cards
+- [x] Card detail panel — linked-discussion link (anchor to round), linked skill-runs list, "Solve" button (Phase 5 dependency)
 
 ### Playwright MCP regression specs (`specs/`)
 
-- [ ] `specs/actions-kanban-dragdrop.md` — drag card pending → in-progress → reload → status persisted
-- [ ] `specs/actions-add-edit.md` — open add modal → fill fields → submit → card appears in pending → click card → edit description → save → reload → persisted
-- [ ] `specs/actions-extract-from-discussion.md` — concluded discussion → click "Extract actions" → candidate list renders → accept 2 reject 1 → kanban shows the 2 accepted
+- [x] `specs/actions-kanban-dragdrop.md` — drag card pending → in-progress → reload → status persisted
+- [x] `specs/actions-add-edit.md` — open add modal → fill fields → submit → card appears in pending → click card → edit description → save → reload → persisted
+- [x] `specs/actions-extract-from-discussion.md` — concluded discussion → click "Extract actions" → candidate list renders → accept 2 reject 1 → kanban shows the 2 accepted
 
 ---
 
 ## Phase 5 — Skill creator (the killer feature) ⬜
 
-The "Solve" action: turn one action item into one installed Claude Code skill.
+**Spec:** `PLAN/SKILL_CREATOR.md` (authoritative — read this first).
+**Plan section:** `PLAN/PLAN.md` Part 6 (Action Board scope cut) with the 2026-05-20 redirect banner pointing back here.
+**External references:** [Anthropic Engineering, "Equipping agents for the real world with Agent Skills" (Oct 2025)](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills); [Anthropic, "Skills for organizations, partners, the ecosystem" (Dec 2025)](https://claude.com/blog/organization-skills-and-directory); [`anthropics/claude-plugins-official` skill-creator skill](https://github.com/anthropics/claude-plugins-official); [Claude Code skills doc](https://code.claude.com/docs/en/skills); [Claude for Chrome (Dec 2025)](https://claude.com/blog/claude-for-chrome).
 
-### Preflight + research
+**Locked decisions (2026-05-20, do not renegotiate without fresh user input):**
 
-- [ ] `src/core/skill/preflight.ts` — capability pattern matching (browser, API, MCP, shell, filesystem, git, cloud, SaaS)
-- [ ] `src/core/skill/preflight-wizard.ts` — interactive enquirer wizard, auto-detects CLI tools / MCP servers / env vars
-- [ ] `src/core/skill/agent-environment-profile.ts` — parse `BusinessProfile` blob, normalize to `AgentEnvironment`
-- [ ] `src/core/skill/skill-task-research.ts` — `skill_generation.skill_task_research` prompt with web search
+1. **Thin orchestrator around Anthropic's official `skill-creator` skill** — the 14-prompt + single-loop + critic + repair + potency + security + trigger-evaluator pipeline from sage-council is **NOT ported**. Anthropic ships `skill-creator` with ~117k weekly installs and we delegate to it.
+2. **The headline of Phase 5 is the agentic Skill Planner**, not the skill emit. The Planner runs read-only recon across PC + Wiki + Web, then reasons creatively about how to maximize user value via multi-tool orchestration (the "Elgato moment"). Without the Planner, the emit is uninteresting; with it, the emit is an autonomous worker.
+3. **Maximalist tool surface with user gating** — Planner detects everything; user opts in per capability; granted tools become the emitted skill's `allowed-tools`. The Planner proposes ≥3 multi-tool orchestrations on the maximalist tier (hard schema gate).
+4. **`skill-creator` is a hard prerequisite** with auto-offer-to-install (`aab init --install-skill-creator`; `aab doctor` check).
+5. **Headless invocation via `claude -p --append-system-prompt-file`** — only non-interactive path today; tracking [anthropics/claude-code#38505](https://github.com/anthropics/claude-code/issues/38505).
+6. **Broad auto-detect, opt-in grant** — full PC inventory + MCP servers + env vars + browser extensions + Playwright + Claude for Chrome; user accepts per integration in the Planner proposal modal.
+7. **Read-only PC scan invariant** — the recon module never writes a file, modifies a registry key, calls a network endpoint, or invokes anything with side effects. Lint-enforced (`no-side-effects-in-recon`); CI-gated.
+8. **Skills are agents, not prompt packs.** Emitted skills should execute work end-to-end, not produce documentation about the work. The proposed workflow + stakeholder touchpoints + integration list in the brief is what drives skill-creator toward agentic output.
 
-### Single-loop skill builder
+### Chunk 1 — skill-creator detection + install bootstrap
 
-- [ ] `src/core/skill/single-loop-planner.ts` — `skill_generation.single_loop_planner` (steps[] from decomposition + plan)
-- [ ] `src/core/skill/single-loop-tool-turn.ts` — `skill_generation.single_loop_tool_turn` runtime over a tempdir workspace
-- [ ] `src/core/skill/workspace-fs.ts` — list_files / read_file / create_file / update_file / write_file / rename_file / delete_file in `~/.aabcli/<ws>/skill-runs/<run-id>/workspace/`
-- [ ] Turn cap (default 60), 3-consecutive-error abort, telemetry to `<run-id>/telemetry.jsonl`
+- [ ] `src/core/skill/resolve-skill-creator.ts` — walks the skill scope priority order (project → user → plugin) to find `skill-creator/SKILL.md`; returns path + version + scope or null
+- [ ] `aab init --install-skill-creator` — surfaces the exact `/plugin install skill-creator@claude-plugins-official` command + opens Claude Code if possible (since `/plugin install` itself is interactive-only today)
+- [ ] `aab doctor` adds: skill-creator presence + version check; PC scan probe; web reachability probe
+- [ ] Unit tests: scope walking; version extraction from SKILL.md frontmatter
+- [ ] Live smoke: install skill-creator on test workspace; verify resolver finds it; verify doctor passes
 
-### Quality gates
+### Chunk 2 — Skill Planner: recon (PC scan + Wiki + Web)
 
-- [ ] `src/core/skill/package-critic.ts` — `skill_generation.skill_package_critic` (7-dimension rubric, hard gates)
-- [ ] `src/core/skill/repair-pass.ts` — `skill_generation.repair_pass` (max 2 attempts)
-- [ ] `src/core/skill/master-prompter-potency.ts` — `skill_generation.master_prompter_potency_pass` per file
-- [ ] `src/core/skill/security-review.ts` — `skill_generation.security_review` (loose | strict | defer)
-- [ ] `src/core/skill/trigger-evaluator.ts` — `skill_generation.trigger_evaluator` (8-10 should / 8-10 should-not queries; precision/recall)
+- [ ] `src/core/skill/recon/pc-scan.ts` — platform-dispatched read-only PC inventory (Windows / macOS / Linux) per SKILL_CREATOR.md §6.2; pure function (`os` + `fs` + `child_process` injected); ESLint rule `no-side-effects-in-recon` enforces no writes
+- [ ] `src/core/skill/recon/wiki-recon.ts` — reuses Phase 1.5's `aab knowledge query` engine; one Sonnet call with `Read/Grep/Glob/maxTurns:8`; returns `WikiContext` (relevantPages, stakeholders, endorsedDirections, vetoes, pastDecisions)
+- [ ] `src/core/skill/recon/web-recon.ts` — one Sonnet call with `WebSearch + WebFetch + maxTurns:12`; returns `WebResearchContext` (taskDomain, bestPracticePatterns, recommendedTools, recentInnovations, warningsAndPitfalls)
+- [ ] `src/core/skill/recon/orchestrator.ts` — runs all three in parallel via `Promise.allSettled`; aggregates; handles partial failures gracefully; emits `planner_recon_progress` + `planner_recon_done` WS events
+- [ ] `aab actions plan <id> --recon-only --json` — debug command (recon without reasoning); useful for testing
+- [ ] Unit tests: per-platform PC scan with mocked `child_process`; recon aggregation with partial failures; budget enforcement; cap-size truncation; env-var redaction
+- [ ] Live smoke: recon-only against real action; PC scan ≥20 apps + ≥10 CLI tools; wiki recon ≥3 pages on a covered topic; web research ≥8 sources
 
-### Decomposition (lightweight, internal-only)
+### Chunk 3 — Skill Planner: reasoning + user review
 
-- [ ] `src/core/skill/task-orchestrator.ts` — `skill_generation.decomposition` headless decomposition for plan input
-- [ ] (Skip skill-aware decomposition critic + composition critic per Part 6 scope cut)
+- [ ] `src/core/prompts/skill-planner.ts` — the Planner system prompt template (**the most important prompt in the CLI**); embeds the skill operating model preamble + master-gpt-prompter hardening + the explicit "lean toward orchestration, surface ≥3 multi-tool integrations, propose three ambition tiers" directive
+- [ ] `src/core/skill/planner.ts` — orchestrates the reasoning call; inputs: action + linked discussion summary + recon triple; model: `researchModel` (Opus 4.7, 1M context); streams `planner_reasoning_*` events
+- [ ] `src/core/parsing/llm-response-schemas.ts` — add `skillDesignProposalSchema` (zod); validates: skillName kebab-case; tiers complete (minimal+standard+maximalist); ≥3 integrations on maximalist (hard schema gate; failure → re-run with stronger nudge)
+- [ ] `src/core/skill/planner-review.ts` — interactive review flow; CLI: `enquirer` multi-select per integration + stakeholder + tier radio + narrative editor via `$EDITOR`; re-plan loop (max 3 per solve); deterministic `grantedTools` projection from accepted integrations
+- [ ] `aab actions plan <id>` — first-class command; runs Chunks 2 + 3; saves/prints proposal markdown; exits without invoking skill-creator
+- [ ] Unit tests: prompt rendering covers all required directives; proposal schema validation (positive + negative); deterministic `grantedTools` projection; re-plan feedback merge; narrative-edit preservation
+- [ ] **Live smoke (the showcase milestone):** real action like "Record a YouTube intro for the Q3 launch" against a workspace with seeded wiki + ≥1 MCP server + ≥1 detectable desktop app (Elgato Teleprompter / OBS / Adobe Premiere / etc.); Planner must surface ≥3 multi-tool orchestrations spanning ≥2 of {PC apps, MCP servers, wiki stakeholders}. **This is the moment of truth for the depth-of-feature thesis.**
 
-### Adapter + install
+### Chunk 4 — skill-creator invocation + adapter + install
 
-- [ ] `src/core/skill/claude-code-adapter.ts` — frontmatter rewrite per Part 4.1.1 (real Claude Code spec: name, description, when_to_use, allowed-tools, model)
-- [ ] Install to `.claude/skills/<skill-name>/`
-- [ ] Conflict handling: `overwrite | rename | abort`
+- [ ] `src/core/skill/build-brief.ts` — assembles JSON brief from action + discussion + **accepted Planner proposal verbatim** + capability profile + install target per SKILL_CREATOR.md §7; ≤60 KB; truncation priority order honored
+- [ ] `src/core/skill/invoke-skill-creator.ts` — headless spawn with `--append-system-prompt-file = skill-creator/SKILL.md`; allowed tools `Write,Edit,Read,Glob,Bash`; cwd = run workspace tempdir; timeout 20 min; streams events
+- [ ] `src/llm/claude-code-runner.ts` — add `appendSystemPromptFile`, `cwd`, `outputFormat: 'stream-json'`, `onEvent` options
+- [ ] `src/core/skill/adapter.ts` — frontmatter normalization per SKILL_CREATOR.md §9 (real Claude Code spec: `name, description, when_to_use, allowed-tools, model, …`); drops sage-council-invented keys if any leak; allowed-tools diff vs grantedTools
+- [ ] `src/core/skill/install.ts` — `cp -r workspace → .claude/skills/<name>/`; conflict handling (overwrite | rename `<name>-2` | abort); `.aab-source.json` sidecar with runId + actionItemId + installedAt
+- [ ] `src/core/skill/persist-run.ts` — writes `SkillGenerationRun` with **full Planner proposal embedded in metadata**; updates `ActionItem.linkedSkill` + `skillRunHistory[]`; archives workspace per `preserveWorkspaceOnSuccess` setting
+- [ ] `aab actions solve <id>` end-to-end command (chains Chunks 2+3+4) with all flags from SKILL_CREATOR.md §5
+- [ ] Unit tests: brief assembly with embedded proposal; frontmatter parse/serialize; adapter diff against grantedTools; conflict rename; snapshot rotation
+- [ ] **Live smoke (the big one):** real action → real Planner → user accepts → real skill-creator → real install. Verify SKILL.md frontmatter valid (no `/skills` warnings); `linkedSkill` populated; `aab skills list` shows it; `aab skills test` round-trips; emitted `allowed-tools` exactly matches user-accepted integrations.
 
-### Prompts
+### Chunk 5 — `aab actions runs` + `aab skills` commands
 
-- [ ] `src/core/prompts/default-prompts.ts` — port advisory prompts (board_member_response is in agent files; orchestrator + summary + persona enhancers + decision-coach + sparring-deep-dive needed)
-- [ ] `src/core/prompts/skill-generation-prompts.ts` — port all 14 skill prompts verbatim
-- [ ] `src/core/prompts/master-gpt-prompter-hardening.ts` — port verbatim, auto-applied at render
-- [ ] `src/core/prompts/prompt-resolver.ts` — user-override → default chain with Mustache-style conditionals
-- [ ] `src/core/prompts/skill-operating-model.ts` — shared `<skill_operating_model>` preamble
+- [ ] `aab actions runs <action-id>` — list past runs with tier + cost + status + duration
+- [ ] `aab actions runs show <run-id>` — pretty-print metadata + embedded Planner proposal + files + telemetry tail
+- [ ] `aab actions runs export <run-id> --zip <path>` — `jszip` bundle includes `proposal.md` + `SKILL.md` + supporting files + `telemetry.jsonl`
+- [ ] `aab actions plan show <plan-id>` — re-render a saved plan without re-running
+- [ ] `aab skills list` — enumerate installed skills (project + user scope)
+- [ ] `aab skills show <name>` — pretty-print SKILL.md + sidecar metadata
+- [ ] `aab skills test <name> "<input>"` — round-trip via `claude -p` with the skill active; capture transcript
+- [ ] `aab skills uninstall <name>` — archive to `.snapshots/skills/<name>-<timestamp>/`
+- [ ] `aab skills restore <name> [--snapshot <ts>]`
+- [ ] Unit tests: run listing; JSON export; snapshot rotation; proposal re-render
+- [ ] Live smoke: solve → runs show → proposal export → skills test round-trip
 
-### Run management
+### Chunk 6 — Web UI + WS events + Playwright MCP specs
 
-- [ ] `aab actions solve <id>` — full pipeline end-to-end
-- [ ] `aab actions runs <action-id>` — list past runs
-- [ ] `aab actions runs show <run-id>` — telemetry, critic scores, files, security mode
-- [ ] `aab actions runs export <run-id> --zip <path>`
-- [ ] Flags: `--no-preflight`, `--no-install`, `--zip <path>`, `--skill-name <name>`, `--single-loop-max-turns`, `--reflexion`, `--budget-cap-usd`
+- [ ] REST endpoints per SKILL_CREATOR.md §14 (including `/api/actions/:id/plan`, `/api/plans/:id/replan`, `/api/recon/environment`)
+- [ ] WS event family per SKILL_CREATOR.md §12 + §14: `planner_started`, `planner_recon_progress`, `planner_recon_done`, `planner_reasoning_started`, `planner_reasoning_progress`, `planner_proposal_ready`, `planner_failed`, `skill_run_*`
+- [ ] `gui/app.js`:
+  - Plan button + Solve button on action card
+  - **Planner progress pane** (four phases: PC scan / Wiki / Web / Reasoning) with per-phase progress bars + live tool-call stream
+  - **Planner proposal modal** with interactive integration toggles + tier radio (minimal/standard/maximalist/custom) + stakeholder toggles + narrative editor textarea + value rationale + cost estimate + Accept / Re-plan / Reject buttons
+  - **Re-plan feedback modal** (textarea + submit, max 3 per solve)
+  - Run-detail view with live telemetry pane + adapter diff + install confirmation
+  - Runs list per action (timestamp + tier + cost + status pill)
+  - Run export + proposal export buttons
+  - Skills tab in sidebar (list / show / test / uninstall)
+- [ ] `gui/style.css` — Planner progress pane styling; ambition-tier color coding (minimal=neutral, standard=accent, maximalist=primary); integration card; adapter diff highlighting
+- [ ] `data-testid` registry per SKILL_CREATOR.md §14
+- [ ] Playwright MCP regression specs:
+  - [ ] `specs/skill-plan-only.md` — Plan button → proposal modal opens with all sections populated → export-to-md works
+  - [ ] `specs/skill-planner-maximalist.md` — maximalist tier on synthetic action with ≥3 detectable integrations → proposal includes them → toggling each adjusts final grantedTools list
+  - [ ] `specs/skill-planner-replan.md` — accept partial proposal → click Re-plan → provide feedback ("you missed integration X") → re-planned proposal includes X
+  - [ ] `specs/skill-solve-happy-path.md` — full Plan → accept → solve → install
+  - [ ] `specs/skill-run-telemetry.md` — live WS telemetry during a solve
+  - [ ] `specs/skill-install-conflict.md` — install same name twice → conflict dialog → rename + abort variants
+  - [ ] `specs/skill-runs-history.md` — runs list + show + export (with proposal.md inside the .zip)
+  - [ ] `specs/skills-tab.md` — list / show / test / uninstall
+- [ ] Live Playwright MCP smoke on test workspace
 
-### User-customisable prompts
+### Out of scope for v1 (deferred)
 
-- [ ] `aab prompts list` — show defaults vs overrides
-- [ ] `aab prompts edit <key>` — open `$EDITOR`, validate placeholders + required fragments
-- [ ] `aab prompts reset <key>` / `reset-all`
-
-### UI (mirrors in `gui/`; the whole skill-creator surface is new in 6.5)
-
-- [ ] "Solve" button on action cards (Phase 4 surface) — launches the skill-creator pipeline, opens the run-detail view, broadcasts step events over WS
-- [ ] Preflight wizard modal — capability detection results, per-capability accept/reject, env-var prompts, MCP server prompts; submits to `/api/actions/:id/solve` with the answered profile
-- [ ] Run-detail view — live telemetry pane (current step, turn count, tool-call list), package-critic score panel (7-dim rubric bars), security-review badge, repair-pass attempt counter, abort button
-- [ ] Runs list per action — past runs with timestamp + final critic score + status pill + click-through to detail
-- [ ] Run export button — produces `.zip` download via `/api/actions/runs/:id/export`
-- [ ] Skill install confirmation panel — preview frontmatter rewrite (claude-code-adapter output) + conflict handling (overwrite / rename / abort)
-- [ ] User-customisable prompts editor — `aab prompts edit` mirrored as a tab under Settings with a default-vs-override diff view
-
-### Playwright MCP regression specs (`specs/`)
-
-- [ ] `specs/skill-solve-launch.md` — action card → click "Solve" → preflight wizard opens → accept all → run starts → live telemetry pane updates → final critic score renders
-- [ ] `specs/skill-preflight-wizard.md` — synthetic action prompt with known capability surface → wizard surfaces every expected category → user answers → answers persist into the run profile
-- [ ] `specs/skill-run-telemetry.md` — running solve → telemetry updates in real time over WS → security badge correct → repair-pass count visible
-- [ ] `specs/skill-install-conflict.md` — install same skill name twice → conflict dialog → choose rename → installs as `<name>-2`; choose abort → no install
-- [ ] `specs/prompts-editor.md` — open `aab prompts` UI → edit a key → validate placeholders → save → reset → defaults restored
+- [~] Plugin-packaged emitted skills with bundled `.mcp.json` (Path B from SKILL_CREATOR.md §16) — defer to Phase 5.5
+- [~] `aab prompts list|edit|reset` user-customisable prompt overrides (including Planner prompt overrides) — defer to Phase 5.x
+- [~] Critique panel / reflexion (skill-creator likely handles equivalents internally) — defer indefinitely
+- [~] Computer Use API surface in emitted skills — defer until Anthropic documents in-skill pattern
+- [~] Direct Claude for Chrome programmatic invocation from skills — defer until Anthropic exposes the surface; treat Chrome as runtime user aid for v1
+- [~] Autonomous multi-action Planner ("plan + solve every pending action overnight") — defer to Phase 5.x
+- [~] Cross-skill composition planner (Planner notices two related actions and proposes a single multi-step skill) — defer to Phase 5.x
 
 ---
 
@@ -476,7 +506,7 @@ The "Solve" action: turn one action item into one installed Claude Code skill.
 - [x] **Principles** — grid of cards with category, description, priority bar (read-only)
 - [x] **Settings** — read-only key/value table
 - [x] Member edit / add / delete UI (with active toggle, expertise editing, persona/voiceGuide forms; auto-emits + cleans up `.claude/agents/<slug>.md`)
-- [ ] Action add / edit / move / delete UI (drag-drop kanban) _— scope: Phase 4 §UI_
+- [x] Action add / edit / move / delete UI (drag-drop kanban) _— scope: Phase 4 §UI_
 - [x] Principle edit / add / delete UI (active toggle, category select, priority slider; click-to-edit cards)
 - [x] Settings editing UI (full form: title, max turns/members, models, budget, locale, HITL toggle)
 - [x] Discussion: continue + respond from the UI (Continue button + HITL reply form)
@@ -655,9 +685,10 @@ Each spec lives under `specs/<flow>.md` and is generated by driving the dashboar
 - **Phase 6.6 (Playwright MCP UI tests):** chunk 1 done — `@playwright/mcp@0.0.75` installed as devDep, project-scoped `.mcp.json` committed (cross-platform safe), `PLAN/PLAYWRIGHT_MCP.md` reference doc written. Next: chunk 2 (add `data-testid` registry to existing `gui/` markup + a11y pass), then chunk 3 (smoke flow specs by driving the dashboard via MCP).
 - **Phase 2 (Members + Principles + Coach):** ✅ closed (2026-05-19). Full members CRUD shipped (`aab members {list,show,add,edit,enhance,delete,sync-agents,tools,regenerate-voice}`) with AI persona enhancement on three template variants (famous → BFI-2 + Cognitive Process; expert → top-1% mastery; non-famous → practical practitioner) calling local `claude` CLI (no Gemini, no API key). Principles CRUD + `seed-starters` + `explore` 5-step Socratic wizard (behavior → anti-pattern → triggers → examples → priority) with cross-step context preserved across turns. Decision Coach (`aab coach`) is a Dalio-style REPL backed by `DecisionSession` storage — `decision-sessions/<id>.json`, one file per session, atomic writes; opener fires automatically on session creation, multi-turn flow preserves full transcript every call, extracts referenced principle ids by title substring match. **Live smoke (2026-05-19):** coach session "$50k pivot" ran end-to-end with real Claude — opener referenced **Embrace Reality (9)** + **Be Radically Open-Minded (9)** + **Believability-Weight Decisions (7)** + **Own Your Mistakes** + **Think for Yourself**, second turn folded in **Be Direct and Honest (8)** + **Disagree and Commit (8)** + **Pain + Reflection = Progress (8)**, all by name. **GUI:** Members tab grows **↻ Regenerate agent files** header button + per-card **🔊 Voice** button (preview-before-save) + Enhance-with-AI inside the edit modal (streams over WS) + per-member tools allowlist chips. Principles tab grows **🌱 Seed starters** (disabled when non-empty) + **🔎 Explore** per card opening the 5-step wizard modal. New sidebar item **🧠 Coach** opens the chat view with session list + bubble stream + Cmd/Ctrl+Enter composer. New WS event family: `member_enhance_*`, `member_voice_*`, `members_sync_done`, `principles_seeded`, `principle_explorer_*`, `coach_thinking|message|error|session_*`. **Tests:** 49 new vitest unit tests across `ai-enhancer.test.ts`, `fallback-voice-guides.test.ts`, `decision-coach.test.ts`, `principle-explorer.test.ts`; full suite at 80/80 passing. Live Playwright MCP smoke verified the new surfaces render correctly with the real backend (smoke-phase2-2026-05-19 workspace).
 - **Phase 3 (Sparring — 1:1 deep dive):** ✅ closed (2026-05-19). 4-layer ship — engine + CLI + GUI + MCP specs + tests. Engine modules: `src/core/sparring/{truncate,build-sparring-prompt,sparring-service,inject-insight}.ts` port sage-council's `sparring-service.ts` 1:1 (truncation budgets verbatim: 14k discussion / 8k history / 4k bcontext / 4k anchor; head-70/tail-30 split with `[<label> truncated to fit context window: omitted N chars]` marker; researchModel → primaryModel fallback). CLI grows `aab discuss spar <id> --member <name> [--round N --turn M --message <text> --resume <sessionId> --title <text>]` (interactive REPL + one-shot mode), `aab discuss inject <id> --from <sessionId> [--insight <text> --yes]`, `aab discuss spar list <discussion-id>`, `aab discuss spar show <session-id>`. Storage adds `SparringSession + SparringMessage + SparringSource + SparringInjectionContext` types and 6 new `StorageService` methods backed by `sparring/<discussionId>/<sessionId>.json` (one file per session, atomic writes); `UserResponse` extended with `sparringSessionId` so injected entries link back. GUI: per-response ⚔ Spar button on every `messageBubble`, chat-header ⚔ Sparring list button, full sparring modal (anchor banner + transcript + composer + ↩ Inject insight back), inject confirmation modal with editable textarea pre-filled from latest assistant reply, sparring sessions list modal. New REST endpoints `/api/discussions/:id/sparring` (list/open), `/api/sparring/:sessionId` (get/delete), `/api/sparring/:sessionId/messages` (send → WS stream), `/api/sparring/:sessionId/inject`. New WS event family: `sparring_session_opened`, `sparring_session_deleted`, `sparring_thinking`, `sparring_activity`, `sparring_message`, `sparring_error`, `sparring_injected`. **Tests:** 43 new vitest unit tests across `truncate.test.ts`, `build-sparring-prompt.test.ts`, `inject-insight.test.ts`, `sparring-service.test.ts`; full suite at 123/123 passing. **Live smoke:** `aab discuss spar da720e41 --member "Elon Musk" --round 1 --turn 1 --message "Walk me through the unit economics…"` against `smoke-kw-2026-05-19` produced a real Opus deep-dive (~6kB markdown reply with tiered targets, cost-of-getting-it-wrong tables, Q3 plan checklist); `aab discuss inject` wrote the `sparring_injection` UserResponse with full provenance (sparringSessionId, selectedMemberId=Elon, sourceRoundNumber=1, sourceTurnNumber=1, prompt="Injected from 1:1 Deep Dive with Elon Musk"). Playwright MCP smoke confirmed: ⚔ Spar buttons on each response card, ⚔ Sparring header button opens the session list modal showing the persisted session, clicking ⚔ Spar opens the sparring modal with anchor banner + full transcript reload from disk + ↩ Inject insight back button, the injected insight appears in the chat timeline as a user bubble labeled "Sparring insight injected (via Elon Musk)".
-- **Phase 4-6:** not started.
+- **Phase 4 (Action Board — Kanban + skill-only solve, per Part 6):** ✅ closed (2026-05-20). 4-layer ship — engine + CLI + GUI + MCP specs + tests. Engine: `src/core/actions/conversation-analyzer.ts` ports sage-council's `conversation-analyzer.ts` with the **structured-data fast path made pure** (no LLM call when `response.structuredData.actionSteps` / `questionsForOthers` exist — deterministic transform + heuristic priority + category classifier + dedupe-by-title that bumps confidence on convergence). LLM fallback uses `fastModel` (Haiku) with `allowedTools:[]` + `maxTurns:1`, parses against `conversationAnalysisPayloadSchema`, and degrades to confidence-0 fallback without throwing if the call errors. CLI grows `aab actions {add,list,board,show,edit,move,delete,extract}` — `board` renders a 3-column ANSI Kanban with priority pips, due dates, and 8-char short-ids; `extract` supports `--dry-run`, `--accept-all`, and `--max N` to cap acceptance by confidence; `move` aliases `inprogress`/`doing`/`todo`/`done` to canonical statuses. Storage: `ActionItem` already lived in `types.ts`; `FsStorageService` `{load,save,update,delete}ActionItem` already shipped — Phase 4 layered the engine + commands on top, atomic writes to `action-items.json` preserved. GUI: read-only kanban replaced with drag-drop columns (HTML5 drag-drop wired in `gui/app.js:wireDropTarget`, optimistic update + rollback on PATCH failure), full add/edit modal sharing one entry point (`openActionEditModal(item?)` — Delete button only rendered in edit mode), and "📋 Extract actions" button surfaced in the chat footer of concluded discussions opening a candidate-list modal with per-row checkboxes. New REST endpoints: `POST /api/actions`, `PATCH /api/actions/:id`, `DELETE /api/actions/:id`, `POST /api/discussions/:id/actions/extract` (dual-mode: no-body returns candidates, `{accept:[...]}` persists). New WS event family: `action_created`, `action_updated`, `action_deleted`, `actions_extracted`. **Tests:** 33 new vitest unit tests across `conversation-analyzer.test.ts` (26 — pure helpers, structured fast path, LLM fallback with mocked runner, fallback path, parser tolerance, `toActionItem` truncation) and `commands/actions.test.ts` (7 — short-id + priority/status normalization with alias coercion); full suite at 156/156 passing. **Live smoke (2026-05-20):** CLI verified end-to-end on `smoke-phase4-2026-05-20` + `smoke-kw-2026-05-19` — `add` (interactive + non-interactive flag-driven), `list` (sorted by status then priority), `board` (3-column ANSI with chip counts), `show`, `edit --description --priority`, `move 7141a801 in-progress`, `move ad2e0815 completed`, `delete --yes`, `extract da720e41 --dry-run` produced 16 candidates from structured data in <50ms with no LLM call (confidences 87-88 for actionSteps, 72-73 for questionsForOthers), `extract --accept-all --max 3` persisted 3 high-confidence cards with `discussionId` provenance. **REST verified via curl**: GET → 200, POST → 201 + WS broadcast, PATCH → 200 + status transition, DELETE → 204, extract no-body → `method: 'structured'` + 16 candidates in 3ms, extract `{accept:[...]}` → 201 + created ActionItem. **Playwright MCP smoke** verified the UI: nav to 📋 Action Board, kanban renders with 4 items in the correct columns, `+ Add action` opens the modal, title input → Create → modal closes + new card appears in `pending`. The Extract button visibility is correctly gated on `discussion.completedAt`.
+- **Phase 5-6:** not started.
 
-**Next sensible chunk:** **Phase 4** (Kanban CRUD + auto-extract from discussions) — actionable insights from concluded discussions already live at `wiki/sources/` and `wiki/decisions/`, the Phase 3 sparring-injection mechanism establishes the pattern for writing structured artifacts back to a discussion. Phase 4 needs to (a) add CRUD over `ActionItem` (`aab actions {add,list,board,show,edit,move,delete}`), (b) port `src/core/actions/conversation-analyzer.ts` from sage-council with the structured-data fast-path (no LLM call when `response.structuredData.actionSteps` is present), and (c) replace the read-only kanban view in `gui/` with drag-drop columns + add/edit modal + per-card detail panel + "Extract actions" button on concluded discussions. After that: **Phase 5** (skill creator — the headline feature; `BusinessProfile` injection becomes "read `wiki/entities/company.md`"). The cross-cutting **Phase 6.6 chunk 2** (`data-testid` registry + a11y pass for Phase 1 controls) is still pending but can run in parallel — Phase 2-3's UI already carries `data-testid` on every new control: `nav-coach`, `coach-session-row`, `coach-input`, `coach-send-btn`, `members-sync-btn`, `member-edit-btn`, `member-voice-btn`, `member-delete-btn`, `members-add-btn`, `enhance-with-ai-btn`, `enhance-type-select`, `member-tools-allowlist`, `principles-seed-btn`, `principles-add-btn`, `principle-explore-btn`, `explorer-step-*`, `explorer-input`, `explorer-send`, `response-card`, `spar-btn`, `sparring-modal`, `sparring-title`, `sparring-anchor`, `sparring-transcript`, `sparring-msg-user`, `sparring-msg-assistant`, `sparring-typing`, `sparring-input`, `sparring-send-btn`, `sparring-inject-btn`, `sparring-inject-modal`, `sparring-inject-textarea`, `sparring-inject-confirm`, `sparring-sessions-btn`, `sparring-list-modal`, `sparring-session-list`, `sparring-session-row` — Phase 1 controls still need the audit. The orphan-page warning from lint (`acme-corp-b2b-saas` has zero incoming links) is expected and harmless for source-summary pages — lint emits it as `info`, not `warn`.
+**Next sensible chunk:** **Phase 5** (Skill creator — the headline feature, redesigned 2026-05-20). The Phase 4 action board produces the input: every `ActionItem` carries `discussionId` provenance, so the Plan/Solve buttons can pipe the action's `description` + the linked discussion's transcript into the new agentic pipeline. **The redesign:** we do NOT port sage-council's 3,816-line single-loop skill builder + 14-prompt pipeline. Instead, we delegate skill authoring to Anthropic's official `skill-creator` skill (~117k weekly installs, bundled with Claude Code) via `claude -p --append-system-prompt-file`, and we redirect the saved engineering capacity into a **Skill Planner** — an agentic preflight that runs read-only recon across the user's PC (every installed desktop app + CLI tool + MCP server + browser extension + env var), the Knowledge Wiki (stakeholders + decisions + endorsed directions + vetoes), and the live web (current best-practice patterns + tool recommendations + recent innovations), then reasons creatively with Opus 4.7 about how far we can take the emitted skill to maximize user value via multi-tool orchestration. The canonical depth example (the "Elgato moment"): instead of producing a 2-page markdown script for a YouTube video, the Planner notices the user has Elgato Teleprompter installed + Google Calendar MCP + Person X in the wiki as their video editor, and proposes a skill that loads scripts into the Teleprompter, books practice + recording slots in Calendar, AND drafts a brief email to Person X. **The full authoritative spec is at `PLAN/SKILL_CREATOR.md`** (~5,500 words, 23 sections, 6 build chunks, $2.20/run typical cost, 5-14 min wall-clock). Concrete next steps: Chunk 1 (skill-creator detection + auto-offer-to-install in `aab init` + doctor checks), then Chunk 2 (recon: PC scan + Wiki recon + Web research in parallel — the read-only PC scan invariant is lint-enforced), then Chunk 3 (Skill Planner reasoning prompt + Opus call + `SkillDesignProposal` schema + interactive review with toggle-per-integration + re-plan loop + `aab actions plan <id>` first-class command — **this is the milestone where the user feels the depth of the feature for the first time**), then Chunks 4-6 (skill-creator invocation + adapter + install; `aab actions runs` + `aab skills` commands; Web UI + WS events + 8 Playwright MCP specs). After Phase 5: **Phase 6** (hardening + docs + distribution). The cross-cutting **Phase 6.6 chunk 2** (`data-testid` registry + a11y pass for Phase 1 controls) is still pending but can run in parallel — Phase 2-4's UI already carries `data-testid` on every new control. Phase 4 additions to the registry: `actions-view`, `actions-add-btn`, `kanban-board`, `kanban-col-pending`, `kanban-col-in-progress`, `kanban-col-completed`, `kanban-card`, `kanban-card-title`, `action-edit-modal`, `action-edit-close`, `action-title-input`, `action-desc-input`, `action-priority-select`, `action-status-select`, `action-due-input`, `action-assignee-input`, `action-save-btn`, `action-delete-btn`, `extract-actions-btn`, `extract-actions-modal`, `extract-close-btn`, `extract-body`, `extract-status`, `extract-list`, `extract-row`, `extract-checkbox`, `extract-accept-btn`. The orphan-page warning from lint (`acme-corp-b2b-saas` has zero incoming links) is expected and harmless for source-summary pages — lint emits it as `info`, not `warn`.
 
 **Per-phase UI + MCP gate (2026-05-19):** every Phase 2-5 chunk now lists its own `**UI**` subsection (mirrors the CLI verbs in `gui/`) and `**Playwright MCP regression specs**` subsection (one `specs/<flow>.md` plan per UI flow). Phase 6.5 stops being the catch-all UI bucket — it's now polish + cross-cutting. Phase 6.6 chunk 3 holds Phase 1 + cross-cutting specs only. The structural fix is documented in the Cross-cutting section's "Per-phase UI + MCP gate" line and mirrored in `PLAN/PLAN.md` Part 8 §8.6.
 

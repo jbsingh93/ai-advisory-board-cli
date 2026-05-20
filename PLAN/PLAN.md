@@ -225,6 +225,10 @@ Three template variants — `enhance_famous_person`, `enhance_top_expert`, `enha
 
 ### 1.10 Action Board pipeline (the most complex subsystem)
 
+> **⚠ Superseded for the CLI (2026-05-20):** the entire two-phase `actionSolverOrchestrator` → `deepExecutionAgent` → `skillBuilderAgent` pipeline below is **not** ported. The CLI delegates skill authoring to Anthropic's official `skill-creator` skill, with an agentic **Skill Planner** preflight doing the strategic heavy lifting the sage-council pipeline used to do via the decomposition → multi-agent solve → critic loop. Authoritative spec: **`PLAN/SKILL_CREATOR.md`**. See Part 6 (Action Board scope cut) for what stays and what goes; see §6 of `SKILL_CREATOR.md` for the Skill Planner design. Sage-council's Phase 1 multi-agent solve pipeline (ActionClassifier, contextIntelligence, taskOrchestratorAgent.decompose, agentMakerAgent, parallelExecutionEngine, smartSynthesizerAgent, solutionValidator) is **dropped entirely**. Sage-council's Phase 2 deep-execution `skillBuilderAgent` (planner / tool turns / critic / repair / potency / security review / trigger evaluator) is **dropped entirely** — its job is done by `skill-creator` headlessly.
+>
+> The original sage-council description is preserved below for historical reference (and for anyone needing to read the source code).
+
 There are **two phases** wrapped together by `actionSolverOrchestrator.solveActionItem(actionItem, options)`.
 
 #### Phase 1 — Solve the action item
@@ -313,6 +317,8 @@ solutionPackagerService produces a folder layout:
 The body must be an *execution system prompt* (not a doc): mission, workflow, decision rules, validation gates, output contract, fallbacks. Body should be deep — the master-prompter potency pass actively rewrites generic boilerplate.
 
 ### 1.11 Skill prompts (`src/lib/prompts/skill-generation-prompts.ts`)
+
+> **⚠ Superseded for the CLI (2026-05-20):** **none of the 14 skill-generation prompts are ported.** Skill authoring is delegated to Anthropic's official `skill-creator` skill, which has its own internally-tuned prompts maintained by Anthropic. The only new prompt the CLI ships is the **Skill Planner system prompt** (`src/core/prompts/skill-planner.ts`) which drives the agentic preflight — a different surface from the sage-council pipeline. The `<skill_operating_model>` preamble is referenced by the Planner but not ported as a separate file. Authoritative spec: **`PLAN/SKILL_CREATOR.md`** §6 (Skill Planner) + §19 Chunk 3 (Planner prompt).
 
 Each prompt has explicit `requiredVariables` and `requiredFragments` and is validated by `validateAdminPromptTemplate`. The 14 prompts are: `skill_md_enhancer`, `security_review`, `trigger_evaluator`, `repair_pass`, `decomposition_critic`, `skill_aware_decomposition_critic`, `composition_critic`, `skill_package_critic`, `single_loop_creator`, `single_loop_planner`, `single_loop_tool_turn`, `master_prompter_potency_pass`, `task_classifier`, `composition_override`, `skill_task_research`. They share the `<skill_operating_model>` preamble (instruction-first, description-driven routing, progressive disclosure, no-unverified-tools, atomic steps).
 
@@ -601,6 +607,15 @@ The orchestrator stays a direct LLM call (Mode A internals) even in Mode B. It d
 
 ### 2.8 Action Board → Claude Code skills
 
+> **⚠ Superseded for the CLI (2026-05-20):** the per-piece mapping table below (actionClassifier → direct call, taskOrchestratorAgent → direct call, skillBuilderAgent → port verbatim, …) was the right plan for a from-scratch reimplementation. We now delegate to Anthropic's `skill-creator` skill instead and have repointed Phase 5 around the **Skill Planner** (§6 of `SKILL_CREATOR.md`) as the headline value-add. Authoritative spec: **`PLAN/SKILL_CREATOR.md`**.
+>
+> What remains valid in this section:
+> - The "two install paths" idea (§2.8.3) — install to `.claude/skills/<name>/` OR ZIP — is preserved.
+> - The `ClaudeCodeAdapter.adapt` validation step is preserved and sharpened in `SKILL_CREATOR.md` §9 (adapter pass).
+>
+> What is dropped:
+> - The entire pipeline mapping table (`skillBuilderAgent` port verbatim, `skillCompositionAnalyzer` port verbatim, etc.). Anthropic's `skill-creator` does all of this internally.
+
 This is where the Claude Code-native angle pays off most.
 
 #### 2.8.1 Pipeline mapping
@@ -838,6 +853,8 @@ I verified Claude Code's current skill and sub-agent file format against the off
 - **Tool allowlist syntax:** comma-separated or YAML list (`tools: Read, Grep, Glob, Bash` or `tools: [Read, Grep, Glob]`). For the Agent tool itself, `Agent(worker, researcher)` restricts which sub-agent names the parent may dispatch.
 
 ### 4.1.1 Updated SKILL.md emission contract for `ClaudeCodeAdapter`
+
+> **Cross-reference (2026-05-20):** the emission contract below is preserved as the *target* spec the adapter validates against. Web research re-verified Jan 2026 confirms the same frontmatter shape (`name`, `description`, `when_to_use`, `allowed-tools`, `model`, plus optional `argument-hint`, `arguments`, `disable-model-invocation`, `user-invocable`, `effort`, `paths`, `shell`, `context: fork`, `agent`, `hooks`). The adapter implementation is specified in **`PLAN/SKILL_CREATOR.md` §9**.
 
 ```yaml
 ---
@@ -1387,6 +1404,10 @@ Decomposition is gated by **two critics**, not one:
 
 ## 5.4 Single-loop skill builder — workspace + turn mechanics
 
+> **⚠ Superseded for the CLI (2026-05-20):** the entire single-loop runtime described below — 7-tool virtual workspace, 60-turn cap, planner → tool turns → critic → repair → potency → security → trigger evaluator pipeline — is **not** ported. Anthropic's official `skill-creator` skill does this whole loop internally, with its own tuned implementation. The CLI invokes skill-creator headlessly via `claude -p --append-system-prompt-file` and captures the emitted package. Authoritative spec: **`PLAN/SKILL_CREATOR.md`** §8 (skill-creator invocation) + §19 Chunk 4 (the implementation chunk).
+>
+> The detailed mechanics below remain useful as a reference for what skill-creator is doing internally — read this section if you need to understand the *theory* of how a skill builder works, but do not try to port any of it.
+
 The most fragile and most valuable piece. The source's runtime works like this; the CLI must mirror it:
 
 1. **Plan phase** (`single_loop_planner`): produces `steps[{id, title, goal}]`. Saved to `metadata.singleLoopPlan` with status `pending|in_progress|completed|failed` per step.
@@ -1410,6 +1431,8 @@ The most fragile and most valuable piece. The source's runtime works like this; 
 
 ## 5.5 Solution packager — four layout modes
 
+> **⚠ Superseded for the CLI (2026-05-20):** none of the four layout modes are ported. `skill-creator` emits its own layout (the single-loop-direct shape, roughly) directly into the run workspace; the CLI's adapter pass normalizes frontmatter and we install verbatim. Authoritative spec: **`PLAN/SKILL_CREATOR.md`** §9 (adapter) + §10 (install).
+
 The packager (`solution-packager-service.ts`) supports four layout modes; the CLI picks per-flag:
 
 - **`legacy`** — flat folders per task (`01-research/`, `02-strategy/`, …) with all support files included. Default for `--as artifacts`.
@@ -1422,6 +1445,8 @@ CLI flag: `aab actions deep-execute <id> --as skill --layout legacy|skill-semant
 **Merged-folder dedup**: when `SkillCompositionPlan.compositionType === 'merged'`, multiple skill tasks combine into one folder. The packager tracks `mergedSkillFolderByTaskId` so files aren't duplicated. Port this logic verbatim — losing it produces ZIPs with duplicate paths.
 
 ## 5.6 Skill composition — atomic, reflexion, critique-panel features explained
+
+> **⚠ Superseded for the CLI (2026-05-20):** none of the six composition/reflexion/critique-panel/web-grounding feature flags are ported. One action → one skill, always standalone (already established in Part 6). Reflexion + critique-panel — if skill-creator needs equivalents, it implements them internally. Authoritative spec: **`PLAN/SKILL_CREATOR.md`** §3 (the cut list).
 
 The source has six skill-generation feature flags that I listed but didn't define. Concretely:
 
@@ -1691,6 +1716,8 @@ User decision: the Action Board has **two responsibilities only** — (1) track 
 
 This part supersedes anything earlier that contradicts it.
 
+> **⚠ Skill creator strategy revised (2026-05-20):** the rest of Part 6 below describes the original plan to port sage-council's single-loop skill builder + 14 prompts + preflight wizard. **That plan is itself superseded.** The CLI now delegates skill authoring to Anthropic's official `skill-creator` skill and replaces the preflight wizard with an **agentic Skill Planner** that runs read-only recon across the user's PC + Knowledge Wiki + live web, then reasons about how to maximize the value of the emitted skill via multi-tool orchestration (the "Elgato moment" — see glossary). The authoritative spec is now **`PLAN/SKILL_CREATOR.md`** (read this before working on Phase 5). The Kanban + extract + add/edit/list/move/delete CRUD described below remains in force — that's Phase 4 and it's shipped.
+
 ## 6.1 New design doctrine in one paragraph
 
 An action point is a small unit of work. The user wants two things from each: a place to see and move it across statuses, and a way to "press solve" and get back a Claude Code skill installed at `.claude/skills/<name>/` that is meant to *do* the work (or to guide doing the work) the next time the user invokes Claude Code. The skill is the deliverable. Nothing else.
@@ -1770,6 +1797,10 @@ aab actions runs export <run-id> --zip <path>                    # export the sk
 `aab actions extract` keeps the source's structured-data fast path (no LLM call when responses already carry `structuredData`) and falls back to a single LLM call against the transcript when they don't. Output is one `ActionItem` per extracted item; deduped against existing items by title similarity.
 
 ## 6.4 The simplified `solve` flow
+
+> **⚠ Rewritten (2026-05-20).** The 9-step flow described below (preflight → light decomposition → skill task research → single-loop builder → adapter → install → link → status) was correct *under the assumption that we'd port the sage-council single-loop builder*. We don't. Replaced with an 8-step flow that runs an agentic **Skill Planner** (PC scan + Wiki recon + Web research + Opus reasoning + user review) and then hands off to Anthropic's `skill-creator` skill. Authoritative spec: **`PLAN/SKILL_CREATOR.md`** §5 (8-step flow) + §6 (Skill Planner — the depth feature).
+>
+> The legacy 9-step description below is preserved for historical reference. The flag list (`--no-preflight`, `--zip`, `--budget-cap-usd`, etc.) is mostly carried over to the new spec but with additions (`--no-planner`, `--planner-tier`, `--planner-no-web`, `--planner-no-pc-scan`) and changes (`--no-preflight` becomes `--no-planner`).
 
 `aab actions solve <id>` is one command, one flow, end-to-end:
 

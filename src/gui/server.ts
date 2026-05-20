@@ -62,6 +62,7 @@ import { queryWiki } from '../core/knowledge/query.js';
 import { lintWiki } from '../core/knowledge/lint.js';
 import { existsSync as fsExistsSync, readFileSync, writeFileSync } from 'node:fs';
 import type {
+  ActionItem,
   AdvisoryBoardMember,
   AppSettings,
   DecisionSession,
@@ -69,6 +70,10 @@ import type {
   Principle,
   PrincipleCategory,
 } from '../storage/types.js';
+import {
+  extractActionItems,
+  type ExtractedActionItem,
+} from '../core/actions/conversation-analyzer.js';
 import { enhancePersona, type EnhancementType } from '../core/members/ai-enhancer.js';
 import { generateVoiceGuide } from '../core/members/voice-guide.js';
 import { coachReply, newDecisionSession } from '../core/coach/decision-coach.js';
@@ -96,6 +101,30 @@ function coerceCategory(input: unknown, fallback: PrincipleCategory = 'meta'): P
   return typeof input === 'string' && (PRINCIPLE_CATEGORIES as string[]).includes(input)
     ? (input as PrincipleCategory)
     : fallback;
+}
+
+const ACTION_PRIORITIES = ['low', 'medium', 'high'] as const;
+const ACTION_STATUSES = ['pending', 'in-progress', 'completed'] as const;
+type ActionPriority = (typeof ACTION_PRIORITIES)[number];
+type ActionStatus = (typeof ACTION_STATUSES)[number];
+
+function coerceActionPriority(value: unknown, fallback: ActionPriority = 'medium'): ActionPriority {
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase();
+    if ((ACTION_PRIORITIES as readonly string[]).includes(v)) return v as ActionPriority;
+  }
+  return fallback;
+}
+
+function coerceActionStatus(value: unknown, fallback: ActionStatus = 'pending'): ActionStatus {
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase();
+    if ((ACTION_STATUSES as readonly string[]).includes(v)) return v as ActionStatus;
+    if (v === 'inprogress' || v === 'in_progress' || v === 'doing') return 'in-progress';
+    if (v === 'todo') return 'pending';
+    if (v === 'done') return 'completed';
+  }
+  return fallback;
 }
 
 const DEFAULT_PORT = 3737;
@@ -224,6 +253,152 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
   app.get('/api/actions', async (_req, res) => {
     try {
       res.json(await opts.storage.loadActionItems());
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  // ============================================================
+  // Action Items CRUD (Phase 4)
+  // ============================================================
+
+  app.post('/api/actions', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as Partial<ActionItem>;
+      if (!body.title || typeof body.title !== 'string' || !body.title.trim()) {
+        res.status(400).json({ error: 'title is required' });
+        return;
+      }
+      const now = nowIso();
+      const priority = coerceActionPriority(body.priority);
+      const status = coerceActionStatus(body.status);
+      const item: ActionItem = {
+        id: generateUUID(),
+        discussionId: typeof body.discussionId === 'string' ? body.discussionId : undefined,
+        title: body.title.trim(),
+        description: typeof body.description === 'string' ? body.description : '',
+        priority,
+        status,
+        assignedTo: typeof body.assignedTo === 'string' && body.assignedTo.trim() ? body.assignedTo.trim() : undefined,
+        dueDate: typeof body.dueDate === 'string' && body.dueDate.trim() ? body.dueDate.trim() : undefined,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await opts.storage.saveActionItem(item);
+      broadcast({ type: 'action_created', action: item });
+      res.status(201).json(item);
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.patch('/api/actions/:id', async (req, res) => {
+    try {
+      const all = await opts.storage.loadActionItems();
+      const existing = all.find((i) => i.id === req.params.id);
+      if (!existing) {
+        res.status(404).json({ error: `No action item with id ${req.params.id}` });
+        return;
+      }
+      const body = (req.body ?? {}) as Partial<ActionItem>;
+      const updated: ActionItem = {
+        ...existing,
+        ...(typeof body.title === 'string' && body.title.trim() ? { title: body.title.trim() } : {}),
+        ...(typeof body.description === 'string' ? { description: body.description } : {}),
+        ...(typeof body.priority === 'string' ? { priority: coerceActionPriority(body.priority) } : {}),
+        ...(typeof body.status === 'string' ? { status: coerceActionStatus(body.status) } : {}),
+        ...(typeof body.dueDate === 'string'
+          ? { dueDate: body.dueDate.trim() || undefined }
+          : {}),
+        ...(typeof body.assignedTo === 'string'
+          ? { assignedTo: body.assignedTo.trim() || undefined }
+          : {}),
+        ...(typeof body.discussionId === 'string' ? { discussionId: body.discussionId } : {}),
+        updatedAt: nowIso(),
+      };
+      await opts.storage.updateActionItem(updated);
+      broadcast({ type: 'action_updated', action: updated, from: existing.status, to: updated.status });
+      res.json(updated);
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  app.delete('/api/actions/:id', async (req, res) => {
+    try {
+      const all = await opts.storage.loadActionItems();
+      const existing = all.find((i) => i.id === req.params.id);
+      if (!existing) {
+        res.status(404).json({ error: `No action item with id ${req.params.id}` });
+        return;
+      }
+      await opts.storage.deleteActionItem(req.params.id);
+      broadcast({ type: 'action_deleted', id: req.params.id });
+      res.status(204).end();
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  // Extract candidate action items from a concluded discussion.
+  // POST /api/discussions/:id/actions/extract  → { candidates, method, analysisConfidence, ... }
+  // POST /api/discussions/:id/actions/extract  with body { accept: [{title, description, ...}, ...] }
+  //   → persists each accepted candidate and returns { created: ActionItem[] }
+  app.post('/api/discussions/:id/actions/extract', async (req, res) => {
+    try {
+      const discussion = await opts.storage.loadDiscussionById(req.params.id);
+      if (!discussion) {
+        res.status(404).json({ error: `No discussion with id ${req.params.id}` });
+        return;
+      }
+      const body = (req.body ?? {}) as { accept?: unknown };
+
+      // Two modes: list candidates (no body) OR persist accepted items.
+      if (Array.isArray(body.accept)) {
+        const created: ActionItem[] = [];
+        for (const raw of body.accept) {
+          if (!raw || typeof raw !== 'object') continue;
+          const cand = raw as Partial<ExtractedActionItem>;
+          if (!cand.title || typeof cand.title !== 'string' || !cand.title.trim()) continue;
+          const now = nowIso();
+          const item: ActionItem = {
+            id: generateUUID(),
+            discussionId: discussion.id,
+            title: cand.title.trim().slice(0, 200),
+            description: typeof cand.description === 'string' ? cand.description : '',
+            priority: coerceActionPriority(cand.priority),
+            status: 'pending',
+            assignedTo:
+              typeof cand.suggestedAssignee === 'string' && cand.suggestedAssignee.trim()
+                ? cand.suggestedAssignee.trim()
+                : undefined,
+            dueDate:
+              typeof cand.suggestedDueDate === 'string' && cand.suggestedDueDate.trim()
+                ? cand.suggestedDueDate.trim()
+                : undefined,
+            createdAt: now,
+            updatedAt: now,
+          };
+          await opts.storage.saveActionItem(item);
+          created.push(item);
+          broadcast({ type: 'action_created', action: item, fromDiscussionId: discussion.id });
+        }
+        broadcast({ type: 'actions_extracted', discussionId: discussion.id, createdCount: created.length });
+        res.status(201).json({ created });
+        return;
+      }
+
+      const settings = await opts.storage.loadSettings();
+      const analysis = await extractActionItems({ discussion, settings });
+      res.json({
+        discussionId: discussion.id,
+        method: analysis.method,
+        analysisConfidence: analysis.analysisConfidence,
+        processingTimeMs: analysis.processingTimeMs,
+        candidates: analysis.actionItems,
+        keyInsights: analysis.keyInsights,
+        recommendedNextSteps: analysis.recommendedNextSteps,
+      });
     } catch (error) {
       sendError(res, 500, error);
     }

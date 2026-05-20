@@ -120,3 +120,39 @@ export const conversationSummaryPayloadSchema = z
   .passthrough();
 
 export type ConversationSummaryPayload = z.infer<typeof conversationSummaryPayloadSchema>;
+
+// ---------- action item extraction (Phase 4) ----------
+
+const PRIORITY_VALUES = ['low', 'medium', 'high'] as const;
+const CATEGORY_VALUES = [
+  'strategic',
+  'operational',
+  'technical',
+  'research',
+  'financial',
+  'other',
+] as const;
+
+export const extractedActionItemSchema = z
+  .object({
+    title: z.string().optional(),
+    description: z.string().optional(),
+    priority: z.enum(PRIORITY_VALUES).optional(),
+    category: z.enum(CATEGORY_VALUES).optional(),
+    confidence: boundedNumber(0, 100).optional(),
+    sourceContext: z.string().optional(),
+    suggestedAssignee: z.string().optional(),
+    suggestedDueDate: z.string().optional(),
+  })
+  .passthrough();
+
+export const conversationAnalysisPayloadSchema = z
+  .object({
+    actionItems: z.array(extractedActionItemSchema).optional(),
+    keyInsights: stringArrayFromUnknown.optional(),
+    recommendedNextSteps: stringArrayFromUnknown.optional(),
+    analysisConfidence: boundedNumber(0, 100).optional(),
+  })
+  .passthrough();
+
+export type ConversationAnalysisPayload = z.infer<typeof conversationAnalysisPayloadSchema>;

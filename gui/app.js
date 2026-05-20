@@ -171,6 +171,18 @@ function handleWsMessage(msg) {
     window.dispatchEvent(new CustomEvent('aab-coach-event', { detail: msg }));
   } else if (msg.type && msg.type.startsWith('sparring_')) {
     window.dispatchEvent(new CustomEvent('aab-sparring-event', { detail: msg }));
+  } else if (
+    msg.type === 'action_created' ||
+    msg.type === 'action_updated' ||
+    msg.type === 'action_deleted' ||
+    msg.type === 'actions_extracted'
+  ) {
+    // Light refresh: pull the latest state and, when we're on the Actions
+    // route, re-render the kanban. Avoids a heavy diff loop and keeps the
+    // server as the source of truth.
+    refreshState({ silent: true }).then(() => {
+      if (state.route === 'actions') navigate('actions');
+    });
   }
 }
 
@@ -353,7 +365,21 @@ function discussionTimeline(discussion) {
 function renderChatFooter(discussion) {
   const footer = h('div', { class: 'chat-footer', id: 'chat-footer' });
   if (discussion.completedAt) {
-    footer.appendChild(h('div', { class: 'message-meta' }, '✓ Discussion concluded.'));
+    const row = h('div', { class: 'chat-actions' });
+    row.appendChild(h('div', { class: 'message-meta' }, '✓ Discussion concluded.'));
+    const extractBtn = h(
+      'button',
+      {
+        class: 'btn-secondary',
+        type: 'button',
+        'data-testid': 'extract-actions-btn',
+        title: 'Auto-extract action items from this concluded discussion',
+      },
+      '📋 Extract actions',
+    );
+    extractBtn.addEventListener('click', () => openExtractActionsModal(discussion));
+    row.appendChild(extractBtn);
+    footer.appendChild(row);
     return footer;
   }
   if (discussion.pendingUserRequest) {
@@ -1225,15 +1251,29 @@ function memberCard(m) {
 // ------------------------------------------------------------------
 
 function renderActionsView(main) {
-  const view = h('div', { class: 'view' });
-  view.appendChild(
-    h('div', { class: 'view-header' }, [
-      h('div', {}, [
-        h('div', { class: 'view-title' }, 'Action Board'),
-        h('div', { class: 'view-subtitle' }, `${state.actionItems.length} action item${state.actionItems.length === 1 ? '' : 's'}`),
-      ]),
+  const view = h('div', { class: 'view', 'data-testid': 'actions-view' });
+  const header = h('div', { class: 'view-header' });
+  header.appendChild(
+    h('div', {}, [
+      h('div', { class: 'view-title' }, 'Action Board'),
+      h(
+        'div',
+        { class: 'view-subtitle' },
+        `${state.actionItems.length} action item${state.actionItems.length === 1 ? '' : 's'}`,
+      ),
     ]),
   );
+  const headerActions = h('div', { class: 'header-actions' });
+  const addBtn = h(
+    'button',
+    { class: 'btn-primary', 'data-testid': 'actions-add-btn' },
+    '+ Add action',
+  );
+  addBtn.addEventListener('click', () => openActionEditModal(null));
+  headerActions.appendChild(addBtn);
+  header.appendChild(headerActions);
+  view.appendChild(header);
+
   const body = h('div', { class: 'view-body' });
 
   if (state.actionItems.length === 0) {
@@ -1241,44 +1281,411 @@ function renderActionsView(main) {
       emptyState(
         '📋',
         'No action items yet',
-        'Action items show up here when a discussion produces them. Editing comes in Phase 4.',
+        'Click "+ Add action", or open a concluded discussion and use "Extract actions".',
       ),
     );
   } else {
-    const board = h('div', { class: 'kanban' });
-    for (const status of ['pending', 'in-progress', 'completed']) {
-      const items = state.actionItems.filter((a) => a.status === status);
-      const col = h('div', { class: 'kanban-col' });
-      col.appendChild(
-        h('div', { class: 'kanban-col-head' }, [
-          h('span', {}, status),
-          h('span', { class: 'kanban-col-count' }, String(items.length)),
-        ]),
-      );
-      const cards = h('div', { class: 'kanban-cards' });
-      for (const a of items) cards.appendChild(actionCard(a));
-      col.appendChild(cards);
-      board.appendChild(col);
-    }
-    body.appendChild(board);
+    body.appendChild(renderKanbanBoard(state.actionItems));
   }
 
   view.appendChild(body);
   main.appendChild(view);
 }
 
+function renderKanbanBoard(items) {
+  const board = h('div', { class: 'kanban', 'data-testid': 'kanban-board' });
+  for (const status of ['pending', 'in-progress', 'completed']) {
+    const colItems = items.filter((a) => a.status === status);
+    const col = h('div', {
+      class: 'kanban-col',
+      'data-testid': `kanban-col-${status}`,
+      'data-status': status,
+    });
+    col.appendChild(
+      h('div', { class: 'kanban-col-head' }, [
+        h('span', {}, status),
+        h('span', { class: 'kanban-col-count' }, String(colItems.length)),
+      ]),
+    );
+    const cards = h('div', { class: 'kanban-cards', 'data-status': status });
+    for (const a of colItems) cards.appendChild(actionCard(a));
+    col.appendChild(cards);
+    wireDropTarget(col, status);
+    wireDropTarget(cards, status);
+    board.appendChild(col);
+  }
+  return board;
+}
+
 function actionCard(a) {
-  const card = h('div', { class: 'kanban-card' });
-  card.appendChild(h('div', { class: 'kanban-card-title' }, a.title));
+  const card = h('div', {
+    class: 'kanban-card',
+    'data-testid': 'kanban-card',
+    'data-action-id': a.id,
+    'data-priority': a.priority,
+    draggable: 'true',
+  });
+  card.appendChild(
+    h('div', { class: 'kanban-card-title', 'data-testid': 'kanban-card-title' }, a.title),
+  );
+  if (a.description) {
+    card.appendChild(
+      h('div', { class: 'kanban-card-desc' }, ellipsisJs(a.description, 140)),
+    );
+  }
   const meta = h('div', { class: 'kanban-card-meta' });
   meta.appendChild(h('span', { class: 'priority-mark ' + a.priority }));
   meta.appendChild(h('span', {}, a.priority));
   if (a.dueDate) meta.appendChild(h('span', {}, '· due ' + a.dueDate.slice(0, 10)));
+  if (a.assignedTo) meta.appendChild(h('span', {}, '· ' + a.assignedTo));
   card.appendChild(meta);
   if (a.linkedSkill) {
     card.appendChild(h('div', { class: 'message-meta' }, `🧠 skill: ${a.linkedSkill.name}`));
   }
+  card.addEventListener('click', (ev) => {
+    if (ev.target.closest('.kanban-card-action')) return;
+    openActionEditModal(a);
+  });
+  card.addEventListener('dragstart', (ev) => {
+    card.classList.add('dragging');
+    ev.dataTransfer.setData('text/plain', a.id);
+    ev.dataTransfer.effectAllowed = 'move';
+  });
+  card.addEventListener('dragend', () => {
+    card.classList.remove('dragging');
+  });
   return card;
+}
+
+function wireDropTarget(el, status) {
+  el.addEventListener('dragover', (ev) => {
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = 'move';
+    el.classList.add('drop-target');
+  });
+  el.addEventListener('dragleave', () => el.classList.remove('drop-target'));
+  el.addEventListener('drop', async (ev) => {
+    ev.preventDefault();
+    el.classList.remove('drop-target');
+    const id = ev.dataTransfer.getData('text/plain');
+    if (!id) return;
+    const item = state.actionItems.find((a) => a.id === id);
+    if (!item || item.status === status) return;
+    // Optimistic update.
+    const prevStatus = item.status;
+    item.status = status;
+    try {
+      navigate('actions');
+      await fetchJSON(`/api/actions/${id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ status }),
+      });
+      toast(`Moved to ${status}`, 'ok');
+    } catch (e) {
+      item.status = prevStatus;
+      toast('Move failed: ' + e.message, 'err');
+      navigate('actions');
+    }
+  });
+}
+
+function ellipsisJs(s, max) {
+  return s.length > max ? s.slice(0, Math.max(0, max - 1)) + '…' : s;
+}
+
+// Action-item add / edit modal — single-form panel covering all CRUD fields.
+function openActionEditModal(item) {
+  const isEdit = !!item;
+  const backdrop = h('div', {
+    class: 'modal-backdrop',
+    'data-testid': 'action-edit-modal',
+  });
+  const close = () => backdrop.remove();
+  const inner = h('div', { class: 'modal' });
+
+  const titleInput = h('input', {
+    type: 'text',
+    class: 'modal-input',
+    'data-testid': 'action-title-input',
+    placeholder: 'Action title',
+    value: item?.title || '',
+  });
+  const descInput = h('textarea', {
+    rows: '4',
+    'data-testid': 'action-desc-input',
+    placeholder: 'Description (what needs doing?)',
+  });
+  descInput.value = item?.description || '';
+  const prioritySelect = h('select', {
+    class: 'modal-select',
+    'data-testid': 'action-priority-select',
+  });
+  for (const p of ['low', 'medium', 'high']) {
+    const opt = h('option', { value: p }, p);
+    if ((item?.priority || 'medium') === p) opt.selected = true;
+    prioritySelect.appendChild(opt);
+  }
+  const statusSelect = h('select', { class: 'modal-select', 'data-testid': 'action-status-select' });
+  for (const s of ['pending', 'in-progress', 'completed']) {
+    const opt = h('option', { value: s }, s);
+    if ((item?.status || 'pending') === s) opt.selected = true;
+    statusSelect.appendChild(opt);
+  }
+  const dueInput = h('input', {
+    type: 'date',
+    class: 'modal-input',
+    'data-testid': 'action-due-input',
+    value: item?.dueDate?.slice(0, 10) || '',
+  });
+  const assigneeInput = h('input', {
+    type: 'text',
+    class: 'modal-input',
+    placeholder: 'Assignee (optional)',
+    'data-testid': 'action-assignee-input',
+    value: item?.assignedTo || '',
+  });
+
+  const header = h('div', { class: 'modal-header' });
+  header.appendChild(h('h2', {}, isEdit ? 'Edit action' : 'New action item'));
+  const closeBtn = h(
+    'button',
+    { class: 'icon-btn', 'aria-label': 'Close', type: 'button', 'data-testid': 'action-edit-close' },
+    '×',
+  );
+  closeBtn.addEventListener('click', close);
+  header.appendChild(closeBtn);
+  inner.appendChild(header);
+
+  const body = h('div', { class: 'modal-body' });
+  body.appendChild(h('label', { class: 'field-label' }, 'Title'));
+  body.appendChild(titleInput);
+  body.appendChild(h('label', { class: 'field-label' }, 'Description'));
+  body.appendChild(descInput);
+  const row1 = h('div', { class: 'modal-row' });
+  row1.appendChild(
+    h('div', {}, [h('label', { class: 'field-label' }, 'Priority'), prioritySelect]),
+  );
+  row1.appendChild(h('div', {}, [h('label', { class: 'field-label' }, 'Status'), statusSelect]));
+  body.appendChild(row1);
+  const row2 = h('div', { class: 'modal-row' });
+  row2.appendChild(h('div', {}, [h('label', { class: 'field-label' }, 'Due date'), dueInput]));
+  row2.appendChild(h('div', {}, [h('label', { class: 'field-label' }, 'Assignee'), assigneeInput]));
+  body.appendChild(row2);
+  inner.appendChild(body);
+
+  const foot = h('div', { class: 'modal-footer' });
+  if (isEdit) {
+    const delBtn = h(
+      'button',
+      { class: 'btn-secondary', type: 'button', 'data-testid': 'action-delete-btn' },
+      'Delete',
+    );
+    delBtn.addEventListener('click', async () => {
+      if (!window.confirm('Delete this action item?')) return;
+      try {
+        await fetchJSON(`/api/actions/${item.id}`, { method: 'DELETE' });
+        toast('Deleted', 'ok');
+        await refreshState({ silent: true });
+        close();
+        navigate('actions');
+      } catch (e) {
+        toast('Delete failed: ' + e.message, 'err');
+      }
+    });
+    foot.appendChild(delBtn);
+    foot.appendChild(h('div', { style: 'flex:1' }));
+  }
+  const cancelBtn = h(
+    'button',
+    { class: 'btn-secondary', type: 'button' },
+    'Cancel',
+  );
+  cancelBtn.addEventListener('click', close);
+  foot.appendChild(cancelBtn);
+  const saveBtn = h(
+    'button',
+    { class: 'btn-primary', type: 'button', 'data-testid': 'action-save-btn' },
+    isEdit ? 'Save' : 'Create',
+  );
+  saveBtn.addEventListener('click', async () => {
+    const title = titleInput.value.trim();
+    if (!title) {
+      toast('Title is required.', 'err');
+      return;
+    }
+    const payload = {
+      title,
+      description: descInput.value,
+      priority: prioritySelect.value,
+      status: statusSelect.value,
+      dueDate: dueInput.value || '',
+      assignedTo: assigneeInput.value || '',
+    };
+    saveBtn.disabled = true;
+    try {
+      if (isEdit) {
+        await fetchJSON(`/api/actions/${item.id}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        toast('Updated', 'ok');
+      } else {
+        await fetchJSON('/api/actions', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        toast('Created', 'ok');
+      }
+      await refreshState({ silent: true });
+      close();
+      navigate('actions');
+    } catch (e) {
+      toast('Save failed: ' + e.message, 'err');
+      saveBtn.disabled = false;
+    }
+  });
+  foot.appendChild(saveBtn);
+  inner.appendChild(foot);
+
+  backdrop.appendChild(inner);
+  backdrop.addEventListener('click', (ev) => {
+    if (ev.target === backdrop) close();
+  });
+  document.body.appendChild(backdrop);
+  setTimeout(() => titleInput.focus(), 0);
+}
+
+// "Extract actions" modal — runs the analyzer, then lets the user accept/reject each candidate.
+async function openExtractActionsModal(discussion) {
+  const backdrop = h('div', {
+    class: 'modal-backdrop',
+    'data-testid': 'extract-actions-modal',
+  });
+  const close = () => backdrop.remove();
+  const inner = h('div', { class: 'modal modal-wide' });
+
+  const header = h('div', { class: 'modal-header' });
+  header.appendChild(h('h2', {}, 'Extract action items'));
+  const closeBtn = h(
+    'button',
+    { class: 'icon-btn', 'aria-label': 'Close', type: 'button', 'data-testid': 'extract-close-btn' },
+    '×',
+  );
+  closeBtn.addEventListener('click', close);
+  header.appendChild(closeBtn);
+  inner.appendChild(header);
+
+  const body = h('div', { class: 'modal-body', 'data-testid': 'extract-body' });
+  const statusLine = h(
+    'div',
+    { class: 'message-meta', 'data-testid': 'extract-status' },
+    'Running analyzer…',
+  );
+  body.appendChild(statusLine);
+  const list = h('div', { class: 'extract-candidates', 'data-testid': 'extract-list' });
+  body.appendChild(list);
+  inner.appendChild(body);
+
+  const foot = h('div', { class: 'modal-footer' });
+  const cancel = h('button', { class: 'btn-secondary', type: 'button' }, 'Close');
+  cancel.addEventListener('click', close);
+  foot.appendChild(cancel);
+  const acceptBtn = h(
+    'button',
+    {
+      class: 'btn-primary',
+      type: 'button',
+      'data-testid': 'extract-accept-btn',
+      disabled: 'disabled',
+    },
+    'Accept selected',
+  );
+  foot.appendChild(acceptBtn);
+  inner.appendChild(foot);
+
+  backdrop.appendChild(inner);
+  backdrop.addEventListener('click', (ev) => {
+    if (ev.target === backdrop) close();
+  });
+  document.body.appendChild(backdrop);
+
+  let candidates = [];
+  const selected = new Set();
+  try {
+    const result = await fetchJSON(`/api/discussions/${discussion.id}/actions/extract`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    candidates = result.candidates || [];
+    statusLine.textContent = `${candidates.length} candidate${candidates.length === 1 ? '' : 's'} via ${result.method} (conf ${result.analysisConfidence}/100)`;
+    if (candidates.length === 0) {
+      list.appendChild(emptyState('🪶', 'No candidates', 'No structured signal — and the LLM fallback produced nothing actionable.'));
+    }
+    candidates.forEach((cand, idx) => {
+      const row = h('div', {
+        class: 'extract-row',
+        'data-testid': 'extract-row',
+        'data-index': String(idx),
+      });
+      const cb = h('input', {
+        type: 'checkbox',
+        class: 'extract-checkbox',
+        'data-testid': 'extract-checkbox',
+      });
+      cb.checked = true;
+      selected.add(idx);
+      cb.addEventListener('change', () => {
+        if (cb.checked) selected.add(idx);
+        else selected.delete(idx);
+        acceptBtn.disabled = selected.size === 0;
+      });
+      const main = h('div', { class: 'extract-row-main' });
+      main.appendChild(
+        h('div', { class: 'extract-row-title' }, cand.title || '(untitled)'),
+      );
+      if (cand.description) {
+        main.appendChild(h('div', { class: 'extract-row-desc' }, cand.description));
+      }
+      main.appendChild(
+        h(
+          'div',
+          { class: 'message-meta' },
+          `${cand.priority} · ${cand.category} · conf ${cand.confidence}${cand.suggestedAssignee ? ' · ' + cand.suggestedAssignee : ''}${cand.suggestedDueDate ? ' · ' + cand.suggestedDueDate : ''}`,
+        ),
+      );
+      row.appendChild(cb);
+      row.appendChild(main);
+      list.appendChild(row);
+    });
+    acceptBtn.disabled = selected.size === 0;
+  } catch (e) {
+    statusLine.textContent = 'Extract failed: ' + e.message;
+    statusLine.classList.add('error');
+  }
+
+  acceptBtn.addEventListener('click', async () => {
+    const accepted = [...selected].map((i) => candidates[i]).filter(Boolean);
+    if (accepted.length === 0) return;
+    acceptBtn.disabled = true;
+    try {
+      const result = await fetchJSON(`/api/discussions/${discussion.id}/actions/extract`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ accept: accepted }),
+      });
+      toast(`Created ${result.created.length} action item${result.created.length === 1 ? '' : 's'}`, 'ok');
+      await refreshState({ silent: true });
+      close();
+      navigate('actions');
+    } catch (e) {
+      toast('Save failed: ' + e.message, 'err');
+      acceptBtn.disabled = false;
+    }
+  });
 }
 
 // ------------------------------------------------------------------

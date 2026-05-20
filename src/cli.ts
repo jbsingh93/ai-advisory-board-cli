@@ -16,6 +16,7 @@ import { registerKnowledgeCommand } from './commands/knowledge.js';
 import { registerMembersCommand } from './commands/members.js';
 import { registerPrinciplesCommand } from './commands/principles.js';
 import { registerCoachCommand } from './commands/coach.js';
+import { registerActionsCommand } from './commands/actions.js';
 
 interface GlobalOpts {
   workspace?: string;
@@ -59,6 +60,7 @@ export async function runCli(argv: string[]): Promise<void> {
   registerMembersCommand(program);
   registerPrinciplesCommand(program);
   registerCoachCommand(program);
+  registerActionsCommand(program);
 
   // Friendly default when no command given
   program.action(() => {

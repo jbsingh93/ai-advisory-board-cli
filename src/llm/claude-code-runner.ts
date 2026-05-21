@@ -195,7 +195,16 @@ export async function runClaude(opts: RunOptions): Promise<RunResult> {
   }
 
   // prompt mode
-  args.push('-p', opts.prompt);
+  // Windows argv has a ~32k-char hard limit (ENAMETOOLONG). For long prompts
+  // (Planner prompt is ~24k+, skill-creator briefs can hit 60k) we pipe the
+  // prompt via stdin instead. `claude -p` with no positional value reads
+  // the prompt from stdin — verified pattern from Anthropic Claude Code docs.
+  const promptViaStdin = opts.prompt.length > 8000;
+  if (promptViaStdin) {
+    args.push('-p');
+  } else {
+    args.push('-p', opts.prompt);
+  }
 
   // structured output: stream-json (line-delimited events) when we want to
   // surface tool-use events live; plain json otherwise.
@@ -232,6 +241,7 @@ export async function runClaude(opts: RunOptions): Promise<RunResult> {
     signal: opts.signal,
     timeoutMs: opts.timeoutMs ?? 5 * 60_000,
     env: opts.env,
+    stdinData: promptViaStdin ? opts.prompt : undefined,
     onLine: streaming && opts.onEvent
       ? (line) => {
           const trimmed = line.trim();
@@ -458,6 +468,12 @@ interface SpawnRawOptions {
   env?: Record<string, string>;
   /** Invoked once per line of stdout (for stream-json parsing). */
   onLine?: (line: string) => void;
+  /**
+   * If provided, the spawn opens stdin and writes this string before closing.
+   * Used to bypass the Windows argv 32k-char limit when passing long prompts
+   * to `claude -p` (no positional value → reads prompt from stdin).
+   */
+  stdinData?: string;
 }
 
 interface SpawnRawResult {
@@ -499,10 +515,20 @@ function spawnRaw(command: string, args: string[], opts: SpawnRawOptions = {}): 
       env: opts.env ? { ...process.env, ...opts.env } : process.env,
       windowsHide: true,
       windowsVerbatimArguments: launch.windowsVerbatimArguments,
-      // Close stdin: the prompt is passed via -p, no piping. Without this,
-      // `claude` waits 3s for stdin then prints a warning to stderr.
-      stdio: ['ignore', 'pipe', 'pipe'],
+      // Pipe stdin when long-prompt mode is requested (caller bypassing the
+      // Windows 32k argv limit). Otherwise close stdin — without this, claude
+      // waits 3s for stdin then prints a warning to stderr.
+      stdio: [opts.stdinData !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'],
     });
+
+    // Long-prompt path — write the prompt body to stdin and close it. Any
+    // EPIPE here is non-fatal (caller will see the model's response or a
+    // descriptive error from exit-code handling).
+    if (opts.stdinData !== undefined && child.stdin) {
+      child.stdin.on('error', () => { /* swallow EPIPE / write-after-end */ });
+      child.stdin.write(opts.stdinData);
+      child.stdin.end();
+    }
 
     let stdout = '';
     let stderr = '';

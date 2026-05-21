@@ -174,6 +174,23 @@ No markdown fences, no prose, no chain-of-thought leakage. Start with \`{\`,
 end with \`}\`. Every required field present. Every integration has a
 populated invocationHint. Every stakeholderTouchpoint with
 produces='artifact' has a populated artifactTemplate.
+
+CRITICAL FIELD CONVENTIONS (the validator is strict about these):
+- skillName: kebab-case identifier (lowercase letters + digits + hyphens).
+- tiers.minimal.name, tiers.standard.name, tiers.maximalist.name: a SHORT
+  human display label (e.g., "Markdown brief", "Full multi-tool pipeline").
+  DO NOT echo the tier key ("minimal"/"standard"/"maximalist") as the name —
+  the parent JSON key already carries that identity.
+- integrations[i].name: a SHORT human-readable label (e.g., "YouTube Data API
+  upload", "Webflow homepage embed"). Use the field literally called "name",
+  NOT "title" or "label".
+- integrations[i].id: a kebab-case identifier unique within the proposal.
+- integrations[i].source: one of pc-app | cli-tool | mcp-server | wiki-entity |
+  browser-extension | web-service | api. Use exactly one of these strings.
+- integrations[i].invocationHint.kind: one of bash-cmd | bash-curl | mcp-tool |
+  bash-script | write-artifact | manual-handoff | chrome-extension | computer-use.
+- stakeholderTouchpoints[i].name: the person's name as it appears in the wiki.
+- stakeholderTouchpoints[i].produces: 'artifact' | 'send'.
 </output_contract>`;
 
 export interface RenderPlannerPromptOptions {

@@ -8,6 +8,37 @@ The format is loosely "Keep a Changelog" but date-grouped — we're not yet vers
 
 ## 2026-05-21
 
+### Phase 5: REAL end-to-end smoke shipped a real skill — 3 production bugs caught + fixed
+
+**Trigger:** "YOU NEED TO VERIFY THE FULL END-TO-END PROCESS OF MAKING A SKILL! ... DO A FULL END-2-END ADVISORY BOARD DISCUSSION (1 CHAT), PICK A ACTION POINT, AND MAKE A SKILL BASED ON THAT ACTION POINT."
+
+**What:** Drove the headline product surface end-to-end against real Claude Code on the user's free-tier subscription — a real 3-member discussion → a real action item extracted from it → real Skill Planner (recon + Opus 4.7 reasoning) → real `skill-creator` (Sonnet authoring tools) → real install. Wall-clock: ~12 min from solve invocation to installed skill. Caught + fixed three production bugs that the prior stub-mode smoke had not exercised.
+
+**Bug 1 — Resolver missed the marketplaces/ layer.** `/plugin install skill-creator@claude-plugins-official` lands the skill at `~/.claude/plugins/marketplaces/claude-plugins-official/plugins/skill-creator/skills/skill-creator/SKILL.md` (5 levels deep). My original resolver walked at most 2 levels. `aab doctor` reported "skill-creator: not installed" even when it was. **Fix:** BFS walk under `~/.claude/plugins/` up to 5 levels deep looking for `skills/<name>/SKILL.md`. Shallower matches win on ties. Regression test added. (Commit `c7df596`.)
+
+**Bug 2 — Windows `ENAMETOOLONG` on long Planner prompts.** The Planner prompt (~24 KB: operating model + hardening + ambition directive + orchestration directives + invocation_hint_directive + few-shot examples + serialized recon triple + linked-discussion summary) blew Windows' ~32k argv hard limit. My runner passed the entire prompt as `argv` via `-p "<prompt>"`. Real solve crashed immediately with `spawn ENAMETOOLONG`. **Fix:** in `src/llm/claude-code-runner.ts`, when the prompt exceeds 8000 chars switch to stdin mode — call `claude -p` (no positional value) and pipe the prompt body via `child.stdin.write()` then `.end()`. Stdin pipe is opened conditionally; non-long paths keep the original `ignore`-stdin behavior to avoid the "no stdin" 3s warning. (This fix.)
+
+**Bug 3 — Schema over-strict on `tier.name` + `integration.name`.** Real Opus output used `tiers.minimal.name: "Markdown launch checklist"` (a human display label) instead of the literal enum `'minimal'`. My schema rejected this. Same with `integrations[i].name` — the model would sometimes emit `title` or `label` synonyms instead. **Fix:** in `src/core/parsing/llm-response-schemas.ts`, drop the enum constraint on `skillTierSchema.name` (the tier's identity is already the parent key); add a `z.preprocess()` to `proposalIntegrationSchema` that remaps synonyms (`title`/`label`/`displayName` → `name`; `key`/`slug` → `id`; `surface`/`sourceType` → `source`) before validation, with a final fallback that derives `name` from `purpose` or `id`. Also strengthened the `<output_contract>` in `src/core/prompts/skill-planner.ts` with explicit "DO NOT echo the tier key as the name" guidance + the canonical field names spelled out per type. (This fix.)
+
+**Real end-to-end verified:**
+
+- **Discussion:** `aab discuss start 'We want to ship a 3-minute YouTube intro video for our Q3 launch in two weeks...'` → 3-round chat with Elon Musk + Julian Bent Singh + Alexandra Chen, CFA producing structured `actionSteps[]` per response.
+- **Action extraction:** `aab actions extract 8f6ac172 --dry-run` produced 29 candidates via the structured-data fast path (no LLM call needed). User picked: "Ship Q3 launch YouTube video distribution pipeline" (action `e013a5f0`).
+- **Solve:** `aab actions solve e013a5f0 --yes` ran the full Plan → auto-accept → skill-creator → install pipeline in **11m 59s** wall-clock against real Claude. Cost reported $0 because we're on subscription tier — token usage tracked via `claude --output-format json`'s envelope.
+- **Emitted skill quality:** 175-line SKILL.md + 5 reference files (preflight checklist + 2 LinkedIn copy templates + 2 metadata JSON templates). The Planner correctly identified the maximalist tier with **5 integrations across 3 invocation kinds**: 1× `bash-curl` (YouTube Data API v3 resumable upload with `publishAt` scheduling), 1× `bash-cmd` (npm + VS Code CLI + git for the lite-youtube facade swap), 3× `chrome-extension` (YouTube Studio post-config for end-screens + A/B test, Google Slides sales-deck embed, LinkedIn native cutdown). Every step has the verbatim invocation snippet — the curl command is literally the production-shape three-phase resumable upload pipeline. The body bakes in the discussion's vetoes as `MUST NOT` lines (no raw iframes; no second-round notes after Day 11; no outbound YouTube URL in LinkedIn body; verify `status.publishAt` after every edit per the known YouTube API drift bug).
+- **Persistence:** `ActionItem.linkedSkill` populated with `name` + `runId` + `installedAt` + `installPath`. `SkillGenerationRun` shows `status: completed`, full embedded Planner proposal in `metadata.plannerProposal`, 6 files. `aab actions runs show a1236ee1` re-renders the proposal as readable markdown including all 5 integrations with snippets + chrome-extension handoff instructions. `aab skills list` lists the installed skill at project scope.
+- **Provenance footer:** `> Generated by aab actions solve from action e013a5f0; planner tier maximalist; 5 integrations.` — exactly what the spec calls for.
+
+**This is the depth-of-feature thesis proven end-to-end on real Claude calls:** the Planner reasoned about the user's environment (PC scan + 2-pass web research for YouTube + Slides + LinkedIn integration surfaces; empty wiki for this action so no stakeholders), surfaced a maximalist 5-integration tier spanning 3 distinct invocation kinds including first-class `chrome-extension` for the three GUI-only destinations (YouTube Studio, Google Slides, LinkedIn), and skill-creator authored a 175-line executable skill body with verbatim snippets and concrete handoff instructions — not a "how-to guide" but an execution system prompt that orchestrates 5 different surfaces.
+
+**Files changed:** `src/llm/claude-code-runner.ts` (stdin path for long prompts), `src/core/parsing/llm-response-schemas.ts` (relaxed tier.name + integration synonym remap), `src/core/prompts/skill-planner.ts` (explicit field-name guidance), `src/core/skill/planner.ts` (better schema-failure logging), `CHANGELOG.md` (this entry).
+
+**Verified:** 237/237 tests pass (was 236 before, +1 for the marketplace-layout regression test added with commit `c7df596`). Typecheck clean. Real end-to-end shipped on the third attempt: attempts 1 + 2 caught bugs 1 + 2 + 3; attempt 3 sailed through.
+
+**Lesson logged for future Phase 5.x work:** Stub-mode tests verified the orchestrator + persistence + install plumbing but did not exercise (a) the real argv-limit boundary, (b) the real model-output shape variance, (c) the real install-path resolver against the actual `/plugin install` layout. Real-Claude smoke is mandatory for any change that touches the LLM call path, the prompt template, the runner, or the resolver — even when 200+ unit tests are green.
+
+---
+
 ### Phase 5 GUI: sticky failure indicator + live Playwright MCP smoke
 
 **Trigger:** "YOU HAVE TO DO THE LIVE PLAYWRIGHT MCP TEST AS PER @CLAUDE.md !!"

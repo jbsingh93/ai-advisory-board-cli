@@ -194,7 +194,12 @@ export const invocationHintSchema = z
 
 export const skillTierSchema = z
   .object({
-    name: z.enum(TIER_NAMES),
+    // `name` is a human display label here — the canonical identity of the
+    // tier is the parent key (`minimal`/`standard`/`maximalist`). Opus tends
+    // to fill `name` with a descriptive headline like "End-to-end launch
+    // pipeline with Chrome handoff", which is exactly what we want for the
+    // proposal UI. Accept any string; don't force the enum.
+    name: z.string().optional(),
     description: z.string().optional(),
     toolSurface: stringArrayFromUnknown.optional(),
     workflow: stringArrayFromUnknown.optional(),
@@ -204,20 +209,42 @@ export const skillTierSchema = z
   .passthrough();
 
 export const proposalIntegrationSchema = z
-  .object({
-    id: z.string(),
-    source: z.enum(INTEGRATION_SOURCES),
-    name: z.string(),
-    purpose: z.string().optional(),
-    workflowSteps: stringArrayFromUnknown.optional(),
-    invocationHint: invocationHintSchema,
-    requiredTools: stringArrayFromUnknown.optional(),
-    fallbackIfMissing: z.string().optional(),
-    confidence: boundedNumber(0, 100).optional(),
-    surfacedFrom: z.enum(SURFACED_FROM_VALUES).optional(),
-    citations: z.array(sourceCitationSchema).optional(),
-  })
-  .passthrough();
+  .preprocess(
+    // Real-Opus-output tolerance: synonyms the model tends to pick.
+    //   - `name` synonyms: `title`, `label`, `displayName`
+    //   - `id` synonyms: `key`, `slug`
+    //   - `source` synonyms: `surface`, `sourceType`
+    // We remap to the canonical shape before validating. Last fallback: if
+    // `name` is still missing, derive it from `purpose` (truncated) or `id`.
+    (raw) => {
+      if (!raw || typeof raw !== 'object') return raw;
+      const r = raw as Record<string, unknown>;
+      const out = { ...r };
+      if (!out.name) {
+        out.name = r.title ?? r.label ?? r.displayName ??
+          (typeof r.purpose === 'string' ? r.purpose.slice(0, 80) : undefined) ??
+          (typeof r.id === 'string' ? r.id : undefined);
+      }
+      if (!out.id) out.id = r.key ?? r.slug;
+      if (!out.source) out.source = r.surface ?? r.sourceType;
+      return out;
+    },
+    z
+      .object({
+        id: z.string(),
+        source: z.enum(INTEGRATION_SOURCES),
+        name: z.string(),
+        purpose: z.string().optional(),
+        workflowSteps: stringArrayFromUnknown.optional(),
+        invocationHint: invocationHintSchema,
+        requiredTools: stringArrayFromUnknown.optional(),
+        fallbackIfMissing: z.string().optional(),
+        confidence: boundedNumber(0, 100).optional(),
+        surfacedFrom: z.enum(SURFACED_FROM_VALUES).optional(),
+        citations: z.array(sourceCitationSchema).optional(),
+      })
+      .passthrough(),
+  );
 
 export const proposalStakeholderSchema = z
   .object({

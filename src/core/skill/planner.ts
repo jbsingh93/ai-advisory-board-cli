@@ -128,8 +128,12 @@ export async function runPlanner(opts: RunPlannerOptions): Promise<RunPlannerRes
 
     const schemaResult = skillDesignProposalSchema.safeParse(parsed.data);
     if (!schemaResult.success) {
-      const issues = schemaResult.error.issues.slice(0, 6).map((i) => `${i.path.join('.')}: ${i.message}`);
+      const issues = schemaResult.error.issues.slice(0, 8).map((i) => `${i.path.join('.')}: ${i.message}`);
       attemptErrors.push(issues);
+      // Stash the raw output for the next-attempt nudge so the model can see
+      // what we received and how it failed validation. Helps a lot when the
+      // failure is "expected synonym X but you used Y".
+      logger.debug('[planner] schema failure', { attempt: attempts, rawHead: text.slice(0, 800), issues });
       replanFeedback = strongerNudge(issues, replanFeedback);
       continue;
     }

@@ -59,38 +59,51 @@ export function resolveSkill(name: string, opts: ResolveOptions = {}): ResolvedS
     return buildResolvedSkill(userPath, 'user');
   }
 
-  // 3. Plugin scope — walk ~/.claude/plugins/*/skills/<name>/
+  // 3. Plugin scope — walk under ~/.claude/plugins/ recursively (capped at 5
+  // levels deep) for any path matching `*/skills/<name>/SKILL.md`. Covers the
+  // real-world layout used by /plugin install:
+  //   ~/.claude/plugins/marketplaces/<marketplace>/plugins/<plugin>/skills/<name>/SKILL.md
+  // ...as well as flatter installs like:
+  //   ~/.claude/plugins/<plugin>/skills/<name>/SKILL.md
   const pluginsRoot = join(home, '.claude', 'plugins');
   if (existsSync(pluginsRoot)) {
+    const found = findPluginScopedSkill(pluginsRoot, name, 5);
+    if (found) return buildResolvedSkill(found, 'plugin');
+  }
+
+  return null;
+}
+
+/**
+ * Walk a directory tree up to maxDepth levels deep looking for any path that
+ * ends in `skills/<name>/SKILL.md`. Returns the first hit (BFS — shallower
+ * matches preferred over deeper ones).
+ */
+function findPluginScopedSkill(root: string, name: string, maxDepth: number): string | null {
+  const queue: Array<{ path: string; depth: number }> = [{ path: root, depth: 0 }];
+  while (queue.length > 0) {
+    const { path, depth } = queue.shift()!;
+    // Direct hit at this level: `<path>/skills/<name>/SKILL.md`
+    const candidate = join(path, 'skills', name, 'SKILL.md');
+    if (existsSync(candidate)) return candidate;
+    if (depth >= maxDepth) continue;
     let entries: string[];
     try {
-      entries = readdirSync(pluginsRoot);
+      entries = readdirSync(path);
     } catch {
-      entries = [];
+      continue;
     }
     for (const entry of entries) {
-      const candidate = join(pluginsRoot, entry, 'skills', name, 'SKILL.md');
-      if (existsSync(candidate)) {
-        return buildResolvedSkill(candidate, 'plugin');
-      }
-      // Some installations use `plugins/<marketplace>/<plugin>/skills/<name>/SKILL.md`
-      // (one extra layer for the marketplace). Walk one level deeper.
-      const inner = join(pluginsRoot, entry);
-      let nested: string[] = [];
+      const sub = join(path, entry);
       try {
-        if (statSync(inner).isDirectory()) nested = readdirSync(inner);
-      } catch {
-        nested = [];
-      }
-      for (const n of nested) {
-        const deeper = join(inner, n, 'skills', name, 'SKILL.md');
-        if (existsSync(deeper)) {
-          return buildResolvedSkill(deeper, 'plugin');
+        if (statSync(sub).isDirectory()) {
+          queue.push({ path: sub, depth: depth + 1 });
         }
+      } catch {
+        // ignore unreadable entries
       }
     }
   }
-
   return null;
 }
 

@@ -148,18 +148,33 @@ describe('runSolve — stub mode (no real Claude calls)', () => {
 
   it('rejects when skill-creator is not installed in --solve (no --plan-only)', async () => {
     rmSync(join(projectRoot, '.claude'), { recursive: true, force: true });
-    const action = await seedAction();
-    await expect(
-      runSolve({
-        workspace: ws,
-        settings: settings(),
-        storage,
-        action,
-        noPlanner: true,
-        stub: true,
-        yes: true,
-        projectRoot,
-      }),
-    ).rejects.toThrow(/skill-creator/);
+    // Isolate HOME so the resolver doesn't walk into the real user's
+    // ~/.claude/plugins/marketplaces/... and find a globally-installed
+    // skill-creator. We point HOME at an empty tmp dir for the duration of
+    // this test, then restore.
+    const isolatedHome = mkdtempSync(join(tmpdir(), 'aab-solve-isolated-home-'));
+    const prevHome = process.env.HOME;
+    const prevUserProfile = process.env.USERPROFILE;
+    process.env.HOME = isolatedHome;
+    process.env.USERPROFILE = isolatedHome;
+    try {
+      const action = await seedAction();
+      await expect(
+        runSolve({
+          workspace: ws,
+          settings: settings(),
+          storage,
+          action,
+          noPlanner: true,
+          stub: true,
+          yes: true,
+          projectRoot,
+        }),
+      ).rejects.toThrow(/skill-creator/);
+    } finally {
+      if (prevHome !== undefined) process.env.HOME = prevHome; else delete process.env.HOME;
+      if (prevUserProfile !== undefined) process.env.USERPROFILE = prevUserProfile; else delete process.env.USERPROFILE;
+      try { rmSync(isolatedHome, { recursive: true, force: true }); } catch { /* tmp leak */ }
+    }
   });
 });

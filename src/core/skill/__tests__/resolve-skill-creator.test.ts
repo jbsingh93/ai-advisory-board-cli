@@ -88,6 +88,24 @@ describe('resolveSkill — scope walking priority', () => {
     expect(r!.version).toBe('1.0.0');
   });
 
+  it('finds skill-creator at the real /plugin install marketplace layout', () => {
+    // Regression: caught via live MCP smoke 2026-05-21 — the actual install
+    // path that `/plugin install skill-creator@claude-plugins-official` uses is
+    // ~/.claude/plugins/marketplaces/<marketplace>/plugins/<plugin>/skills/<name>/SKILL.md
+    // (5 levels deep, not 2).
+    seedSkill(
+      homeDir,
+      '.claude/plugins/marketplaces/claude-plugins-official/plugins/skill-creator/skills',
+      'skill-creator',
+      '0.4.0',
+    );
+    const r = resolveSkill('skill-creator', { projectRoot: workDir, homeDir });
+    expect(r).not.toBeNull();
+    expect(r!.scope).toBe('plugin');
+    expect(r!.version).toBe('0.4.0');
+    expect(r!.path).toContain('marketplaces');
+  });
+
   it('returns null when not found anywhere', () => {
     expect(resolveSkill('does-not-exist', { projectRoot: workDir, homeDir })).toBeNull();
   });

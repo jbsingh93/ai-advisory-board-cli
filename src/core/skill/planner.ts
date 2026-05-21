@@ -139,7 +139,13 @@ export async function runPlanner(opts: RunPlannerOptions): Promise<RunPlannerRes
     }
 
     const proposal = schemaResult.data;
-    const semanticErrors = validateProposalSemantics(proposal);
+    const wikiKnowledge = {
+      playbooks: opts.recon.wiki.playbooks.map((p) => p.slug),
+      templates: opts.recon.wiki.templates.map((t) => t.slug),
+      domainKnowledge: opts.recon.wiki.domainKnowledge.map((d) => d.slug),
+      pastLessons: opts.recon.wiki.pastLessons.map((l) => l.slug),
+    };
+    const semanticErrors = validateProposalSemantics(proposal, wikiKnowledge);
     if (semanticErrors && semanticErrors.length > 0) {
       attemptErrors.push(semanticErrors);
       replanFeedback = strongerNudge(semanticErrors, replanFeedback);

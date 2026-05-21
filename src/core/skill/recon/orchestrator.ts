@@ -92,18 +92,16 @@ export async function runRecon(opts: ReconOptions): Promise<ReconTriple> {
   const wiki: WikiContext = wikiSettled.status === 'fulfilled'
     ? wikiSettled.value
     : {
+        playbooks: [], templates: [], domainKnowledge: [], pastLessons: [],
+        stakeholders: [], endorsedDirections: [], vetoes: [], pastDecisions: [],
         relevantPages: [],
-        stakeholders: [],
-        endorsedDirections: [],
-        vetoes: [],
-        pastDecisions: [],
         costUsd: 0,
         warning: wikiSettled.reason instanceof Error ? wikiSettled.reason.message : 'wiki recon failed',
       };
   if (wiki.warning) warnings.push({ phase: 'wiki-recon', severity: 'warn', message: wiki.warning });
   opts.onPhaseDone?.(
     'wiki-recon',
-    `${wiki.relevantPages.length} pages, ${wiki.stakeholders.length} stakeholders, ${wiki.vetoes.length} vetoes`,
+    `${wiki.playbooks.length} playbooks, ${wiki.templates.length} templates, ${wiki.domainKnowledge.length} knowledge, ${wiki.stakeholders.length} stakeholders, ${wiki.vetoes.length} vetoes`,
   );
 
   const web: WebResearchContext = webSettled.status === 'fulfilled'

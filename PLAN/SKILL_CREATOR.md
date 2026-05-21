@@ -325,57 +325,175 @@ Platform-specific implementation (`src/core/skill/recon/pc-scan.ts`):
 
 Total recon JSON ≤80 KB.
 
-### 6.3 Wiki recon — depth walk
+### 6.3 Wiki recon — the user's operating brain, not a stakeholder address book
 
-`src/core/skill/recon/wiki-recon.ts` reuses the Phase 1.5 query agent. Input: the action item title + description + linked discussion summary. Output: a structured **WikiContext** with:
+**Reframe (added 2026-05-21 after the real Q3 YouTube end-to-end smoke):** The wiki is not an address book. It is the **user's accumulated operating knowledge** — the playbooks they've refined over multiple attempts at the same kind of work, the domain context only they have, the templates they've already proven, the post-mortems that document what bit them last time. Wiki recon's job is to find that knowledge and route it into the brief so skill-creator can **bake the user's actual operating procedures into the emitted skill body** — not invent a generic best-practice workflow that ignores what the user has already figured out.
+
+The old shape (`stakeholders + endorsedDirections + vetoes + pastDecisions + relevantPages`) was tilted toward people-and-rules extraction. Four of five slots were about "who to involve" or "what not to do." The dumping-ground `relevantPages` slot held everything else as soft hints. **Skill-creator treated those hints as background reading rather than bake-into-the-skill material**, so emitted skills missed half the value the wiki could provide.
+
+**The reframed `WikiContext` has nine first-class slots organized in three tiers** — knowledge tier (what the user has figured out), people tier (who's involved), and rules tier (what to do / what not to do):
 
 ```ts
 interface WikiContext {
-  // Direct hits — pages whose summary or title matches action keywords
+  // ─── Tier 1: KNOWLEDGE — what the user has figured out and we should BAKE IN ───
+
+  // Playbooks: procedural pages documenting "how we do X." When present,
+  // the skill body must EXECUTE these step-for-step verbatim — not paraphrase,
+  // not invent alternatives, not soft-reference. The user already knows the
+  // right way to do this.
+  //
+  // Heuristics for the recon agent to identify:
+  //   - type: concept page whose title/body matches "how we ...", "our process for ...",
+  //     "the way we ...", "X playbook", "X runbook", "X workflow"
+  //   - body contains numbered/ordered steps that name the user's tools/stakeholders
+  //   - body uses "we" or "our" (first-person plural) in describing a procedure
+  //
+  // Domain examples (deliberately spanning every action category):
+  //   - Creative:    "Our 14-day YouTube launch playbook"
+  //   - Technical:   "How we land OAuth changes (RFC → spike → staged rollout)"
+  //   - Strategic:   "Our pricing-decision framework (value-mapping → comp set → CFO review)"
+  //   - Operational: "How we run our SDR hiring loop (sourcing → ICR → loop → debrief)"
+  //   - Financial:   "Our monthly investor-update process (close → P&L → narrative → send)"
+  //   - Research:    "How we do competitive teardowns (mystery shop → feature matrix → quote pull)"
+  //   - Legal:       "Our DPA review checklist (data flows → retention → subprocessor list)"
+  playbooks: Array<{
+    slug: string;
+    title: string;
+    body: string;  // FULL body — not summary. Skill body will embed verbatim steps.
+    confidence: 'high' | 'medium' | 'low';  // how strong a signal this is a playbook
+  }>;
+
+  // Templates: pages that document a CONCRETE OUTPUT SHAPE the user uses
+  // (email format, doc structure, slack message wording, code style, etc.).
+  // When present, the skill must produce output in this shape, not in a
+  // generic-best-practice shape.
+  //
+  // Heuristics:
+  //   - type: concept page whose title contains "template", "format", "style",
+  //     "structure", "shape", "example"
+  //   - body contains a literal output sample (fenced code, indented block,
+  //     "subject: ...\nbody: ..." pattern, etc.)
+  //
+  // Domain examples:
+  //   - Creative:    "Our Danish SMB tone guide (casual-direct, no superlatives)"
+  //   - Technical:   "Our PR description template (problem / approach / test plan / risk)"
+  //   - Strategic:   "Our one-page decision-memo template"
+  //   - Operational: "Our SDR job-description template"
+  //   - Financial:   "Our monthly investor email template (cash → MRR → wins → asks)"
+  //   - Comms:       "Our slack-message format for incident updates"
+  templates: Array<{
+    slug: string;
+    title: string;
+    body: string;        // FULL body
+    exampleOutput?: string;  // literal sample if surfaceable (≤1500 chars)
+  }>;
+
+  // Domain knowledge: pages that carry facts, definitions, mental models,
+  // framings, or constraints the skill should be AWARE of when making
+  // decisions, even if no single "embed verbatim" instruction applies.
+  //
+  // Heuristics:
+  //   - type: concept page that is descriptive (not procedural) — defines
+  //     what something IS or means in the user's context
+  //   - type: source-summary that captures distilled learnings
+  //   - body uses declarative voice ("X is...", "Y means...", "the difference
+  //     between X and Y is...")
+  //
+  // Domain examples:
+  //   - Creative:    "Our brand voice principles" / "Danish SMB ICP definition"
+  //   - Technical:   "Our session-cookie threat model" / "Latency budget targets"
+  //   - Strategic:   "Our competitive landscape mental model" / "TAM/SAM/SOM for DK"
+  //   - Operational: "Our team-size constraints" / "Our compensation philosophy"
+  //   - Financial:   "Our gross-margin definition" / "Our cash-runway calculation"
+  //   - Legal:       "Our GDPR posture" / "Our risk-tolerance principle"
+  domainKnowledge: Array<{
+    slug: string;
+    title: string;
+    summary: string;
+    excerpt?: string;  // up to 1000 chars of body when highly relevant
+  }>;
+
+  // Past lessons: post-mortems, retrospectives, "what bit us last time"
+  // pages. Feeds into the skill's veto/warning sections + the preflight
+  // checks. The user has already paid for these learnings — make the skill
+  // honor them.
+  //
+  // Heuristics:
+  //   - type: source-summary or type: concept page whose title contains
+  //     "lesson", "post-mortem", "retro", "what went wrong", "incident"
+  //   - body uses past-tense narrative ("we tried...", "this broke when...")
+  //   - body contains "next time we will..." / "we should always..." patterns
+  pastLessons: Array<{
+    slug: string;
+    summary: string;     // ≤200 chars
+    actionable: string;  // the concrete "next time" rule extracted, ≤200 chars
+  }>;
+
+  // ─── Tier 2: PEOPLE — who's involved (unchanged from the old shape) ───
+
+  stakeholders: Array<{
+    slug: string;
+    name: string;
+    role: string;
+    contactHints?: string;  // email / Slack / phone captured in the entity page
+  }>;
+
+  // ─── Tier 3: RULES — what to do / not to do (kept from old shape) ───
+
+  endorsedDirections: Array<{
+    slug: string;
+    statement: string;  // "We standardize on Postgres for all user-data storage"
+  }>;
+
+  vetoes: Array<{
+    slug: string;
+    statement: string;  // "Never send marketing emails on Mondays"
+  }>;
+
+  pastDecisions: Array<{
+    slug: string;
+    title: string;
+    outcome: string;
+  }>;
+
+  // ─── Catch-all (last resort — anything that didn't fit a tier above) ───
   relevantPages: Array<{
     slug: string;
     type: 'concept' | 'entity' | 'decision' | 'source-summary' | 'comparison';
     title: string;
     summary: string;
-    excerpt?: string;  // up to 500 chars of body if highly relevant
+    excerpt?: string;  // up to 500 chars
   }>;
-
-  // People + organizations mentioned in the wiki who could be stakeholders for this action
-  // (e.g., "Person X is the user's video editor")
-  stakeholders: Array<{
-    slug: string;
-    name: string;
-    role: string;           // e.g., "video editor", "co-founder", "lawyer"
-    contactHints?: string;  // anything like "email: ...@..." or "Slack: @..." captured in the entity page
-  }>;
-
-  // Concepts the user has clearly endorsed (high-confidence wiki claims that should shape the skill's defaults)
-  endorsedDirections: Array<{
-    slug: string;
-    statement: string;  // e.g., "We standardize on Postgres for all user-data storage"
-  }>;
-
-  // Anti-patterns the wiki records (things the skill should NOT do)
-  vetoes: Array<{
-    slug: string;
-    statement: string;  // e.g., "Never send marketing emails on Mondays"
-  }>;
-
-  // Decision pages relevant to this action
-  pastDecisions: Array<{ slug: string; title: string; outcome: string }>;
 }
 ```
 
-The wiki recon is **a single Sonnet call with `Read/Grep/Glob` and `maxTurns: 8`** — enough for tiered retrieval (start with the slug-map in `wiki/index.md` and the index summaries, only open page bodies when needed). Reuses every primitive Phase 1.5 already shipped, but with a wiki-recon-specific system prompt (not the generic `aab knowledge query` prompt) that's tuned for stakeholder + decision + veto extraction rather than open-ended Q&A.
+**Recon prompt rewrite — fetch FULL bodies for Tier 1, summaries for Tier 2-3:**
 
-**On `role:` extraction — important compatibility note (T1.7).** Phase 1.5's entity-page frontmatter (`PLAN/KNOWLEDGE_WIKI.md` §8) declares `title`, `slug`, `aliases`, `type`, `summary`, `tags`, `sources`, `related`, `confidence`, `provenance`, `created`, `updated`, `userEdited` — **but no `role:` field**. So the wiki-recon prompt cannot rely on structured frontmatter to discover that "Person X is the user's video editor." Instead, the prompt uses a **dual-path extraction strategy**:
+The wiki recon is still a single Sonnet call with `Read/Grep/Glob` and `maxTurns: 12` (raised from 8 because Tier 1 pages need their bodies opened, not just summaries). The new prompt explicitly instructs the recon agent:
 
-1. **Honor `role:` if present (forward-compat).** If a `type: entity` page's frontmatter carries an optional `role:` field (which a future Phase 1.5.x ingest update may start emitting for people), use it verbatim. Cheap and reliable.
-2. **LLM-extract from page body otherwise (works against current wiki content).** For `type: entity` pages whose name looks human-like (heuristic: kebab-cased multi-word slug not matching a known company/product/tool name) and whose body mentions relationship-to-user signals (`"my "`, `"our "`, `"works with us"`, `"editor"`, `"designer"`, `"lawyer"`, `"co-founder"`, `"VA"`, `"contractor"`, …), read the body and extract a role + contact hints.
+1. **First pass — tier classification.** Walk `wiki/index.md` and `wiki/KNOWLEDGE.md` to identify candidate pages. For each, classify by tier using the heuristics above. A single page can land in multiple tiers (e.g., a playbook page that also contains a template; both should be surfaced).
+2. **Second pass — open Tier 1 bodies in full.** For every playbook, template, or high-confidence domain-knowledge page, `Read` the entire body and include it in the output JSON. Do NOT summarize. The Planner + skill-creator need the literal text to embed.
+3. **Third pass — extract Tier 2-3 the old way.** Stakeholders, endorsed directions, vetoes, past decisions — summaries are sufficient; bodies only when highly relevant.
+4. **Confidence scoring on playbooks.** A page with the title "Our X playbook" and 6 numbered first-person-plural steps is `high`. A page with "How I tend to do X" but no concrete steps is `medium`. A page that just describes X without prescribing process is `low` — surface as `domainKnowledge` instead.
 
-The wiki-recon prompt explicitly instructs: *"For every `type: entity` page about a person, surface them as a `stakeholder` with `role` extracted from either frontmatter `role:` (if present) or from the page body's first paragraph (look for 'my <role>', 'our <role>', '<role> for the user', or equivalent). Also extract any email / Slack handle / phone in the page body as `contactHints` (the body may contain the user's notes about how to reach the person)."*
+**Anti-bias check baked into the prompt:** the prompt explicitly tells the agent *"do not over-weight stakeholder extraction — most pages in the wiki are not about people."* This corrects the old prompt's stakeholder-first orientation that biased the model to miss playbook + template signal.
 
-**Defer to Phase 1.5.x for structured `role:`.** A future small Phase 1.5 amendment can add an *optional* `role:` field to the entity frontmatter contract, and update the ingest agent prompt to populate it when ingesting sources about people. That amendment is **NOT a blocker for Phase 5** — body-extraction works today.
+**Cost impact:** opening full bodies for Tier 1 raises wiki recon from ~$0.09 to ~$0.15 typical. Well within the $0.20 per-recon-phase budget cap.
+
+**Anti-domain-bias guarantee:** the schema fields above are deliberately **domain-agnostic**. None of them mention YouTube, OAuth, pricing, SDRs, or any other specific vertical. The heuristics are pattern-based ("matches 'how we ...' pattern", "uses first-person plural in a procedure description") not keyword-based. The 7 worked examples in §6.5b's few-shot library will be extended to show the new wiki-context shape in action across creative + strategic + technical + operational + financial + research + legal domains — proving the contract holds end-to-end regardless of action category.
+
+**Downstream impact on the brief (§7):** the brief now embeds **full bodies of playbooks + templates** (not just slug + summary). Truncation priority extended: if the brief would exceed 60 KB, drop in this order — webResearch.recentInnovations → integration citations → webResearch.bestPracticePatterns sources → wiki.relevantPages bodies (catch-all) → wiki.pastDecisions outcomes (preserve playbooks + templates last; they're the most load-bearing).
+
+**Downstream impact on the Planner system prompt (§6.5a `<orchestration_directives>`):** new directive added —
+
+> *"If `wikiContext.playbooks[]` is populated for this action, the maximalist tier's workflow MUST execute each playbook step-for-step. Cite each playbook by slug in `valueRationale`. Do not invent alternative workflows when the user has documented theirs.*
+> *If `wikiContext.templates[]` is populated, the skill's output-producing steps MUST use the template shape verbatim. Embed the template body in the relevant integration's invocationHint (for write-artifact kinds) or in the workflowSteps[] description.*
+> *If `wikiContext.domainKnowledge[]` is populated, weave the relevant facts into the body where they inform a decision — do not just link to the wiki page.*
+> *If `wikiContext.pastLessons[]` is populated, every actionable lesson MUST appear as either a veto entry or a preflight check in the proposal."*
+
+**Schema validator (`validateProposalSemantics`) gets a new gate:** if any Tier 1 slot is non-empty AND the proposal's `valueRationale` does not cite at least one of those slugs by name, fail validation — re-run with stronger nudge. This forces the model to actually USE the knowledge it was given.
+
+**On `role:` extraction for stakeholders — unchanged compatibility note (T1.7).** Phase 1.5's entity-page frontmatter declares `title`, `slug`, `aliases`, `type`, `summary`, `tags`, `sources`, `related`, `confidence`, `provenance`, `created`, `updated`, `userEdited` — but no `role:` field. The wiki-recon prompt still uses the dual-path extraction strategy (honor frontmatter `role:` if present; otherwise extract from the body's first paragraph). A future Phase 1.5.x amendment can add an optional `role:` field to the entity frontmatter contract and update the ingest agent prompt to populate it — that's still NOT a blocker.
 
 ### 6.4 Web research — what does the world know about this task?
 

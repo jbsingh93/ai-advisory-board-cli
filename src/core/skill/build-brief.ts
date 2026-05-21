@@ -14,6 +14,7 @@
  */
 import type { ActionItem, ConversationSummary } from '../../storage/types.js';
 import type { ResolvedSkillCapabilityProfile } from './planner-review.js';
+import type { WikiPlaybook, WikiTemplate, WikiDomainKnowledge, WikiPastLesson } from './recon/wiki-recon.js';
 
 const MAX_BRIEF_BYTES = 60 * 1024;
 
@@ -21,6 +22,19 @@ export interface InstallTarget {
   scope: 'project' | 'user';
   path: string;
   skillName: string;
+}
+
+/**
+ * Wiki knowledge bundle that travels in the brief with FULL bodies for
+ * playbooks + templates so skill-creator can embed them verbatim into the
+ * emitted SKILL.md. Phase 5.1 addition — without this skill-creator has
+ * no way to bake the user's operating procedures into the skill.
+ */
+export interface WikiKnowledgeBundle {
+  playbooks: WikiPlaybook[];        // FULL body each
+  templates: WikiTemplate[];        // FULL body each
+  domainKnowledge: WikiDomainKnowledge[];  // summary + excerpt only
+  pastLessons: WikiPastLesson[];
 }
 
 export interface SkillCreatorBrief {
@@ -32,6 +46,13 @@ export interface SkillCreatorBrief {
     linkedDiscussion?: { id: string; summary: ConversationSummary };
   };
   skillPlannerProposal: ResolvedSkillCapabilityProfile['proposal'];
+  /**
+   * The user's operating knowledge from the wiki — playbooks + templates with
+   * FULL bodies, domain knowledge as summaries, past lessons as actionable
+   * rules. Skill-creator must embed playbook + template bodies verbatim;
+   * see `constraints.wikiKnowledgeIsBakeIn`.
+   */
+  wikiKnowledge: WikiKnowledgeBundle;
   capabilityProfile: {
     grantedTools: string[];
     acceptedTier: ResolvedSkillCapabilityProfile['acceptedTier'];
@@ -60,6 +81,18 @@ export const DEFAULT_CONSTRAINTS = {
     'For EACH integration in skillPlannerProposal.integrations[], the emitted SKILL.md body MUST include the literal ' +
     'invocationHint.snippet inside a code block. You MAY surround the snippet with context, validation logic, and ' +
     'follow-up steps — but you MUST NOT paraphrase, abbreviate, or rewrite the snippet. The snippet is the contract.',
+  wikiKnowledgeIsBakeIn:
+    'The wikiKnowledge field carries the USER\'S OPERATING BRAIN — playbooks they have run multiple times, ' +
+    'templates they have already proven, domain knowledge only they have, and past lessons they have paid for. ' +
+    'These are NOT background hints. Specifically: (1) For each entry in wikiKnowledge.playbooks[], the SKILL.md ' +
+    'body must EXECUTE the playbook step-for-step — quote the playbook\'s numbered steps VERBATIM into the body. ' +
+    'Do not paraphrase, do not invent alternative workflows, do not soft-reference. The user knows how they want ' +
+    'this done. (2) For each entry in wikiKnowledge.templates[], any output-producing step must use the template ' +
+    'body VERBATIM as the output shape (substitute placeholders for runtime values only). (3) For each entry in ' +
+    'wikiKnowledge.domainKnowledge[], weave the relevant fact into the body where it informs a decision — inline ' +
+    'the content, do not just link the page. (4) For each entry in wikiKnowledge.pastLessons[], the lesson\'s ' +
+    '`actionable` field must appear in the body as either a MUST NOT line or a preflight check. Cite every wiki ' +
+    'entry by slug in the SKILL.md\'s preamble or provenance section so the reader can trace back.',
   fallbacks: 'For each integration with fallbackIfMissing set, emit explicit fallback behavior in the body.',
   stakeholderHandoffs:
     'For each stakeholderTouchpoint where produces=artifact, write the artifact to artifactPath using ' +
@@ -98,6 +131,16 @@ export function buildSkillCreatorBrief(opts: BuildBriefOptions): {
         : {}),
     },
     skillPlannerProposal: cp.proposal,
+    wikiKnowledge: {
+      // FULL bodies — these are the load-bearing entries skill-creator must
+      // embed verbatim into the SKILL.md body. Truncation order below
+      // preserves these last, after dropping web innovations, citations,
+      // relevantPages excerpts, and pastDecisions outcomes.
+      playbooks: cp.recon.wiki.playbooks,
+      templates: cp.recon.wiki.templates,
+      domainKnowledge: cp.recon.wiki.domainKnowledge,
+      pastLessons: cp.recon.wiki.pastLessons,
+    },
     capabilityProfile: {
       grantedTools: cp.grantedTools,
       acceptedTier: cp.acceptedTier,
@@ -118,16 +161,18 @@ export function buildSkillCreatorBrief(opts: BuildBriefOptions): {
   };
 
   let bytes = Buffer.byteLength(JSON.stringify(brief), 'utf8');
-  // Truncation priority order (T see §7).
+  // Truncation priority order — drop things in order of least load-bearing
+  // first. Phase 5.1: wikiKnowledge.playbooks + templates are preserved to
+  // the very end because they're THE most load-bearing content (the user's
+  // operating brain). Order: web innovations → integration citations →
+  // best-practice sources → web app surfaces details → narrative edits →
+  // domainKnowledge excerpts → past lessons → templates → playbooks.
   if (bytes > MAX_BRIEF_BYTES) {
-    // 1. drop recentInnovations
-    // (cast intentionally — we're mutating a structural type)
     (brief as unknown as { skillPlannerProposal: { recentInnovations?: unknown[] } }).skillPlannerProposal.recentInnovations = [];
     bytes = Buffer.byteLength(JSON.stringify(brief), 'utf8');
     truncated.push('webResearch.recentInnovations');
   }
   if (bytes > MAX_BRIEF_BYTES) {
-    // 2. drop per-integration citations
     for (const i of brief.skillPlannerProposal.integrations) {
       (i as unknown as { citations?: unknown[] }).citations = [];
     }
@@ -135,10 +180,34 @@ export function buildSkillCreatorBrief(opts: BuildBriefOptions): {
     truncated.push('integration.citations');
   }
   if (bytes > MAX_BRIEF_BYTES && brief.capabilityProfile.userNarrativeEdits) {
-    // 3. last resort — drop narrative edits
     brief.capabilityProfile.userNarrativeEdits = brief.capabilityProfile.userNarrativeEdits.slice(0, 800) + '…';
     bytes = Buffer.byteLength(JSON.stringify(brief), 'utf8');
-    truncated.push('userNarrativeEdits (last 200 chars+ dropped)');
+    truncated.push('userNarrativeEdits (truncated to first 800 chars)');
+  }
+  if (bytes > MAX_BRIEF_BYTES) {
+    // drop the domainKnowledge excerpts (keep summaries)
+    brief.wikiKnowledge.domainKnowledge = brief.wikiKnowledge.domainKnowledge.map((d) => ({
+      slug: d.slug, title: d.title, summary: d.summary,
+    }));
+    bytes = Buffer.byteLength(JSON.stringify(brief), 'utf8');
+    truncated.push('wikiKnowledge.domainKnowledge.excerpt');
+  }
+  if (bytes > MAX_BRIEF_BYTES) {
+    // truncate template bodies to first 1500 chars (preserve playbooks fully)
+    brief.wikiKnowledge.templates = brief.wikiKnowledge.templates.map((t) => ({
+      ...t, body: t.body.length > 1500 ? t.body.slice(0, 1500) + '…' : t.body,
+    }));
+    bytes = Buffer.byteLength(JSON.stringify(brief), 'utf8');
+    truncated.push('wikiKnowledge.templates.body (truncated to 1500 chars each)');
+  }
+  if (bytes > MAX_BRIEF_BYTES) {
+    // last resort — truncate playbook bodies. The user will see this in the
+    // truncated[] return value so they know which playbook got cut.
+    brief.wikiKnowledge.playbooks = brief.wikiKnowledge.playbooks.map((p) => ({
+      ...p, body: p.body.length > 3000 ? p.body.slice(0, 3000) + '… [body truncated by brief assembler]' : p.body,
+    }));
+    bytes = Buffer.byteLength(JSON.stringify(brief), 'utf8');
+    truncated.push('wikiKnowledge.playbooks.body (truncated to 3000 chars each)');
   }
   return { brief, bytes, truncated };
 }

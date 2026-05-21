@@ -49,12 +49,57 @@ export interface WikiPastDecision {
   outcome: string;
 }
 
+// ─── Tier 1: KNOWLEDGE — Phase 5.1 (wiki as operating brain) ───────────────
+
+export interface WikiPlaybook {
+  slug: string;
+  title: string;
+  /** FULL body — embedded verbatim into the emitted SKILL.md by skill-creator. */
+  body: string;
+  confidence: 'high' | 'medium' | 'low';
+}
+
+export interface WikiTemplate {
+  slug: string;
+  title: string;
+  /** FULL body — embedded verbatim. */
+  body: string;
+  /** Literal sample output if surfaceable (≤1500 chars). */
+  exampleOutput?: string;
+}
+
+export interface WikiDomainKnowledge {
+  slug: string;
+  title: string;
+  summary: string;
+  excerpt?: string;
+}
+
+export interface WikiPastLesson {
+  slug: string;
+  summary: string;
+  /** The concrete "next time" rule extracted from the post-mortem. */
+  actionable: string;
+}
+
 export interface WikiContext {
-  relevantPages: WikiRelevantPage[];
+  // Tier 1 — knowledge that must be BAKED INTO the skill
+  playbooks: WikiPlaybook[];
+  templates: WikiTemplate[];
+  domainKnowledge: WikiDomainKnowledge[];
+  pastLessons: WikiPastLesson[];
+
+  // Tier 2 — people
   stakeholders: WikiStakeholder[];
+
+  // Tier 3 — rules
   endorsedDirections: WikiEndorsedDirection[];
   vetoes: WikiVeto[];
   pastDecisions: WikiPastDecision[];
+
+  // Catch-all (anything that didn't fit a tier above)
+  relevantPages: WikiRelevantPage[];
+
   costUsd: number;
   warning?: string;
 }
@@ -72,26 +117,88 @@ export interface WikiReconOptions {
 }
 
 const PROMPT_TEMPLATE = `<role>
-You are the Wiki Recon agent. Your job: walk the Knowledge Wiki at wiki/ and find
-every page that's relevant to one specific action item. Surface stakeholders,
-endorsed directions, vetoes, and past decisions the Skill Planner can use to
-design a maximalist skill.
+You are the Wiki Recon agent. The wiki at wiki/ is the user's OPERATING BRAIN —
+the playbooks they've refined, the templates they've already proven, the
+domain knowledge only they have, the post-mortems documenting what bit them
+last time. Your job: find that knowledge and route it into structured slots
+the Skill Planner uses to design a skill that does work THE USER'S WAY, not
+in a generic-best-practice way.
+
+This is NOT a stakeholder address book. Do NOT over-weight people extraction.
+Most pages in a healthy wiki are about procedures, templates, and concepts —
+not about humans.
 </role>
 
 <instructions>
-You have Read + Grep + Glob — no write tools. Walk the wiki tiered:
-1. Start with wiki/index.md (the slug map) and wiki/KNOWLEDGE.md (the curated
-   index) to identify candidate pages.
-2. Open the bodies of the most relevant 5-15 pages.
-3. For each \`type: entity\` page that looks human (kebab-cased multi-word slug,
-   body mentions relationship-to-user like "my video editor", "our advisor"),
-   extract them as a stakeholder. Honor frontmatter \`role:\` if present;
-   otherwise extract role + contact hints from the body's first paragraph.
-4. For each \`type: decision\` page relevant to the action's domain, extract
-   the outcome.
-5. For each \`type: concept\` page that contains endorsed directions ("we
-   standardize on…", "always do X") or vetoes ("never do X", "do not use Y"),
-   capture them verbatim.
+You have Read + Grep + Glob — no write tools. Three-pass walk:
+
+PASS 1 — Tier classification.
+Walk wiki/index.md (slug map) and wiki/KNOWLEDGE.md (curated index). For each
+candidate page, classify by TIER. A single page can land in multiple tiers
+(e.g., a playbook page that also contains a literal template).
+
+Tier 1 — KNOWLEDGE (bake into the emitted skill):
+  - playbook: \`type: concept\` page documenting "how we X" — procedural, uses
+    first-person plural ("we", "our"), contains numbered/ordered steps, title
+    matches patterns like "Our X playbook", "How we Y", "X runbook", "Our
+    process for Z".
+    Examples by domain (action-agnostic): "Our YouTube launch playbook" /
+    "How we land OAuth changes" / "Our pricing-decision framework" / "Our
+    SDR hiring loop" / "Our monthly investor-update process" / "How we run
+    competitive teardowns" / "Our DPA review checklist".
+  - template: \`type: concept\` page documenting an OUTPUT SHAPE — title
+    contains "template/format/style/structure/shape/example", body contains
+    a literal output sample.
+    Examples: "Our Danish SMB tone guide" / "Our PR description template" /
+    "Our decision-memo template" / "Our SDR JD template" / "Our investor
+    email template" / "Our slack incident-update format".
+  - domainKnowledge: \`type: concept\` page that is DESCRIPTIVE (not
+    procedural) — defines what something IS or means in the user's context.
+    Or \`type: source-summary\` that captures distilled learnings.
+    Examples: "Our brand voice principles" / "Our session-cookie threat
+    model" / "TAM/SAM/SOM for DK" / "Our compensation philosophy" / "Our
+    gross-margin definition" / "Our GDPR posture".
+  - pastLessons: post-mortems / retros / "what bit us last time" pages.
+    Title contains "lesson/post-mortem/retro/incident". Body uses past-tense
+    narrative + "next time we will…" / "we should always…" patterns.
+
+Tier 2 — PEOPLE:
+  - stakeholder: \`type: entity\` page about a human (kebab-cased multi-word
+    slug not matching a company/product/tool name), body mentions
+    relationship-to-user ("my X", "our X", "X for the user"). Extract role
+    from frontmatter \`role:\` if present; otherwise from body's first
+    paragraph. Capture email/Slack/phone as contactHints.
+
+Tier 3 — RULES:
+  - endorsedDirection: \`type: concept\` page or section stating "we
+    standardize on Y" / "we always X" / "we prefer Z".
+  - veto: same shape but "never X" / "do not use Y" / "avoid Z".
+  - pastDecision: \`type: decision\` page relevant to the action — extract
+    the outcome.
+
+PASS 2 — Open Tier 1 bodies in FULL.
+For every playbook, template, and high-confidence domainKnowledge page,
+Read the entire body and include it in the output JSON. Do NOT summarize.
+The Planner + skill-creator need the literal text to embed verbatim into the
+emitted skill.
+
+PASS 3 — Extract Tier 2-3 by summary (bodies only when highly relevant).
+
+Confidence scoring on playbooks:
+- "high"   = title is "Our X playbook"/"How we Y" + body has ≥3 numbered
+             first-person-plural steps naming the user's tools/people.
+- "medium" = title fits but body is principles-only without concrete steps.
+- "low"    = page describes X without prescribing process → surface as
+             domainKnowledge instead of playbook.
+
+If a page seems to belong in BOTH playbook AND domainKnowledge, prefer
+playbook (procedural signal is more load-bearing for the skill). If a page
+seems to be both template AND domainKnowledge, surface in BOTH (cheap; both
+slots accept the same body).
+
+Anti-bias check: if you find yourself wanting to put more than 3 pages in
+stakeholders[] and fewer than 3 in playbooks+templates+domainKnowledge,
+re-examine — you're under-counting knowledge.
 </instructions>
 
 <action>
@@ -102,18 +209,27 @@ linkedDiscussionSummary: {{DISCUSSION_SUMMARY}}
 
 <output_contract>
 Return ONLY a single JSON object. Start with \`{\`, end with \`}\`. No fences,
-no prose. Schema:
+no prose. Schema (every array is required even when empty):
 
 {
-  "relevantPages": [{ "slug": "...", "type": "concept|entity|decision|source-summary|comparison",
-                      "title": "...", "summary": "≤200 chars", "excerpt"?: "≤500 chars when highly relevant" }],
+  "playbooks":     [{ "slug": "...", "title": "...", "body": "<FULL body verbatim>",
+                       "confidence": "high|medium|low" }],
+  "templates":     [{ "slug": "...", "title": "...", "body": "<FULL body verbatim>",
+                       "exampleOutput"?: "≤1500 chars literal sample if surfaceable" }],
+  "domainKnowledge": [{ "slug": "...", "title": "...", "summary": "≤200 chars",
+                        "excerpt"?: "≤1000 chars when highly relevant" }],
+  "pastLessons":   [{ "slug": "...", "summary": "≤200 chars",
+                       "actionable": "the concrete 'next time' rule, ≤200 chars" }],
   "stakeholders":  [{ "slug": "...", "name": "...", "role": "...", "contactHints"?: "..." }],
   "endorsedDirections": [{ "slug": "...", "statement": "..." }],
   "vetoes":        [{ "slug": "...", "statement": "..." }],
-  "pastDecisions": [{ "slug": "...", "title": "...", "outcome": "..." }]
+  "pastDecisions": [{ "slug": "...", "title": "...", "outcome": "..." }],
+  "relevantPages": [{ "slug": "...", "type": "concept|entity|decision|source-summary|comparison",
+                       "title": "...", "summary": "≤200 chars", "excerpt"?: "≤500 chars" }]
 }
 
-If wiki has no relevant content, return all-empty arrays. Do not invent.
+If wiki has no relevant content for the action, return all-empty arrays.
+Do NOT invent. Do NOT pad to look productive.
 </output_contract>`;
 
 export async function runWikiRecon(opts: WikiReconOptions): Promise<WikiContext> {
@@ -126,7 +242,9 @@ export async function runWikiRecon(opts: WikiReconOptions): Promise<WikiContext>
   }
 
   const model = pickReconModel(opts.settings);
-  const maxTurns = opts.maxTurns ?? 8;
+  // Bumped from 8 → 12 (Phase 5.1): the recon agent now opens FULL bodies
+  // of playbooks + templates, not just summaries.
+  const maxTurns = opts.maxTurns ?? 12;
 
   const prompt = PROMPT_TEMPLATE
     .replace('{{ACTION_TITLE}}', escapeForPrompt(opts.actionTitle))
@@ -157,30 +275,56 @@ export async function runWikiRecon(opts: WikiReconOptions): Promise<WikiContext>
 }
 
 export function parseWikiContext(text: string): Omit<WikiContext, 'costUsd' | 'warning'> {
+  const empty = {
+    playbooks: [], templates: [], domainKnowledge: [], pastLessons: [],
+    stakeholders: [], endorsedDirections: [], vetoes: [], pastDecisions: [],
+    relevantPages: [],
+  };
   const parsed = safeParseJSON<Record<string, unknown>>(text);
   if (!parsed.success || !parsed.data || typeof parsed.data !== 'object') {
-    return { relevantPages: [], stakeholders: [], endorsedDirections: [], vetoes: [], pastDecisions: [] };
+    return empty;
   }
   const d = parsed.data;
+  // Tolerate model synonyms — different runs sometimes pick adjacent words
+  // for the slot names (procedure/process for playbook, format/example for
+  // template, knowledge/facts for domainKnowledge, lessons/learnings for
+  // pastLessons). Coerce them all into the canonical fields before parsing.
+  const playbookSrc = coerceArray(d.playbooks).concat(coerceArray(d.procedures)).concat(coerceArray(d.processes));
+  const templateSrc = coerceArray(d.templates).concat(coerceArray(d.formats)).concat(coerceArray(d.examples));
+  const dkSrc = coerceArray(d.domainKnowledge).concat(coerceArray(d.knowledge)).concat(coerceArray(d.facts));
+  const lessonSrc = coerceArray(d.pastLessons).concat(coerceArray(d.lessons)).concat(coerceArray(d.learnings));
   return {
-    relevantPages: coerceArray(d.relevantPages).map(coerceRelevantPage).filter(nonNull),
+    playbooks: dedupeBySlug(playbookSrc.map(coercePlaybook).filter(nonNull)),
+    templates: dedupeBySlug(templateSrc.map(coerceTemplate).filter(nonNull)),
+    domainKnowledge: dedupeBySlug(dkSrc.map(coerceDomainKnowledge).filter(nonNull)),
+    pastLessons: dedupeBySlug(lessonSrc.map(coercePastLesson).filter(nonNull)),
     stakeholders: coerceArray(d.stakeholders).map(coerceStakeholder).filter(nonNull),
     endorsedDirections: coerceArray(d.endorsedDirections).map(coerceEndorsedDirection).filter(nonNull),
     vetoes: coerceArray(d.vetoes).map(coerceVeto).filter(nonNull),
     pastDecisions: coerceArray(d.pastDecisions).map(coercePastDecision).filter(nonNull),
+    relevantPages: coerceArray(d.relevantPages).map(coerceRelevantPage).filter(nonNull),
   };
 }
 
 function emptyContext(warning: string): WikiContext {
   return {
+    playbooks: [], templates: [], domainKnowledge: [], pastLessons: [],
+    stakeholders: [], endorsedDirections: [], vetoes: [], pastDecisions: [],
     relevantPages: [],
-    stakeholders: [],
-    endorsedDirections: [],
-    vetoes: [],
-    pastDecisions: [],
     costUsd: 0,
     warning,
   };
+}
+
+function dedupeBySlug<T extends { slug: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of items) {
+    if (seen.has(item.slug)) continue;
+    seen.add(item.slug);
+    out.push(item);
+  }
+  return out;
 }
 
 function pickReconModel(settings: AppSettings): string {
@@ -212,6 +356,49 @@ function coerceRelevantPage(raw: unknown): WikiRelevantPage | null {
     summary: asString(r.summary) ?? '',
     excerpt: asString(r.excerpt),
   };
+}
+
+function coercePlaybook(raw: unknown): WikiPlaybook | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const slug = asString(r.slug);
+  const title = asString(r.title);
+  const body = asString(r.body) ?? asString(r.content);
+  if (!slug || !title || !body) return null;
+  const conf = asString(r.confidence)?.toLowerCase();
+  const confidence: WikiPlaybook['confidence'] =
+    conf === 'high' || conf === 'medium' || conf === 'low' ? conf : 'medium';
+  return { slug, title, body, confidence };
+}
+
+function coerceTemplate(raw: unknown): WikiTemplate | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const slug = asString(r.slug);
+  const title = asString(r.title);
+  const body = asString(r.body) ?? asString(r.content);
+  if (!slug || !title || !body) return null;
+  return { slug, title, body, exampleOutput: asString(r.exampleOutput) ?? asString(r.example) };
+}
+
+function coerceDomainKnowledge(raw: unknown): WikiDomainKnowledge | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const slug = asString(r.slug);
+  const title = asString(r.title);
+  const summary = asString(r.summary);
+  if (!slug || !title || !summary) return null;
+  return { slug, title, summary, excerpt: asString(r.excerpt) };
+}
+
+function coercePastLesson(raw: unknown): WikiPastLesson | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const slug = asString(r.slug);
+  const summary = asString(r.summary);
+  const actionable = asString(r.actionable) ?? asString(r.rule) ?? asString(r.nextTime);
+  if (!slug || !summary || !actionable) return null;
+  return { slug, summary, actionable };
 }
 
 function coerceStakeholder(raw: unknown): WikiStakeholder | null {

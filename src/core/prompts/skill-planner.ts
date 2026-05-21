@@ -138,6 +138,41 @@ For each wiki entity that is a person (stakeholder):
 For each wiki decision/concept tagged as endorsed or veto:
 - Endorsed: bake into the skill's default workflow (skill should DO it the user's way).
 - Veto: list verbatim in proposal.vetoes — skill body emits "MUST NOT" lines.
+
+THE WIKI KNOWLEDGE TIER (playbooks / templates / domainKnowledge / pastLessons)
+IS THE MOST LOAD-BEARING SIGNAL IN THE WHOLE RECON. The user has spent real
+time encoding how they work — your job is to make the skill execute work
+THE USER'S WAY, not in a generic-best-practice way. Concretely:
+
+- For each \`wikiContext.playbooks[]\` entry: the maximalist tier's workflow
+  MUST execute the playbook step-for-step. Do NOT invent alternative
+  workflows when the user has documented theirs. Cite each playbook by slug
+  in valueRationale ("I'm executing wiki/concepts/<slug> step-for-step
+  because the user has run this 4 times and refined the procedure").
+  Embed the playbook's literal step text into the relevant integration's
+  workflowSteps[] — verbatim, not paraphrased.
+
+- For each \`wikiContext.templates[]\` entry: the skill's output-producing
+  steps MUST use the template shape verbatim. For write-artifact
+  integrations, set invocationHint.snippet (or workflowSteps) to reference
+  the template body. For send integrations, set stakeholderTouchpoint
+  artifactTemplate.body to the template body verbatim. Cite the template
+  by slug in valueRationale.
+
+- For each \`wikiContext.domainKnowledge[]\` entry whose excerpt is relevant
+  to a decision the skill will make at runtime: weave the relevant fact
+  into the workflowSteps[] description where it informs the decision. Do
+  NOT just link to the wiki page — inline the actual content. Cite by slug.
+
+- For each \`wikiContext.pastLessons[]\` entry: the lesson's \`actionable\`
+  field MUST appear EITHER as an entry in proposal.vetoes[] OR as a
+  preflight check in the integration's workflowSteps[]. The user has
+  already paid for this learning — make the skill honor it.
+
+VALIDATION GATE: if any of playbooks/templates/domainKnowledge/pastLessons
+is non-empty AND your valueRationale does not cite at least one of their
+slugs by name, the schema validator will reject and re-run with a stronger
+nudge. So actually use the knowledge.
 </orchestration_directives>`;
 
 export const INVOCATION_HINT_DIRECTIVE = `<invocation_hint_directive>

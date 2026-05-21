@@ -176,7 +176,13 @@ const SURFACED_FROM_VALUES = [
 
 const TIER_NAMES = ['minimal', 'standard', 'maximalist'] as const;
 
+// Open string by design (used as a display label only — downstream code
+// doesn't switch on it). Opus often uses kebab-case variants like
+// 'draft-slack-message' or 'send-calendar-invite' which are perfectly
+// reasonable descriptors but were rejected by an over-strict enum in
+// earlier revisions. Caught via real solve `bnxyfj460` on 2026-05-21.
 const TOUCHPOINT_KINDS = ['draft-email', 'slack-mention', 'calendar-invite', 'doc-share', 'other'] as const;
+void TOUCHPOINT_KINDS;
 
 const sourceCitationSchema = z
   .object({ title: z.string().optional(), url: z.string().optional() })
@@ -250,7 +256,10 @@ export const proposalStakeholderSchema = z
   .object({
     name: z.string(),
     role: z.string().optional(),
-    touchpointKind: z.enum(TOUCHPOINT_KINDS).optional(),
+    // Open string (kebab-case advisory): the Planner may use any descriptor
+    // like 'draft-email', 'slack-mention', 'draft-slack-message',
+    // 'calendar-invite', 'send-pr-review', etc. Display-only field.
+    touchpointKind: z.string().optional(),
     rationale: z.string().optional(),
     produces: z.enum(['artifact', 'send']).optional(),
     artifactPath: z.string().optional(),
@@ -293,30 +302,88 @@ export const proposalMismatchSchema = z
 
 const SKILL_NAME_RE = /^[a-z][a-z0-9-]{1,63}$/;
 
+/**
+ * Top-level synonym remap for the SkillDesignProposal. Real Opus output
+ * varies field names from run to run — we maintain this table as a living
+ * compatibility layer rather than fighting one synonym at a time. Each entry
+ * is "if canonical is missing, look for these alternates in order; first hit
+ * wins." Caught via the live solve cascade on 2026-05-21
+ * (buhuld3ya/btpijn641/bgnyffj1k/bnxyfj460/bdeznap3h).
+ *
+ * Keep this table append-only — when a new live run surfaces another
+ * synonym, add it here rather than relaxing the schema further.
+ */
+const TOP_LEVEL_SYNONYMS: Record<string, string[]> = {
+  skillName: ['name', 'id', 'slug', 'skill_name'],
+  skillSummary: ['summary', 'description', 'tagline', 'skill_summary', 'overview'],
+  triggerLanguage: ['trigger', 'whenToUse', 'when_to_use', 'usage'],
+  integrations: ['proposalIntegrations', 'integrationsList', 'proposedIntegrations', 'tools'],
+  stakeholderTouchpoints: ['stakeholders', 'touchpoints', 'people'],
+  proposedWorkflow: ['workflow', 'steps', 'pipeline'],
+  vetoes: ['mustNot', 'must_not', 'antipatterns', 'forbidden'],
+  valueRationale: ['rationale', 'why', 'justification', 'reasoning'],
+  recommendedTier: ['recommended', 'tier', 'recommendedTierName'],
+};
+
+function remapTopLevelSynonyms(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object') return raw;
+  const r = raw as Record<string, unknown>;
+  const out = { ...r };
+  for (const [canonical, alternates] of Object.entries(TOP_LEVEL_SYNONYMS)) {
+    if (out[canonical] !== undefined && out[canonical] !== null) continue;
+    for (const alt of alternates) {
+      if (r[alt] !== undefined && r[alt] !== null) {
+        out[canonical] = r[alt];
+        break;
+      }
+    }
+  }
+  // Special case: integrations may be nested inside tiers.maximalist.
+  if (!Array.isArray(out.integrations) && r.tiers && typeof r.tiers === 'object') {
+    const tiers = r.tiers as Record<string, unknown>;
+    const max = tiers.maximalist as Record<string, unknown> | undefined;
+    if (max && Array.isArray(max.integrations)) {
+      out.integrations = max.integrations;
+    }
+  }
+  // Defensive defaults — let downstream code call .length / .map() without
+  // guards, and let the semantic validator surface a clean "≥3 integrations"
+  // message rather than a cryptic "Required".
+  if (!Array.isArray(out.integrations)) out.integrations = [];
+  if (out.skillSummary === undefined && typeof out.skillName === 'string') {
+    out.skillSummary = String(out.skillName);
+  }
+  return out;
+}
+
 export const skillDesignProposalSchema = z
-  .object({
-    skillName: z
-      .string()
-      .refine((s) => SKILL_NAME_RE.test(s), { message: 'skillName must be kebab-case ≤64 chars starting with a letter' }),
-    skillSummary: z.string(),
-    triggerLanguage: z.string().optional(),
-    tiers: z.object({
-      minimal: skillTierSchema,
-      standard: skillTierSchema,
-      maximalist: skillTierSchema,
-    }),
-    recommendedTier: z.enum([...TIER_NAMES, 'custom']),
-    integrations: z.array(proposalIntegrationSchema),
-    proposedWorkflow: z.array(proposalWorkflowStepSchema).optional(),
-    stakeholderTouchpoints: z.array(proposalStakeholderSchema).optional(),
-    vetoes: stringArrayFromUnknown.optional(),
-    valueRationale: z.string().optional(),
-    warnings: z.array(proposalWarningSchema).optional(),
-    mismatchedIntegrations: z.array(proposalMismatchSchema).optional(),
-    estimatedCostUsd: numberFromUnknown.optional(),
-    estimatedDurationMinutes: numberFromUnknown.optional(),
-  })
-  .passthrough();
+  .preprocess(
+    remapTopLevelSynonyms,
+    z
+      .object({
+        skillName: z
+          .string()
+          .refine((s) => SKILL_NAME_RE.test(s), { message: 'skillName must be kebab-case ≤64 chars starting with a letter' }),
+        skillSummary: z.string(),
+        triggerLanguage: z.string().optional(),
+        tiers: z.object({
+          minimal: skillTierSchema,
+          standard: skillTierSchema,
+          maximalist: skillTierSchema,
+        }),
+        recommendedTier: z.enum([...TIER_NAMES, 'custom']),
+        integrations: z.array(proposalIntegrationSchema),
+        proposedWorkflow: z.array(proposalWorkflowStepSchema).optional(),
+        stakeholderTouchpoints: z.array(proposalStakeholderSchema).optional(),
+        vetoes: stringArrayFromUnknown.optional(),
+        valueRationale: z.string().optional(),
+        warnings: z.array(proposalWarningSchema).optional(),
+        mismatchedIntegrations: z.array(proposalMismatchSchema).optional(),
+        estimatedCostUsd: numberFromUnknown.optional(),
+        estimatedDurationMinutes: numberFromUnknown.optional(),
+      })
+      .passthrough(),
+  );
 
 export type SkillDesignProposal = z.infer<typeof skillDesignProposalSchema>;
 export type ProposalIntegration = z.infer<typeof proposalIntegrationSchema>;
@@ -333,16 +400,33 @@ export const RESERVED_SKILL_NAMES = new Set<string>([
 ]);
 
 /**
+ * Wiki Tier 1 knowledge slugs the Planner must cite when present. Passed
+ * separately because the proposal schema doesn't carry the recon context.
+ */
+export interface WikiKnowledgeSlugs {
+  playbooks: string[];
+  templates: string[];
+  domainKnowledge: string[];
+  pastLessons: string[];
+}
+
+/**
  * Validate the proposal's hard semantic gates that go beyond shape:
  *   - skillName not reserved
  *   - maximalist tier has ≥3 integrations across ≥2 distinct sources
  *     (unless empty-recon honest-fallback: recommendedTier = minimal +
  *     rationale explicitly mentions "limited integration surface")
+ *   - **Phase 5.1**: if wiki Tier 1 knowledge slugs are passed and non-empty,
+ *     the proposal's valueRationale must cite at least one of them by slug —
+ *     enforces the "use the wiki, don't decorate with it" contract.
  *
  * Returns null on success; otherwise an array of human-readable failure
  * reasons that callers can feed back to the Planner as `<replan_feedback>`.
  */
-export function validateProposalSemantics(p: SkillDesignProposal): string[] | null {
+export function validateProposalSemantics(
+  p: SkillDesignProposal,
+  wikiKnowledge?: WikiKnowledgeSlugs,
+): string[] | null {
   const errors: string[] = [];
   if (RESERVED_SKILL_NAMES.has(p.skillName)) {
     errors.push(`skillName "${p.skillName}" is reserved by Anthropic — choose a different name`);
@@ -360,5 +444,39 @@ export function validateProposalSemantics(p: SkillDesignProposal): string[] | nu
       errors.push(`integrations span only ${uniqueSources.size} source type; need ≥2 distinct sources (pc-app/mcp-server/wiki-entity/...)`);
     }
   }
+
+  // Phase 5.1 — wiki-as-brain citation gate.
+  if (wikiKnowledge) {
+    const allSlugs = [
+      ...wikiKnowledge.playbooks,
+      ...wikiKnowledge.templates,
+      ...wikiKnowledge.domainKnowledge,
+      ...wikiKnowledge.pastLessons,
+    ];
+    if (allSlugs.length > 0) {
+      const rationale = String(p.valueRationale ?? '');
+      const cited = allSlugs.filter((slug) => rationale.includes(slug));
+      if (cited.length === 0) {
+        const sampleSlugs = allSlugs.slice(0, 5).join(', ');
+        errors.push(
+          `valueRationale must cite at least one wiki Tier 1 slug (the user has documented their way of doing this — use it). Available slugs: ${sampleSlugs}${allSlugs.length > 5 ? ', …' : ''}`,
+        );
+      }
+      // Also check: every playbook should appear in either valueRationale OR
+      // the proposedWorkflow steps. Soft check — surface as a single error if
+      // any playbook is completely ignored.
+      const workflowJoined = JSON.stringify(p.proposedWorkflow ?? []);
+      const integrationsJoined = JSON.stringify(p.integrations ?? []);
+      const ignoredPlaybooks = wikiKnowledge.playbooks.filter(
+        (slug) => !rationale.includes(slug) && !workflowJoined.includes(slug) && !integrationsJoined.includes(slug),
+      );
+      if (ignoredPlaybooks.length > 0) {
+        errors.push(
+          `wiki playbook(s) ignored entirely: ${ignoredPlaybooks.join(', ')}. Playbooks are the most load-bearing wiki tier — at least cite them in valueRationale, ideally execute step-for-step in proposedWorkflow.`,
+        );
+      }
+    }
+  }
+
   return errors.length === 0 ? null : errors;
 }

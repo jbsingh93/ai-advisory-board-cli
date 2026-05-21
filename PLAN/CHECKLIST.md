@@ -481,6 +481,42 @@ Live progress tracker. Each item is a concrete deliverable. Phase numbering matc
 
 ---
 
+## Phase 5.1 — Wiki recon as the user's operating brain (not address book) ✅
+
+**Trigger:** real Q3 YouTube end-to-end smoke revealed that the wiki was being used primarily as a stakeholder lookup. User feedback: "We must see the LLM Wiki not just as a stakeholder lookup, but as a bank of knowledge that we could use for the skill to make sure it's as relevant and valuable as possible for the user." Domain + task agnostic — works for every action category (creative, technical, strategic, operational, financial, research, legal, …).
+
+**Spec:** `PLAN/SKILL_CREATOR.md` §6.3 (rewritten 2026-05-21 with the wiki-as-brain framing).
+
+**The reframe:** the old `WikiContext` had 4 of 5 slots biased toward people-and-rules extraction. Everything else dumped into `relevantPages` as soft hints. Skill-creator treated those hints as background reading instead of bake-into-the-skill material, so emitted skills missed half the value the wiki could provide. The reframed shape promotes **four knowledge tiers** to first-class slots — playbooks, templates, domainKnowledge, pastLessons — alongside the existing people (stakeholders) and rules (endorsedDirections, vetoes, pastDecisions) tiers.
+
+### Chunk 1 — Schema + recon-prompt extension ✅
+
+- [x] Extended `WikiContext` interface in `src/core/skill/recon/wiki-recon.ts` with 4 new top-level fields: `playbooks[]`, `templates[]`, `domainKnowledge[]`, `pastLessons[]` per the §6.3 spec.
+- [x] Rewrote `PROMPT_TEMPLATE` in `wiki-recon.ts` with the new three-pass instruction set (tier classification → open Tier 1 bodies in full → extract Tier 2-3 by summary) + explicit "do not over-weight stakeholder extraction" anti-bias check + domain-neutral examples spanning creative/technical/strategic/operational/financial/research/legal.
+- [x] Bumped `maxTurns` 8 → 12 so the recon agent can open full bodies of playbooks + templates without hitting the cap.
+- [x] Added coercion helpers + synonym tolerance (`procedures`/`processes` → `playbooks`; `formats`/`examples` → `templates`; `knowledge`/`facts` → `domainKnowledge`; `lessons`/`learnings` → `pastLessons`). Dedupe-by-slug across canonical + synonym fields.
+- [x] 7 new unit tests in `wiki-recon.test.ts`: empty input (all 9 tiers), populated playbooks with confidence + verbatim body, templates with optional exampleOutput, domainKnowledge + pastLessons, synonym remapping, body-required guard (drops Tier 1 entries missing body), dedup-by-slug, default-confidence fallback.
+
+### Chunk 2 — Planner reasoning + brief assembly ✅
+
+- [x] New directive added to `<orchestration_directives>` in `src/core/prompts/skill-planner.ts`: explicit per-tier instructions — playbooks must drive maximalist workflow step-for-step; templates embedded verbatim; domain knowledge woven into workflowSteps where it informs decisions; past-lesson `actionable` rules surface as either vetoes or preflight checks. Validation-gate warning baked into the prompt so the model knows the schema validator will reject if any Tier 1 slot is populated and none of its slugs appear in `valueRationale`.
+- [x] Extended `validateProposalSemantics` in `src/core/parsing/llm-response-schemas.ts` with a `WikiKnowledgeSlugs` parameter and a new citation gate: if any Tier 1 slot is non-empty AND none of its slugs appear in the proposal's `valueRationale`, fail validation with a clear "you ignored the user's documented playbook" error including a sample of the available slugs. Also added a sub-check: every playbook must appear in `valueRationale` OR `proposedWorkflow` OR an integration's serialized JSON — silent ignores fail loudly.
+- [x] Wired the wiki-knowledge slug arrays into `planner.ts`'s validation call so the gate fires automatically on every solve.
+- [x] Extended `build-brief.ts` with a new `WikiKnowledgeBundle` field that carries FULL bodies of `playbooks` + `templates` to skill-creator. Updated truncation priority order: drops in this order — web innovations → integration citations → narrative edits → domainKnowledge excerpts → template bodies truncated to 1500 chars → playbook bodies (truncated to 3000 chars, last resort). Playbooks are the most preserved.
+- [x] New `wikiKnowledgeIsBakeIn` constraint added to `DEFAULT_CONSTRAINTS`: tells skill-creator that the wiki bundle is THE USER'S OPERATING BRAIN, not background hints; playbook bodies must be quoted verbatim into the SKILL.md body; template bodies are the output shape; domain knowledge must be inlined where it informs decisions; past-lesson `actionable` fields must appear as MUST NOT lines or preflight checks; every wiki entry must be cited by slug in the SKILL.md preamble.
+- [x] 4 new unit tests covering: the wikiKnowledge bundle propagation with FULL bodies preserved, truncation order preserving playbooks last, the `wikiKnowledgeIsBakeIn` constraint surface, the `WikiKnowledgeSlugs` citation gate (positive + negative + playbook-cited-in-workflow + backwards-compat no-op when omitted).
+
+### Chunk 3 — Real smoke + before/after diff ✅
+
+- [x] Seeded the smoke workspace with `wiki/concepts/youtube-launch-playbook.md` (full 5-phase procedural body, 4-launches-refined provenance, every veto + endorsed direction baked in) and `wiki/concepts/launch-video-cta-template.md` (literal CTA copy "Start your 7-day free trial — no credit card required. Link in the description.", A/B-test results, voice/delivery rules, 3 anti-patterns).
+- [x] Re-ran `aab actions solve e013a5f0 --yes --skill-name ship-q3-launch-with-playbook` (4 attempts — caught + fixed 3 schema-too-strict bugs: `touchpointKind` enum too narrow, `integrations` field-name synonyms, `skillSummary` field-name synonyms. Consolidated all into a single append-only `TOP_LEVEL_SYNONYMS` table). Fourth attempt shipped in **10m 56s**.
+- [x] **Before/after diff proves the wiki is load-bearing:**
+   - Original solve (empty wiki): **0** `wiki/` citations in SKILL.md, generic best-practice CTA, generic vetoes.
+   - Wiki-as-brain solve: **24** `wiki/` citations spanning the preamble, 10 MUST NOT vetoes, preflight section, every step body, and provenance footer. CTA copy embedded **verbatim**: `"Start your 7-day free trial — no credit card required. Link in the description."` 10 MUST NOT lines all sourced from the wiki (e.g., "MUST NOT use 'Sign up now' copy — 38% lower conversion in A/B tests (wiki/concepts/launch-video-cta-template)" — Opus pulled the A/B test statistic straight out of the wiki body and turned it into a mandatory rule). The skill opens with a "Wiki Sources Baked Into This Skill" section listing both pages. Full bodies of both wiki pages shipped in `references/`.
+- [x] `CHANGELOG.md` entry added with the full narrative + the before/after comparison table.
+
+---
+
 ## Phase 6.5 — Web UI (messaging-app dashboard) 🟡
 
 **Scope clarified 2026-05-19:** feature-specific UI now lives in the **owning phase** (Phase 2-5 each carry their own `**UI**` subsection). Phase 6.5 is the **polish + cross-cutting + shipped-views index**: the dashboard shell, the views already shipped (Discussions / Members / Actions / Principles / Settings / Knowledge), and the polish backlog (light theme, mobile responsive, token-usage dashboard, per-member color from frontmatter). Stubs below that name a Phase 2-5 feature are kept here for the at-a-glance index but their **authoritative scope is in the owning phase**.

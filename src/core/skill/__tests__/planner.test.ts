@@ -146,6 +146,85 @@ describe('skillDesignProposalSchema — validation', () => {
     p.integrations[0].invocationHint.kind = 'unknown';
     expect(skillDesignProposalSchema.safeParse(p).success).toBe(false);
   });
+
+  // ─── Phase 5.1 — top-level synonym tolerance ────────────────────────
+
+  it('accepts integrations under synonym field "proposalIntegrations"', () => {
+    const p = validProposal() as Record<string, unknown>;
+    const integrations = p.integrations;
+    delete p.integrations;
+    p.proposalIntegrations = integrations;
+    const r = skillDesignProposalSchema.safeParse(p);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.integrations).toHaveLength(3);
+  });
+
+  it('accepts integrations nested under tiers.maximalist.integrations', () => {
+    const p = validProposal() as Record<string, unknown>;
+    const integrations = p.integrations;
+    delete p.integrations;
+    const tiers = p.tiers as Record<string, Record<string, unknown>>;
+    tiers.maximalist!.integrations = integrations;
+    const r = skillDesignProposalSchema.safeParse(p);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.integrations).toHaveLength(3);
+  });
+
+  it('accepts touchpointKind as any string (e.g. "draft-slack-message")', () => {
+    const p = validProposal();
+    p.stakeholderTouchpoints = [
+      { name: 'Pat', role: 'editor', touchpointKind: 'draft-slack-message',
+        produces: 'artifact', artifactPath: 'references/msg.md' },
+    ] as never;
+    const r = skillDesignProposalSchema.safeParse(p);
+    expect(r.success).toBe(true);
+  });
+
+  it('accepts skillSummary under the "summary" synonym', () => {
+    const p = validProposal() as Record<string, unknown>;
+    const summary = p.skillSummary;
+    delete p.skillSummary;
+    p.summary = summary;
+    const r = skillDesignProposalSchema.safeParse(p);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.skillSummary).toBe('End-to-end YouTube intro production');
+  });
+
+  it('accepts skillSummary under the "description" synonym', () => {
+    const p = validProposal() as Record<string, unknown>;
+    const summary = p.skillSummary;
+    delete p.skillSummary;
+    p.description = summary;
+    const r = skillDesignProposalSchema.safeParse(p);
+    expect(r.success).toBe(true);
+  });
+
+  it('accepts valueRationale under the "rationale" synonym', () => {
+    const p = validProposal() as Record<string, unknown>;
+    const rationale = p.valueRationale;
+    delete p.valueRationale;
+    p.rationale = rationale;
+    const r = skillDesignProposalSchema.safeParse(p);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.valueRationale).toBe('Maximalist wins by 70%');
+  });
+
+  it('accepts vetoes under the "mustNot" synonym', () => {
+    const p = validProposal() as Record<string, unknown>;
+    delete p.vetoes;
+    p.mustNot = ['never do X'];
+    const r = skillDesignProposalSchema.safeParse(p);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.vetoes).toEqual(['never do X']);
+  });
+
+  it('falls back skillSummary to skillName when both summary synonyms are missing', () => {
+    const p = validProposal() as Record<string, unknown>;
+    delete p.skillSummary;
+    const r = skillDesignProposalSchema.safeParse(p);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.skillSummary).toBe('record-q3-launch-intro');
+  });
 });
 
 describe('validateProposalSemantics — hard gates', () => {
@@ -201,6 +280,58 @@ describe('validateProposalSemantics — hard gates', () => {
     p.valueRationale = "user's environment has limited integration surface for this action";
     expect(validateProposalSemantics(p)).toBeNull();
   });
+
+  // ─── Phase 5.1 — wiki Tier 1 citation gate ──────────────────────────
+
+  it('rejects when wiki Tier 1 slugs are present but valueRationale cites none', () => {
+    const p = validProposal();
+    p.valueRationale = 'Maximalist wins by 70%'; // doesn't cite the playbook
+    const wikiKnowledge = {
+      playbooks: ['our-launch-playbook'],
+      templates: [],
+      domainKnowledge: [],
+      pastLessons: [],
+    };
+    const errs = validateProposalSemantics(p, wikiKnowledge);
+    expect(errs).not.toBeNull();
+    expect(errs!.join('\n')).toContain('our-launch-playbook');
+    expect(errs!.join('\n')).toContain('cite at least one wiki Tier 1 slug');
+  });
+
+  it('passes when valueRationale cites a wiki playbook slug', () => {
+    const p = validProposal();
+    p.valueRationale = 'Executing wiki/concepts/our-launch-playbook step-for-step.';
+    const wikiKnowledge = {
+      playbooks: ['our-launch-playbook'],
+      templates: [],
+      domainKnowledge: [],
+      pastLessons: [],
+    };
+    expect(validateProposalSemantics(p, wikiKnowledge)).toBeNull();
+  });
+
+  it('passes when a playbook slug appears in proposedWorkflow even if not in valueRationale', () => {
+    const p = validProposal();
+    p.valueRationale = 'Maximalist wins by 70%';
+    p.proposedWorkflow = [{ step: 'Apply our-launch-playbook step 1', integrations: [] }];
+    const wikiKnowledge = {
+      playbooks: ['our-launch-playbook'],
+      templates: ['cta-template'], // template not cited, but at least one Tier 1 slug appears
+      domainKnowledge: [],
+      pastLessons: [],
+    };
+    // cta-template isn't cited → first gate fires
+    const errs = validateProposalSemantics(p, wikiKnowledge);
+    expect(errs).not.toBeNull();
+    // but the "playbook ignored entirely" gate should NOT fire because the
+    // playbook slug appears in proposedWorkflow.
+    expect(errs!.join('\n')).not.toMatch(/playbook\(s\) ignored entirely/);
+  });
+
+  it('no-op when wikiKnowledge parameter is omitted (backwards compat)', () => {
+    const p = validProposal();
+    expect(validateProposalSemantics(p)).toBeNull();
+  });
 });
 
 describe('projectGrantedTools — deterministic projection', () => {
@@ -254,7 +385,11 @@ describe('planner-review — acceptance helpers', () => {
         envVars: [], existingSkills: [], playwright: false, chrome: false,
         computerUseAvailable: false, warnings: [],
       },
-      wiki: { relevantPages: [], stakeholders: [], endorsedDirections: [], vetoes: [], pastDecisions: [], costUsd: 0 },
+      wiki: {
+        playbooks: [], templates: [], domainKnowledge: [], pastLessons: [],
+        relevantPages: [], stakeholders: [], endorsedDirections: [], vetoes: [], pastDecisions: [],
+        costUsd: 0,
+      },
       web: { taskDomain: 'x', bestPracticePatterns: [], recommendedTools: [], recentInnovations: [],
              warningsAndPitfalls: [], appIntegrationSurfaces: [], webPassesCompleted: { general: true, perAppCount: 0 }, costUsd: 0 },
       warnings: [],

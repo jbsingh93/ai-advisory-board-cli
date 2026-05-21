@@ -14,6 +14,13 @@ updates:
         dependency-type: development
         update-types: [minor, patch]
     labels: [dependencies]
+    # vite/vitest major bumps require coordinated test-fixture migration —
+    # don't auto-open PRs for them. Patch/minor still fine.
+    ignore:
+      - dependency-name: vite
+        update-types: [version-update:semver-major]
+      - dependency-name: vitest
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: github-actions
     directory: /

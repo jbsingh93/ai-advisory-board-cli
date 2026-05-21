@@ -1976,3 +1976,20 @@ textarea, input, button { color: inherit; }
   padding: 12px;
   border-radius: 6px;
 }
+
+/* Phase 5 — failed phase + persistent error banner (caught via live MCP smoke 2026-05-21) */
+.planner-phase[data-status="failed"] {
+  border-color: rgba(220, 80, 80, 0.55);
+  background: rgba(220, 80, 80, 0.08);
+}
+.planner-error-banner {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid rgba(220, 80, 80, 0.55);
+  border-radius: 6px;
+  background: rgba(220, 80, 80, 0.12);
+  color: #f8b8b8;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: pre-wrap;
+}

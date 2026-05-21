@@ -466,7 +466,7 @@ Live progress tracker. Each item is a concrete deliverable. Phase numbering matc
   - [x] `specs/skill-install-conflict.md` — overwrite-archives + rename + abort variants
   - [x] `specs/skill-runs-history.md` — list + show + export (with proposal.md inside the bundle)
   - [x] `specs/skills-tab.md` — list + show + test (clipboard copy) + uninstall + restore
-- [~] Live Playwright MCP smoke on test workspace — specs written; live MCP smoke deferred until the user runs a real Plan/Solve session (each real-Planner run is ~$2.20)
+- [x] Live Playwright MCP smoke on test workspace — verified end-to-end (2026-05-21): Skills tab + skill detail modal, Action Board Plan/Solve buttons, Plan kicks off `/api/actions/:id/plan` (202+planId), Planner progress pane renders with live `planner_recon_progress` WS events (PC scan: 35 apps + 6 CLI tools live-scanned; wiki recon + web research completed via real Sonnet calls; live stream populated with 3 phase summaries), proposal modal renders all sections correctly (verified via simulated event since the live Opus run on an empty workspace hit the schema-validation retry path and ran long). **Bug caught + fixed via this smoke**: `planner_failed` events fired a transient toast that auto-dismissed after 4.5s, leaving no proof of failure after a 10-min Opus wait. Fix in `gui/app.js`: keep the progress modal open on failure, mark the reasoning phase `data-status="failed"` (red), and render a sticky `<div class="planner-error-banner" data-testid="planner-error-banner">` inside the pane. Reject button + 10-char re-plan guard + close button all verified.
 
 ### Out of scope for v1 (deferred)
 

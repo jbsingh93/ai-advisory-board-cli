@@ -3845,6 +3845,9 @@ function showPlannerProgress() {
   m.hidden = false;
   document.getElementById('planner-progress-title').textContent =
     'Skill Planner — ' + (plannerState.action?.title ?? '');
+  // Clear any stale error banner from a prior run.
+  const banner = document.getElementById('planner-error-banner');
+  if (banner) banner.remove();
   paintPlannerPhases();
 }
 
@@ -4095,11 +4098,22 @@ window.addEventListener('aab-planner-event', (ev) => {
   } else if (d.type === 'planner_proposal_ready') {
     plannerState.phases['reasoning'] = 'done';
     paintPlannerPhases();
-    hidePlannerProgress();
-    if (d.proposal) showProposalModal(d.proposal);
+    if (d.proposal) {
+      hidePlannerProgress();
+      showProposalModal(d.proposal);
+    } else {
+      // Server fired proposal_ready without a payload — keep progress pane
+      // open so the user sees the failure (and not just a vanished modal).
+      showPlannerError('Planner emitted an empty proposal (server bug). Re-run or contact support.');
+    }
   } else if (d.type === 'planner_failed') {
+    // Persistent failure banner inside the still-open progress pane — toast
+    // alone disappears in 4.5s and after a 10min Opus run the user has no
+    // proof anything happened. Caught via the 2026-05-21 live MCP smoke.
+    plannerState.phases['reasoning'] = 'failed';
+    paintPlannerPhases();
+    showPlannerError(d.errorMessage ?? d.reason ?? 'Planner failed (no detail)');
     toast('Planner failed: ' + (d.errorMessage ?? 'unknown'), 'err');
-    hidePlannerProgress();
   } else if (d.type === 'skill_run_started') {
     toast('skill-creator authoring…', 'ok');
   } else if (d.type === 'skill_run_tool_call') {
@@ -4109,9 +4123,28 @@ window.addEventListener('aab-planner-event', (ev) => {
     toast('Skill installed at ' + (d.installPath ?? '?'), 'ok');
     refreshState({ silent: true }).then(() => { if (state.route === 'actions') navigate('actions'); });
   } else if (d.type === 'skill_run_failed') {
+    showPlannerError('skill-creator failed: ' + (d.errorMessage ?? 'unknown'));
     toast('skill-creator failed: ' + (d.errorMessage ?? 'unknown'), 'err');
   }
 });
+
+function showPlannerError(message) {
+  // Keep the progress pane visible with a sticky red banner so the user
+  // doesn't lose context after a long-running failure.
+  const m = document.getElementById('planner-progress-modal');
+  if (m) m.hidden = false;
+  const body = document.getElementById('planner-progress-body');
+  if (!body) return;
+  let banner = document.getElementById('planner-error-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'planner-error-banner';
+    banner.className = 'planner-error-banner';
+    banner.dataset.testid = 'planner-error-banner';
+    body.appendChild(banner);
+  }
+  banner.textContent = '✗ ' + message;
+}
 
 // ------------------------------------------------------------------
 // Phase 5 — Skills tab

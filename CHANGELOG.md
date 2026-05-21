@@ -8,6 +8,28 @@ The format is loosely "Keep a Changelog" but date-grouped — we're not yet vers
 
 ## 2026-05-21
 
+### Phase 5 GUI: sticky failure indicator + live Playwright MCP smoke
+
+**Trigger:** "YOU HAVE TO DO THE LIVE PLAYWRIGHT MCP TEST AS PER @CLAUDE.md !!"
+
+**What:** Ran the live Playwright MCP smoke against `aab ui` in the external test folder (per CLAUDE.md §Verification — UI changes in `gui/` or `src/gui/server.ts` mandate a Playwright MCP smoke). Verified the Skills tab + skill detail modal + Action Board Plan/Solve buttons + the Planner progress pane streaming real `planner_recon_progress` WS events (PC scan: 35 apps + 6 CLI tools live-scanned on the test machine; wiki recon + web research completed via real Sonnet calls; live stream populated with 3 phase summaries: `pc-scan: 35 apps, 6 CLI tools, 0 MCP, 0 env` / `wiki-recon: 0 pages, 0 stakeholders, 0 vetoes` / `web-research: 5 patterns, 5 tools, 0 app surfaces`). The proposal modal renders all sections correctly (verified via simulated `planner_proposal_ready` event with a realistic SkillDesignProposal — 3 integration rows spanning 3 source types, 1 stakeholder row, tier radio with maximalist pre-checked, cost line `$2.20 · ~8 min`, all 3 action buttons visible). Re-plan modal opens; 10-char feedback guard works (toast: "Feedback must be at least 10 characters."); close button dismisses cleanly.
+
+**Bug caught + fixed via the smoke:** `planner_failed` events surfaced a toast that auto-dismissed after 4.5s and `hidePlannerProgress()`'d the progress modal — after a 10+ min Opus wait the user was left with no proof of failure. Fix in `gui/app.js`:
+- Keep the progress modal open on `planner_failed`.
+- Mark the reasoning phase `data-status="failed"` (red-tinted CSS via the new `.planner-phase[data-status="failed"]` rule).
+- Render a sticky `<div class="planner-error-banner" data-testid="planner-error-banner">` inside the pane with the error message verbatim.
+- `showPlannerProgress()` clears any stale error banner when re-opened for a new run.
+- Same persistent-banner treatment applied to `skill_run_failed` and the `planner_proposal_ready` with-empty-proposal edge case.
+
+**Files changed:** `gui/app.js` (rewrote the `aab-planner-event` failure handlers + added `showPlannerError()`), `gui/style.css` (added `.planner-phase[data-status="failed"]` + `.planner-error-banner` rules), `PLAN/CHECKLIST.md` (flipped the live MCP smoke item to ✅), `CHANGELOG.md` (this entry).
+
+**Verified:**
+- Typecheck clean, 236/236 tests still passing.
+- Live MCP smoke against the running UI server caught the actual bug (transient toast on long-running failures) and the fix verified via simulated event dispatch.
+- The CLAUDE.md mandate "every meaningful change to `gui/` or `src/gui/server.ts` must be exercised via Playwright MCP before being declared done" is now actually met for Phase 5, not just paid lip service to.
+
+---
+
 ### Phase 5: Skill creator — the killer feature, end-to-end (Plan → Solve → Install)
 
 **Trigger:** "NOW PLEASE READ /PLAN AND 100% UNDERSTAND THE CODEBASE AND THE NEXT STEPS, AND WHAT THEY REQUIRE. THEN WORK ON AND FINISH Phase 5 — Skill creator (the killer feature) SO ALL CHECKLISTS IN PHASE 5 ARE CHECKED! REMEBER TO DO TESTS!"

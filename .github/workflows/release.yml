@@ -35,6 +35,13 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
 
+      # Trusted publishing requires npm CLI 11.5.1+. Node 22.x ships with
+      # npm 10.x, which sees OIDC available but can't actually use it — the
+      # publish then fails with a misleading "E404 Not Found" instead of a
+      # clearer auth error.
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest
+
       - name: Install dependencies
         run: npm ci
 

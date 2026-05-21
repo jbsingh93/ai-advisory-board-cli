@@ -35,7 +35,7 @@ jobs:
       # Node 20+ (verified by the CI matrix on the ci.yml workflow); Node 24
       # here is just the build/publish runtime.
       - name: Set up Node 24
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm

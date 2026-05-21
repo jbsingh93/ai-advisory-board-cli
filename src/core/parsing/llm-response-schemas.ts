@@ -156,3 +156,182 @@ export const conversationAnalysisPayloadSchema = z
   .passthrough();
 
 export type ConversationAnalysisPayload = z.infer<typeof conversationAnalysisPayloadSchema>;
+
+// ---------- Skill Planner (Phase 5) — SkillDesignProposal ----------
+
+const INVOCATION_HINT_KINDS = [
+  'bash-cmd', 'bash-curl', 'mcp-tool', 'bash-script',
+  'write-artifact', 'manual-handoff',
+  'chrome-extension', 'computer-use',
+] as const;
+
+const INTEGRATION_SOURCES = [
+  'pc-app', 'cli-tool', 'mcp-server', 'wiki-entity',
+  'browser-extension', 'web-service', 'api',
+] as const;
+
+const SURFACED_FROM_VALUES = [
+  'pc-scan', 'wiki-recon', 'web-research', 'web-research-per-app', 'inferred',
+] as const;
+
+const TIER_NAMES = ['minimal', 'standard', 'maximalist'] as const;
+
+const TOUCHPOINT_KINDS = ['draft-email', 'slack-mention', 'calendar-invite', 'doc-share', 'other'] as const;
+
+const sourceCitationSchema = z
+  .object({ title: z.string().optional(), url: z.string().optional() })
+  .passthrough();
+
+export const invocationHintSchema = z
+  .object({
+    kind: z.enum(INVOCATION_HINT_KINDS),
+    tools: stringArrayFromUnknown.optional(),
+    snippet: z.string().optional(),
+    artifactPath: z.string().optional(),
+    handoffInstructions: z.string().optional(),
+  })
+  .passthrough();
+
+export const skillTierSchema = z
+  .object({
+    name: z.enum(TIER_NAMES),
+    description: z.string().optional(),
+    toolSurface: stringArrayFromUnknown.optional(),
+    workflow: stringArrayFromUnknown.optional(),
+    produces: stringArrayFromUnknown.optional(),
+    estimatedValueScore: boundedNumber(0, 100).optional(),
+  })
+  .passthrough();
+
+export const proposalIntegrationSchema = z
+  .object({
+    id: z.string(),
+    source: z.enum(INTEGRATION_SOURCES),
+    name: z.string(),
+    purpose: z.string().optional(),
+    workflowSteps: stringArrayFromUnknown.optional(),
+    invocationHint: invocationHintSchema,
+    requiredTools: stringArrayFromUnknown.optional(),
+    fallbackIfMissing: z.string().optional(),
+    confidence: boundedNumber(0, 100).optional(),
+    surfacedFrom: z.enum(SURFACED_FROM_VALUES).optional(),
+    citations: z.array(sourceCitationSchema).optional(),
+  })
+  .passthrough();
+
+export const proposalStakeholderSchema = z
+  .object({
+    name: z.string(),
+    role: z.string().optional(),
+    touchpointKind: z.enum(TOUCHPOINT_KINDS).optional(),
+    rationale: z.string().optional(),
+    produces: z.enum(['artifact', 'send']).optional(),
+    artifactPath: z.string().optional(),
+    sendVia: z.string().optional(),
+    artifactTemplate: z
+      .object({
+        subject: z.string().optional(),
+        body: z.string().optional(),
+        attachments: stringArrayFromUnknown.optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
+export const proposalWorkflowStepSchema = z
+  .object({
+    step: z.string(),
+    integrations: stringArrayFromUnknown.optional(),
+    output: z.string().optional(),
+  })
+  .passthrough();
+
+export const proposalWarningSchema = z
+  .object({
+    phase: z.enum(['pc-scan', 'wiki-recon', 'web-research-general', 'web-research-per-app']),
+    severity: z.enum(['info', 'warn', 'error']),
+    message: z.string(),
+  })
+  .passthrough();
+
+export const proposalMismatchSchema = z
+  .object({
+    integrationId: z.string(),
+    reason: z.enum(['mcp-not-installed', 'cli-not-found', 'env-var-missing', 'app-not-detected', 'other']),
+    requiredTool: z.string(),
+    suggestion: z.string().optional(),
+  })
+  .passthrough();
+
+const SKILL_NAME_RE = /^[a-z][a-z0-9-]{1,63}$/;
+
+export const skillDesignProposalSchema = z
+  .object({
+    skillName: z
+      .string()
+      .refine((s) => SKILL_NAME_RE.test(s), { message: 'skillName must be kebab-case ≤64 chars starting with a letter' }),
+    skillSummary: z.string(),
+    triggerLanguage: z.string().optional(),
+    tiers: z.object({
+      minimal: skillTierSchema,
+      standard: skillTierSchema,
+      maximalist: skillTierSchema,
+    }),
+    recommendedTier: z.enum([...TIER_NAMES, 'custom']),
+    integrations: z.array(proposalIntegrationSchema),
+    proposedWorkflow: z.array(proposalWorkflowStepSchema).optional(),
+    stakeholderTouchpoints: z.array(proposalStakeholderSchema).optional(),
+    vetoes: stringArrayFromUnknown.optional(),
+    valueRationale: z.string().optional(),
+    warnings: z.array(proposalWarningSchema).optional(),
+    mismatchedIntegrations: z.array(proposalMismatchSchema).optional(),
+    estimatedCostUsd: numberFromUnknown.optional(),
+    estimatedDurationMinutes: numberFromUnknown.optional(),
+  })
+  .passthrough();
+
+export type SkillDesignProposal = z.infer<typeof skillDesignProposalSchema>;
+export type ProposalIntegration = z.infer<typeof proposalIntegrationSchema>;
+export type ProposalStakeholder = z.infer<typeof proposalStakeholderSchema>;
+export type InvocationHint = z.infer<typeof invocationHintSchema>;
+
+// Reserved skill names that the adapter (§9) refuses.
+export const RESERVED_SKILL_NAMES = new Set<string>([
+  'skill-creator',
+  'master-gpt-prompter',
+  'wiki-ingest',
+  'wiki-query',
+  'wiki-lint',
+]);
+
+/**
+ * Validate the proposal's hard semantic gates that go beyond shape:
+ *   - skillName not reserved
+ *   - maximalist tier has ≥3 integrations across ≥2 distinct sources
+ *     (unless empty-recon honest-fallback: recommendedTier = minimal +
+ *     rationale explicitly mentions "limited integration surface")
+ *
+ * Returns null on success; otherwise an array of human-readable failure
+ * reasons that callers can feed back to the Planner as `<replan_feedback>`.
+ */
+export function validateProposalSemantics(p: SkillDesignProposal): string[] | null {
+  const errors: string[] = [];
+  if (RESERVED_SKILL_NAMES.has(p.skillName)) {
+    errors.push(`skillName "${p.skillName}" is reserved by Anthropic — choose a different name`);
+  }
+  const maximalistCount = (p.integrations ?? []).length;
+  const uniqueSources = new Set(p.integrations.map((i) => i.source));
+  const isEmptyReconFallback =
+    p.recommendedTier !== 'maximalist' &&
+    /limited integration surface|no leverageable|environment.*(limited|insufficient)/i.test(p.valueRationale ?? '');
+  if (!isEmptyReconFallback) {
+    if (maximalistCount < 3) {
+      errors.push(`maximalist tier has ${maximalistCount} integrations; need ≥3 (or set recommendedTier to minimal/standard with an explicit limited-environment rationale)`);
+    }
+    if (uniqueSources.size < 2) {
+      errors.push(`integrations span only ${uniqueSources.size} source type; need ≥2 distinct sources (pc-app/mcp-server/wiki-entity/...)`);
+    }
+  }
+  return errors.length === 0 ? null : errors;
+}

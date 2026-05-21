@@ -87,6 +87,12 @@ import {
 import { openSparringSession, sendSparringMessage } from '../core/sparring/sparring-service.js';
 import { injectSparringInsight } from '../core/sparring/inject-insight.js';
 import { STARTER_PRINCIPLES } from '../starter/starter-principles.js';
+import { runSolve, type SolveEvent } from '../core/skill/solve-orchestrator.js';
+import { renderProposalMarkdown, type ResolvedSkillCapabilityProfile } from '../core/skill/planner-review.js';
+import { resolveSkill } from '../core/skill/resolve-skill-creator.js';
+import { listInstalledSkills } from '../commands/skills.js';
+import { scan as scanPc } from '../core/skill/recon/pc-scan.js';
+import type { SkillDesignProposal } from '../core/parsing/llm-response-schemas.js';
 
 const PRINCIPLE_CATEGORIES: PrincipleCategory[] = [
   'life',
@@ -1961,6 +1967,270 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
     }
   });
 
+  // ---------- Phase 5 — Skill Planner + skill-creator orchestration ----------
+
+  // In-memory plan cache for /api/plans/:planId rehydration. Each entry is
+  // the full ResolvedSkillCapabilityProfile so a subsequent /solve can be
+  // launched with the proposal pre-accepted.
+  const planCache = new Map<string, ResolvedSkillCapabilityProfile>();
+
+  // POST /api/actions/:id/plan — Planner-only, returns proposal + planId
+  app.post('/api/actions/:id/plan', async (req, res) => {
+    try {
+      const actions = await opts.storage.loadActionItems();
+      const action = actions.find((a) => a.id === req.params.id || a.id.startsWith(req.params.id));
+      if (!action) {
+        res.status(404).json({ error: 'Action not found' });
+        return;
+      }
+      const settings = await opts.storage.loadSettings();
+      const body = (req.body ?? {}) as {
+        plannerTier?: 'minimal' | 'standard' | 'maximalist';
+        plannerNoWeb?: boolean;
+        plannerNoPcScan?: boolean;
+        plannerNoWiki?: boolean;
+      };
+      const discussion = action.discussionId ? await opts.storage.loadDiscussionById(action.discussionId) : null;
+      const planId = generateUUID();
+      broadcast({ type: 'planner_started', planId, actionItemId: action.id });
+
+      // Run asynchronously — return planId immediately, push events via WS.
+      (async () => {
+        try {
+          const result = await runSolve({
+            workspace: resolveWorkspace(),
+            settings,
+            storage: opts.storage,
+            action,
+            discussionSummary: discussion?.summary,
+            plannerTierCap: body.plannerTier,
+            skipPcScan: body.plannerNoPcScan,
+            skipWiki: body.plannerNoWiki,
+            skipWeb: body.plannerNoWeb,
+            planOnly: true,
+            yes: true,
+            projectRoot: process.cwd(),
+            runId: planId,
+            onEvent: (evt) => broadcast(coerceSolveEventForWs(evt, planId)),
+          });
+          planCache.set(planId, result.capabilityProfile);
+          broadcast({ type: 'planner_proposal_ready', planId, proposal: result.proposal });
+        } catch (err) {
+          broadcast({ type: 'planner_failed', planId, reason: 'error', errorMessage: err instanceof Error ? err.message : String(err) });
+        }
+      })();
+
+      res.status(202).json({ planId, status: 'running' });
+    } catch (err) {
+      sendError(res, 500, err);
+    }
+  });
+
+  // GET /api/plans/:planId — return the cached profile (?as=md → proposal markdown)
+  app.get('/api/plans/:planId', (req, res) => {
+    const profile = planCache.get(req.params.planId);
+    if (!profile) {
+      res.status(404).json({ error: 'Plan not found in cache (server restarted, or never created).' });
+      return;
+    }
+    if ((req.query.as ?? '') === 'md') {
+      res.type('text/markdown').send(renderProposalMarkdown(profile.proposal));
+      return;
+    }
+    res.json({ planId: req.params.planId, profile });
+  });
+
+  // POST /api/plans/:planId/replan — re-plan with user feedback (re-uses recon)
+  app.post('/api/plans/:planId/replan', async (req, res) => {
+    try {
+      const existing = planCache.get(req.params.planId);
+      if (!existing) {
+        res.status(404).json({ error: 'Original plan not found in cache.' });
+        return;
+      }
+      const body = (req.body ?? {}) as { feedback?: string };
+      const feedback = (body.feedback ?? '').trim();
+      if (feedback.length < 10) {
+        res.status(400).json({ error: 'feedback must be at least 10 characters.' });
+        return;
+      }
+      // Replan via the planner module directly (cheaper — recon is reused).
+      const { runPlanner } = await import('../core/skill/planner.js');
+      const actions = await opts.storage.loadActionItems();
+      // The original action id is embedded — surface it via the action that matches the recon's apps
+      // (best-effort: when there's only one action with discussionId set, prefer it). We require the
+      // client to pass the actionId for safety.
+      const actionId = (body as { actionId?: string }).actionId;
+      const action = actionId ? actions.find((a) => a.id === actionId || a.id.startsWith(actionId)) : null;
+      if (!action) {
+        res.status(400).json({ error: 'actionId is required in the replan body.' });
+        return;
+      }
+      const settings = await opts.storage.loadSettings();
+      const discussion = action.discussionId ? await opts.storage.loadDiscussionById(action.discussionId) : null;
+      const planId = generateUUID();
+      res.status(202).json({ planId, status: 'running' });
+      (async () => {
+        try {
+          const planner = await runPlanner({
+            workspace: resolveWorkspace(),
+            settings,
+            action,
+            discussionSummary: discussion?.summary,
+            recon: existing.recon,
+            userReplanFeedback: feedback,
+          });
+          // Build a fresh profile reusing the same accepted-tier defaults.
+          const next: ResolvedSkillCapabilityProfile = {
+            ...existing,
+            generatedAt: nowIso(),
+            proposal: planner.proposal,
+          };
+          planCache.set(planId, next);
+          broadcast({ type: 'planner_proposal_ready', planId, proposal: planner.proposal });
+        } catch (err) {
+          broadcast({ type: 'planner_failed', planId, reason: 'replan error', errorMessage: err instanceof Error ? err.message : String(err) });
+        }
+      })();
+    } catch (err) {
+      sendError(res, 500, err);
+    }
+  });
+
+  // POST /api/actions/:id/solve — body MAY include { planId, profile, scope, noInstall }
+  app.post('/api/actions/:id/solve', async (req, res) => {
+    try {
+      const actions = await opts.storage.loadActionItems();
+      const action = actions.find((a) => a.id === req.params.id || a.id.startsWith(req.params.id));
+      if (!action) {
+        res.status(404).json({ error: 'Action not found' });
+        return;
+      }
+      const body = (req.body ?? {}) as {
+        planId?: string;
+        scope?: 'project' | 'user';
+        noInstall?: boolean;
+        skillName?: string;
+        stub?: boolean;
+      };
+      const settings = await opts.storage.loadSettings();
+      const discussion = action.discussionId ? await opts.storage.loadDiscussionById(action.discussionId) : null;
+      const runId = generateUUID();
+      const preAcceptedProfile = body.planId ? planCache.get(body.planId) : undefined;
+      res.status(202).json({ runId, status: 'started' });
+
+      (async () => {
+        try {
+          await runSolve({
+            workspace: resolveWorkspace(),
+            settings,
+            storage: opts.storage,
+            action,
+            discussionSummary: discussion?.summary,
+            preAcceptedProfile,
+            yes: true,
+            scope: body.scope ?? 'project',
+            noInstall: body.noInstall,
+            skillName: body.skillName,
+            stub: body.stub,
+            projectRoot: process.cwd(),
+            runId,
+            onEvent: (evt) => broadcast(coerceSolveEventForWs(evt, runId)),
+          });
+        } catch (err) {
+          broadcast({ type: 'skill_run_failed', runId, errorMessage: err instanceof Error ? err.message : String(err) });
+        }
+      })();
+    } catch (err) {
+      sendError(res, 500, err);
+    }
+  });
+
+  // GET /api/actions/:id/runs — list past skill runs for one action
+  app.get('/api/actions/:id/runs', async (req, res) => {
+    try {
+      const actions = await opts.storage.loadActionItems();
+      const action = actions.find((a) => a.id === req.params.id || a.id.startsWith(req.params.id));
+      if (!action) {
+        res.status(404).json({ error: 'Action not found' });
+        return;
+      }
+      const runs = await opts.storage.loadSkillRuns(action.id);
+      res.json({ runs });
+    } catch (err) {
+      sendError(res, 500, err);
+    }
+  });
+
+  // GET /api/skill-runs/:id — single run detail (with embedded planner proposal)
+  app.get('/api/skill-runs/:id', async (req, res) => {
+    try {
+      const run = await opts.storage.getSkillRun(req.params.id);
+      if (!run) {
+        res.status(404).json({ error: 'Skill run not found' });
+        return;
+      }
+      res.json({ run });
+    } catch (err) {
+      sendError(res, 500, err);
+    }
+  });
+
+  // DELETE /api/skill-runs/:id
+  app.delete('/api/skill-runs/:id', async (req, res) => {
+    try {
+      const run = await opts.storage.getSkillRun(req.params.id);
+      if (!run) {
+        res.status(404).json({ error: 'Skill run not found' });
+        return;
+      }
+      await opts.storage.deleteSkillRun(run.id);
+      res.json({ deleted: req.params.id });
+    } catch (err) {
+      sendError(res, 500, err);
+    }
+  });
+
+  // GET /api/recon/environment — fast read-only PC scan (no LLM)
+  app.get('/api/recon/environment', (req, res) => {
+    try {
+      const recon = scanPc({ projectRoot: process.cwd() });
+      res.json({ recon });
+    } catch (err) {
+      sendError(res, 500, err);
+    }
+  });
+
+  // GET /api/skills — installed skills (project + user + plugin scopes)
+  app.get('/api/skills', (req, res) => {
+    try {
+      const skills = listInstalledSkills(process.cwd()).map((sk) => ({
+        name: sk.name,
+        scope: sk.scope,
+        version: sk.version,
+        dir: sk.dir,
+      }));
+      res.json({ skills });
+    } catch (err) {
+      sendError(res, 500, err);
+    }
+  });
+
+  // GET /api/skills/:name — pretty SKILL.md + sidecar
+  app.get('/api/skills/:name', (req, res) => {
+    try {
+      const sk = resolveSkill(req.params.name, { projectRoot: process.cwd() });
+      if (!sk) {
+        res.status(404).json({ error: 'Skill not installed' });
+        return;
+      }
+      const body = readFileSync(sk.path, 'utf8');
+      res.json({ skill: sk, body });
+    } catch (err) {
+      sendError(res, 500, err);
+    }
+  });
+
   // ---------- HTTP + WS upgrade ----------
   const httpServer = http.createServer(app);
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
@@ -2028,6 +2298,49 @@ function sendError(res: Response, status: number, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   logger.warn('[ui] api error', message);
   res.status(status).json({ error: message });
+}
+
+/**
+ * Map a SolveEvent to the wire-shape WS event the GUI expects.
+ * The orchestrator emits coarse SolveEvent objects; the GUI sees fine-grained
+ * planner_* / skill_run_* events. We attach the planId/runId at the source.
+ */
+function coerceSolveEventForWs(evt: SolveEvent, id: string): { type: string; [key: string]: unknown } {
+  const base = { ...evt.payload, runId: id, planId: id };
+  switch (evt.type) {
+    case 'planner_recon_progress':
+      return { type: 'planner_recon_progress', ...base };
+    case 'planner_recon_done':
+      return { type: 'planner_recon_done', ...base };
+    case 'planner_reasoning_started':
+      return { type: 'planner_reasoning_started', ...base };
+    case 'planner_proposal_ready':
+      return { type: 'planner_proposal_ready', ...base };
+    case 'planner_failed':
+      return { type: 'planner_failed', ...base };
+    case 'skill_run_started':
+      return { type: 'skill_run_started', ...base };
+    case 'skill_run_tool_call':
+      return { type: 'skill_run_tool_call', ...base };
+    case 'skill_run_adapter_diff':
+      return { type: 'skill_run_adapter_diff', ...base };
+    case 'skill_run_installed':
+      return { type: 'skill_run_installed', ...base };
+    case 'skill_run_failed':
+      return { type: 'skill_run_failed', ...base };
+    case 'skill_run_cancelled':
+      return { type: 'skill_run_cancelled', ...base };
+    case 'preflight':
+      return { type: 'planner_preflight', ...base };
+    case 'planner_started':
+      return { type: 'planner_started', ...base };
+    case 'skill_run_step':
+      return { type: 'skill_run_step', ...base };
+    case 'review_replan':
+      return { type: 'review_replan', ...base };
+    default:
+      return { type: evt.type, ...base };
+  }
 }
 
 // Keep `Request` import used (ESLint clean)

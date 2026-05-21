@@ -55,6 +55,10 @@
           <span class="nav-icon">📚</span>
           <span>Knowledge</span>
         </button>
+        <button class="nav-item" data-route="skills" data-testid="nav-skills">
+          <span class="nav-icon">🧠</span>
+          <span>Skills</span>
+        </button>
         <button class="nav-item" data-route="settings">
           <span class="nav-icon">⚙️</span>
           <span>Settings</span>
@@ -125,6 +129,81 @@
           <button class="btn-secondary" id="confirm-modal-cancel">Cancel</button>
           <button class="btn-danger" id="confirm-modal-ok">Confirm</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Phase 5 — Planner progress pane -->
+    <div class="modal-backdrop" id="planner-progress-modal" hidden>
+      <div class="modal modal-wide" data-testid="planner-progress-pane">
+        <div class="modal-header">
+          <h2 id="planner-progress-title">Skill Planner</h2>
+          <button class="icon-btn" id="planner-progress-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body" id="planner-progress-body">
+          <div class="planner-phase" data-testid="planner-phase-pc-scan">
+            <span class="planner-phase-label">PC scan</span>
+            <span class="planner-phase-status">queued</span>
+          </div>
+          <div class="planner-phase" data-testid="planner-phase-wiki">
+            <span class="planner-phase-label">Wiki recon</span>
+            <span class="planner-phase-status">queued</span>
+          </div>
+          <div class="planner-phase" data-testid="planner-phase-web">
+            <span class="planner-phase-label">Web research</span>
+            <span class="planner-phase-status">queued</span>
+          </div>
+          <div class="planner-phase" data-testid="planner-phase-reasoning">
+            <span class="planner-phase-label">Reasoning (Opus)</span>
+            <span class="planner-phase-status">queued</span>
+          </div>
+          <div class="planner-stream" id="planner-stream"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Phase 5 — Planner proposal modal -->
+    <div class="modal-backdrop" id="planner-proposal-modal" hidden>
+      <div class="modal modal-wide" data-testid="planner-proposal-modal">
+        <div class="modal-header">
+          <h2 data-testid="proposal-skill-name">Proposal</h2>
+          <button class="icon-btn" id="planner-proposal-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body" id="planner-proposal-body"></div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="proposal-export-btn" data-testid="proposal-export-btn">Export .md</button>
+          <button class="btn-secondary" id="proposal-reject-btn" data-testid="proposal-reject-btn">Reject</button>
+          <button class="btn-secondary" id="proposal-replan-btn" data-testid="proposal-replan-btn">Re-plan…</button>
+          <button class="btn-primary" id="proposal-accept-btn" data-testid="proposal-accept-btn">Accept and run</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Phase 5 — Re-plan feedback modal -->
+    <div class="modal-backdrop" id="replan-feedback-modal" hidden>
+      <div class="modal" data-testid="replan-feedback-modal">
+        <div class="modal-header">
+          <h2>Re-plan with feedback</h2>
+          <button class="icon-btn" id="replan-feedback-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body">
+          <label class="field-label">What did the Planner miss? (≥10 chars)</label>
+          <textarea id="replan-feedback-input" rows="6" data-testid="replan-feedback-input" placeholder="e.g. you missed that I want to publish to LinkedIn after the video is up."></textarea>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="replan-feedback-cancel">Cancel</button>
+          <button class="btn-primary" id="replan-feedback-submit" data-testid="replan-feedback-submit">Re-plan (~$1.74)</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Phase 5 — Run detail view modal -->
+    <div class="modal-backdrop" id="run-detail-modal" hidden>
+      <div class="modal modal-wide" data-testid="run-detail-view">
+        <div class="modal-header">
+          <h2 id="run-detail-title">Skill run</h2>
+          <button class="icon-btn" id="run-detail-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body" id="run-detail-body"></div>
       </div>
     </div>
 

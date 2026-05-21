@@ -63,6 +63,22 @@ export interface RunOptions {
    */
   onEvent?: (event: ClaudeStreamEvent) => void;
   streaming?: boolean;
+  /**
+   * Path to a SKILL.md / system-prompt file to APPEND to the default Claude
+   * Code system prompt. Used by the Phase 5 skill-creator orchestrator:
+   * `--append-system-prompt-file <path>` makes Claude load the file's
+   * contents on top of its default behavior, so we can drive any installed
+   * skill headlessly. Note: this is distinct from `--system-prompt` (which
+   * REPLACES the default).
+   */
+  appendSystemPromptFile?: string;
+  /**
+   * Force a specific output format. Defaults to `json` (or `stream-json`
+   * when an `onEvent` callback is provided). Callers can pass
+   * `'stream-json'` explicitly to capture tool-use events for any kind of
+   * call, not just member responses.
+   */
+  outputFormat?: 'json' | 'stream-json';
 }
 
 /**
@@ -167,10 +183,16 @@ function parseVersion(text: string): string | undefined {
  */
 export async function runClaude(opts: RunOptions): Promise<RunResult> {
   const args: string[] = [];
-  const streaming = opts.streaming !== false && !!opts.onEvent;
+  const wantStreamFormat = opts.outputFormat === 'stream-json' || (opts.streaming !== false && !!opts.onEvent);
+  const streaming = wantStreamFormat;
 
   // sub-agent or fresh session
   if (opts.agent) args.push('--agent', opts.agent);
+
+  // append a system prompt file (used by skill-creator orchestrator)
+  if (opts.appendSystemPromptFile) {
+    args.push('--append-system-prompt-file', opts.appendSystemPromptFile);
+  }
 
   // prompt mode
   args.push('-p', opts.prompt);

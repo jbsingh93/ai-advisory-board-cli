@@ -30,6 +30,7 @@ import { emitMemberAgentFile } from '../agents/emit-member-agent.js';
 import { ResolvedWorkspace } from '../storage/paths.js';
 import { emitWikiSkeleton } from '../core/knowledge/schema-emitter.js';
 import { emitFoamRecommendation } from '../core/knowledge/foam.js';
+import { resolveSkillCreator, skillCreatorInstallHint } from '../core/skill/resolve-skill-creator.js';
 
 export function registerInitCommand(program: Command): void {
   program
@@ -45,6 +46,7 @@ export function registerInitCommand(program: Command): void {
     .option('--no-wiki', 'skip emitting wiki/KNOWLEDGE.md + wiki/index.md + raw/')
     .option('--foam', 'recommend the Foam VS Code extension via .vscode/extensions.json')
     .option('--foam-overwrite', 'overwrite an unparseable .vscode/extensions.json (rare)')
+    .option('--install-skill-creator', 'detect skill-creator (Phase 5 prereq) and print install instructions if missing')
     .action(async (cmdOpts: InitOptions) => {
       await runInit(cmdOpts);
     });
@@ -61,6 +63,7 @@ interface InitOptions {
   wiki?: boolean;
   foam?: boolean;
   foamOverwrite?: boolean;
+  installSkillCreator?: boolean;
 }
 
 async function runInit(opts: InitOptions): Promise<void> {
@@ -217,6 +220,22 @@ async function runInit(opts: InitOptions): Promise<void> {
     } else {
       process.stdout.write(`${c.hint('—')} Foam: ${result.reason}\n`);
     }
+  }
+
+  // 9. skill-creator detection (Phase 5 prerequisite)
+  const projectRootForSkills = opts.agentsDir ?? process.cwd();
+  const resolved = resolveSkillCreator({ projectRoot: projectRootForSkills });
+  if (resolved) {
+    process.stdout.write(
+      `${c.ok('✓')} skill-creator detected ${c.hint('(' + resolved.scope + ' scope: ' + resolved.dir + (resolved.version ? '; v' + resolved.version : '') + ')')}\n`,
+    );
+  } else if (opts.installSkillCreator) {
+    process.stdout.write(`${c.warn('!')} skill-creator skill not found.\n`);
+    process.stdout.write(c.hint(skillCreatorInstallHint().split('\n').map((l) => '  ' + l).join('\n')) + '\n');
+  } else {
+    process.stdout.write(
+      `${c.hint('—')} skill-creator skill not found ${c.hint('(install with `aab init --install-skill-creator` when ready to use `aab actions solve`)')}\n`,
+    );
   }
 
   // Next steps

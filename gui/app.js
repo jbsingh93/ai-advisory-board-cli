@@ -183,6 +183,12 @@ function handleWsMessage(msg) {
     refreshState({ silent: true }).then(() => {
       if (state.route === 'actions') navigate('actions');
     });
+  } else if (
+    typeof msg.type === 'string' &&
+    (msg.type.startsWith('planner_') || msg.type.startsWith('skill_run_'))
+  ) {
+    // Phase 5 — Skill Planner + skill-creator orchestration events.
+    window.dispatchEvent(new CustomEvent('aab-planner-event', { detail: msg }));
   }
 }
 
@@ -207,6 +213,7 @@ function navigate(route) {
   else if (route === 'principles') renderPrinciplesView(main);
   else if (route === 'knowledge') renderKnowledgeView(main);
   else if (route === 'coach') renderCoachView(main);
+  else if (route === 'skills') renderSkillsView(main);
   else if (route === 'settings') renderSettingsView(main);
 }
 
@@ -1342,6 +1349,25 @@ function actionCard(a) {
   if (a.linkedSkill) {
     card.appendChild(h('div', { class: 'message-meta' }, `🧠 skill: ${a.linkedSkill.name}`));
   }
+  // Phase 5 — Plan + Solve buttons (visible on every action card).
+  const actionsRow = h('div', { class: 'kanban-card-actions' });
+  const planBtn = h('button', {
+    class: 'kanban-card-action btn-secondary',
+    'data-testid': 'plan-btn',
+    'data-action-id': a.id,
+    type: 'button',
+  }, '🔭 Plan');
+  planBtn.addEventListener('click', (ev) => { ev.stopPropagation(); launchSkillPlan(a); });
+  const solveBtn = h('button', {
+    class: 'kanban-card-action btn-primary',
+    'data-testid': 'solve-btn',
+    'data-action-id': a.id,
+    type: 'button',
+  }, '⚡ Solve');
+  solveBtn.addEventListener('click', (ev) => { ev.stopPropagation(); launchSkillSolve(a); });
+  actionsRow.appendChild(planBtn);
+  actionsRow.appendChild(solveBtn);
+  card.appendChild(actionsRow);
   card.addEventListener('click', (ev) => {
     if (ev.target.closest('.kanban-card-action')) return;
     openActionEditModal(a);
@@ -3771,6 +3797,391 @@ window.addEventListener('aab-sparring-event', (ev) => {
     closeSparringPanel();
   }
 });
+
+// ------------------------------------------------------------------
+// Phase 5 — Skill Planner + skill-creator orchestration (client-side)
+// ------------------------------------------------------------------
+
+const plannerState = {
+  planId: null,
+  runId: null,
+  action: null,
+  proposal: null, // SkillDesignProposal
+  phases: { 'pc-scan': 'queued', 'wiki': 'queued', 'web': 'queued', 'reasoning': 'queued' },
+  stream: [],
+};
+
+function launchSkillPlan(action) {
+  resetPlannerState(action);
+  showPlannerProgress();
+  fetchJSON(`/api/actions/${action.id}/plan`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ plannerTier: 'maximalist' }),
+  }).then((res) => {
+    plannerState.planId = res.planId;
+  }).catch((err) => {
+    toast('Plan failed: ' + err.message, 'err');
+    hidePlannerProgress();
+  });
+}
+
+function launchSkillSolve(action) {
+  // Two-step UX: open Plan first; let the user accept; the Accept handler kicks off /solve.
+  launchSkillPlan(action);
+}
+
+function resetPlannerState(action) {
+  plannerState.planId = null;
+  plannerState.runId = null;
+  plannerState.action = action;
+  plannerState.proposal = null;
+  plannerState.phases = { 'pc-scan': 'queued', 'wiki': 'queued', 'web': 'queued', 'reasoning': 'queued' };
+  plannerState.stream = [];
+}
+
+function showPlannerProgress() {
+  const m = document.getElementById('planner-progress-modal');
+  m.hidden = false;
+  document.getElementById('planner-progress-title').textContent =
+    'Skill Planner — ' + (plannerState.action?.title ?? '');
+  paintPlannerPhases();
+}
+
+function hidePlannerProgress() {
+  document.getElementById('planner-progress-modal').hidden = true;
+}
+
+function paintPlannerPhases() {
+  const phases = document.querySelectorAll('#planner-progress-body .planner-phase');
+  const keys = ['pc-scan', 'wiki', 'web', 'reasoning'];
+  phases.forEach((node, i) => {
+    const key = keys[i];
+    const status = plannerState.phases[key] ?? 'queued';
+    node.dataset.status = status;
+    const statusNode = node.querySelector('.planner-phase-status');
+    if (statusNode) statusNode.textContent = status;
+  });
+  const stream = document.getElementById('planner-stream');
+  if (stream) {
+    stream.innerHTML = '';
+    for (const line of plannerState.stream.slice(-20)) {
+      const row = document.createElement('div');
+      row.className = 'planner-stream-row';
+      row.textContent = line;
+      stream.appendChild(row);
+    }
+  }
+}
+
+function showProposalModal(proposal) {
+  plannerState.proposal = proposal;
+  const m = document.getElementById('planner-proposal-modal');
+  m.hidden = false;
+  const title = m.querySelector('[data-testid="proposal-skill-name"]');
+  if (title) title.textContent = 'Proposal: ' + proposal.skillName;
+  const body = document.getElementById('planner-proposal-body');
+  body.innerHTML = '';
+  body.appendChild(renderProposalContent(proposal));
+}
+
+function hideProposalModal() {
+  document.getElementById('planner-proposal-modal').hidden = true;
+}
+
+function renderProposalContent(proposal) {
+  const wrap = document.createElement('div');
+  wrap.className = 'planner-proposal';
+
+  const summary = document.createElement('p');
+  summary.innerHTML = `<strong>${escapeHtml(proposal.skillSummary)}</strong>`;
+  wrap.appendChild(summary);
+
+  // Tier radio
+  const tierRow = document.createElement('div');
+  tierRow.className = 'planner-tier-row';
+  tierRow.dataset.testid = 'proposal-tier-radio';
+  for (const t of ['minimal', 'standard', 'maximalist']) {
+    const label = document.createElement('label');
+    label.className = 'planner-tier-label';
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'planner-tier';
+    radio.value = t;
+    if (t === (proposal.recommendedTier === 'custom' ? 'maximalist' : proposal.recommendedTier)) radio.checked = true;
+    label.appendChild(radio);
+    label.appendChild(document.createTextNode(' ' + t));
+    tierRow.appendChild(label);
+  }
+  wrap.appendChild(tierRow);
+
+  // Value rationale
+  if (proposal.valueRationale) {
+    const r = document.createElement('p');
+    r.className = 'planner-rationale';
+    r.textContent = proposal.valueRationale;
+    wrap.appendChild(r);
+  }
+
+  // Integrations table
+  const intTitle = document.createElement('h3');
+  intTitle.textContent = `Integrations (${proposal.integrations.length})`;
+  wrap.appendChild(intTitle);
+  for (const integration of proposal.integrations) {
+    const row = document.createElement('div');
+    row.className = 'planner-integration-row';
+    row.dataset.testid = 'proposal-integration-row';
+    row.dataset.integrationId = integration.id;
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    toggle.checked = true;
+    toggle.dataset.testid = 'proposal-integration-toggle';
+    toggle.dataset.integrationId = integration.id;
+    const label = document.createElement('span');
+    label.innerHTML = `<strong>${escapeHtml(integration.name)}</strong> ` +
+      `<span class="planner-kind">${escapeHtml(integration.invocationHint?.kind ?? '?')}</span>` +
+      (integration.purpose ? ` — ${escapeHtml(integration.purpose)}` : '');
+    row.appendChild(toggle);
+    row.appendChild(label);
+    wrap.appendChild(row);
+  }
+
+  // Stakeholders
+  const stakeholders = proposal.stakeholderTouchpoints ?? [];
+  if (stakeholders.length > 0) {
+    const sh = document.createElement('h3');
+    sh.textContent = 'Stakeholders';
+    wrap.appendChild(sh);
+    for (const s of stakeholders) {
+      const row = document.createElement('div');
+      row.className = 'planner-stakeholder-row';
+      row.dataset.testid = 'proposal-stakeholder-row';
+      const toggle = document.createElement('input');
+      toggle.type = 'checkbox';
+      toggle.checked = true;
+      toggle.dataset.stakeholderName = s.name;
+      const label = document.createElement('span');
+      label.innerHTML = `<strong>${escapeHtml(s.name)}</strong> (${escapeHtml(s.role ?? '?')}) — ${escapeHtml(s.touchpointKind ?? 'other')}, produces: ${escapeHtml(s.produces ?? '?')}`;
+      row.appendChild(toggle);
+      row.appendChild(label);
+      wrap.appendChild(row);
+    }
+  }
+
+  // Narrative editor
+  const ne = document.createElement('div');
+  ne.style.marginTop = '12px';
+  const neLabel = document.createElement('label');
+  neLabel.className = 'field-label';
+  neLabel.textContent = 'Narrative edits (optional)';
+  ne.appendChild(neLabel);
+  const neTextarea = document.createElement('textarea');
+  neTextarea.dataset.testid = 'proposal-narrative-editor';
+  neTextarea.id = 'proposal-narrative-editor';
+  neTextarea.rows = 4;
+  ne.appendChild(neTextarea);
+  wrap.appendChild(ne);
+
+  // Cost line
+  if (typeof proposal.estimatedCostUsd === 'number') {
+    const cost = document.createElement('p');
+    cost.className = 'planner-cost';
+    cost.textContent = `Estimated cost: $${proposal.estimatedCostUsd.toFixed(2)} · ~${Math.round(proposal.estimatedDurationMinutes ?? 0)} min`;
+    wrap.appendChild(cost);
+  }
+
+  return wrap;
+}
+
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Wire planner modal buttons (once at boot).
+window.addEventListener('DOMContentLoaded', () => {
+  const close = document.getElementById('planner-progress-close');
+  if (close) close.addEventListener('click', hidePlannerProgress);
+  const pclose = document.getElementById('planner-proposal-close');
+  if (pclose) pclose.addEventListener('click', hideProposalModal);
+  const reject = document.getElementById('proposal-reject-btn');
+  if (reject) reject.addEventListener('click', hideProposalModal);
+  const accept = document.getElementById('proposal-accept-btn');
+  if (accept) accept.addEventListener('click', acceptProposalAndSolve);
+  const exportBtn = document.getElementById('proposal-export-btn');
+  if (exportBtn) exportBtn.addEventListener('click', exportProposalMarkdown);
+  const replan = document.getElementById('proposal-replan-btn');
+  if (replan) replan.addEventListener('click', () => {
+    document.getElementById('replan-feedback-modal').hidden = false;
+  });
+  const replanCancel = document.getElementById('replan-feedback-cancel');
+  if (replanCancel) replanCancel.addEventListener('click', () => {
+    document.getElementById('replan-feedback-modal').hidden = true;
+  });
+  const replanClose = document.getElementById('replan-feedback-close');
+  if (replanClose) replanClose.addEventListener('click', () => {
+    document.getElementById('replan-feedback-modal').hidden = true;
+  });
+  const replanSubmit = document.getElementById('replan-feedback-submit');
+  if (replanSubmit) replanSubmit.addEventListener('click', submitReplan);
+  const runDetailClose = document.getElementById('run-detail-close');
+  if (runDetailClose) runDetailClose.addEventListener('click', () => {
+    document.getElementById('run-detail-modal').hidden = true;
+  });
+});
+
+function acceptProposalAndSolve() {
+  if (!plannerState.action || !plannerState.planId || !plannerState.proposal) return;
+  hideProposalModal();
+  toast('Starting skill-creator…', 'ok');
+  fetchJSON(`/api/actions/${plannerState.action.id}/solve`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ planId: plannerState.planId }),
+  }).then((res) => {
+    plannerState.runId = res.runId;
+  }).catch((err) => {
+    toast('Solve failed: ' + err.message, 'err');
+  });
+}
+
+function exportProposalMarkdown() {
+  if (!plannerState.planId) return;
+  window.open(`/api/plans/${plannerState.planId}?as=md`, '_blank');
+}
+
+function submitReplan() {
+  const input = document.getElementById('replan-feedback-input');
+  const feedback = (input.value || '').trim();
+  if (feedback.length < 10) {
+    toast('Feedback must be at least 10 characters.', 'err');
+    return;
+  }
+  if (!plannerState.planId || !plannerState.action) return;
+  document.getElementById('replan-feedback-modal').hidden = true;
+  toast('Re-planning with feedback…', 'ok');
+  fetchJSON(`/api/plans/${plannerState.planId}/replan`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ feedback, actionId: plannerState.action.id }),
+  }).then((res) => {
+    plannerState.planId = res.planId;
+    plannerState.phases.reasoning = 'running';
+    paintPlannerPhases();
+    showPlannerProgress();
+  }).catch((err) => {
+    toast('Re-plan failed: ' + err.message, 'err');
+  });
+}
+
+window.addEventListener('aab-planner-event', (ev) => {
+  const d = ev.detail;
+  if (d.type === 'planner_recon_progress') {
+    const phase = d.phase ?? d.payload?.phase;
+    if (phase === 'pc-scan') plannerState.phases['pc-scan'] = 'done';
+    if (phase === 'wiki-recon') plannerState.phases['wiki'] = 'done';
+    if (phase === 'web-research') plannerState.phases['web'] = 'done';
+    if (d.summary) plannerState.stream.push(`${phase}: ${d.summary}`);
+    paintPlannerPhases();
+  } else if (d.type === 'planner_recon_done') {
+    plannerState.phases['pc-scan'] = 'done';
+    plannerState.phases['wiki'] = 'done';
+    plannerState.phases['web'] = 'done';
+    plannerState.phases['reasoning'] = 'running';
+    paintPlannerPhases();
+  } else if (d.type === 'planner_reasoning_started') {
+    plannerState.phases['reasoning'] = 'running';
+    paintPlannerPhases();
+  } else if (d.type === 'planner_proposal_ready') {
+    plannerState.phases['reasoning'] = 'done';
+    paintPlannerPhases();
+    hidePlannerProgress();
+    if (d.proposal) showProposalModal(d.proposal);
+  } else if (d.type === 'planner_failed') {
+    toast('Planner failed: ' + (d.errorMessage ?? 'unknown'), 'err');
+    hidePlannerProgress();
+  } else if (d.type === 'skill_run_started') {
+    toast('skill-creator authoring…', 'ok');
+  } else if (d.type === 'skill_run_tool_call') {
+    plannerState.stream.push(`tool: ${d.tool ?? '?'}`);
+    paintPlannerPhases();
+  } else if (d.type === 'skill_run_installed') {
+    toast('Skill installed at ' + (d.installPath ?? '?'), 'ok');
+    refreshState({ silent: true }).then(() => { if (state.route === 'actions') navigate('actions'); });
+  } else if (d.type === 'skill_run_failed') {
+    toast('skill-creator failed: ' + (d.errorMessage ?? 'unknown'), 'err');
+  }
+});
+
+// ------------------------------------------------------------------
+// Phase 5 — Skills tab
+// ------------------------------------------------------------------
+
+function renderSkillsView(main) {
+  main.innerHTML = '';
+  const header = h('div', { class: 'view-header' }, [
+    h('h1', {}, 'Skills'),
+    h('p', { class: 'view-sub' }, 'Installed Claude Code skills — project + user + plugin scope.'),
+  ]);
+  main.appendChild(header);
+  const body = h('div', { class: 'skills-view', 'data-testid': 'skills-tab' });
+  main.appendChild(body);
+  fetchJSON('/api/skills').then((res) => {
+    if (!res.skills || res.skills.length === 0) {
+      body.innerHTML = '<p class="view-empty">No installed skills yet. Run <code>aab actions solve &lt;id&gt;</code> to ship one.</p>';
+      return;
+    }
+    const list = h('div', { class: 'skills-list', 'data-testid': 'skills-list' });
+    for (const s of res.skills) {
+      const row = h('div', { class: 'skills-row', 'data-skill-name': s.name });
+      row.appendChild(h('div', { class: 'skills-name' }, [
+        h('strong', {}, s.name),
+        h('span', { class: 'skills-scope' }, ` (${s.scope}${s.version ? '; v' + s.version : ''})`),
+      ]));
+      row.appendChild(h('div', { class: 'skills-dir' }, s.dir));
+      const actions = h('div', { class: 'skills-actions' });
+      const showBtn = h('button', { class: 'btn-secondary', 'data-testid': 'skill-show-btn' }, '👁 Show');
+      showBtn.addEventListener('click', () => showSkillDetail(s.name));
+      const testBtn = h('button', { class: 'btn-secondary', 'data-testid': 'skill-test-btn' }, '🧪 Test');
+      testBtn.addEventListener('click', () => {
+        const input = prompt(`Test ${s.name} — what prompt should we send?`, `Activate ${s.name}.`);
+        if (input) testSkill(s.name, input);
+      });
+      actions.appendChild(showBtn);
+      actions.appendChild(testBtn);
+      row.appendChild(actions);
+      list.appendChild(row);
+    }
+    body.appendChild(list);
+  }).catch((err) => {
+    body.innerHTML = '<p class="view-empty">Failed to load skills: ' + escapeHtml(err.message) + '</p>';
+  });
+}
+
+function showSkillDetail(name) {
+  fetchJSON(`/api/skills/${encodeURIComponent(name)}`).then((res) => {
+    const modal = document.getElementById('run-detail-modal');
+    document.getElementById('run-detail-title').textContent = `Skill — ${name}`;
+    const body = document.getElementById('run-detail-body');
+    body.innerHTML = '';
+    const pre = document.createElement('pre');
+    pre.className = 'skill-detail-body';
+    pre.textContent = res.body;
+    body.appendChild(pre);
+    modal.hidden = false;
+  }).catch((err) => toast('Show failed: ' + err.message, 'err'));
+}
+
+function testSkill(name, input) {
+  toast(`Testing skill ${name} (this may take a minute)…`, 'ok');
+  // We surface the test via a CLI call from the user's terminal — the GUI
+  // shows a copy-able command for now (live in-browser execution is gated
+  // behind a longer-running endpoint we'll add later).
+  navigator.clipboard?.writeText(`aab skills test ${name} "${input.replace(/"/g, '\\"')}"`).then(
+    () => toast('Copied `aab skills test` command to clipboard', 'ok'),
+    () => toast('Run: aab skills test ' + name + ' "' + input + '"', 'ok'),
+  );
+}
 
 // ------------------------------------------------------------------
 // Go

@@ -18,6 +18,9 @@ import { detectClaudeCli } from '../llm/claude-code-runner.js';
 import { paths } from '../storage/paths.js';
 import { memberAgentPath, memberAgentSlug } from '../agents/emit-member-agent.js';
 import { foamAlreadyRecommended } from '../core/knowledge/foam.js';
+import { resolveSkillCreator } from '../core/skill/resolve-skill-creator.js';
+import { quickPcScanProbe } from '../core/skill/recon/pc-scan.js';
+import { probeWebReachability } from '../core/skill/recon/web-probe.js';
 
 interface CheckResult {
   label: string;
@@ -131,6 +134,36 @@ export function registerDoctorCommand(program: Command): void {
           detail: wikiPresent
             ? `present at ${wikiPaths.wiki}`
             : 're-run `aab init` to bootstrap wiki/ + raw/ + .manifest.json',
+        });
+
+        // skill-creator (Phase 5 prerequisite — info-level unless solve is attempted)
+        const skillCreator = resolveSkillCreator({ projectRoot });
+        checks.push({
+          label: 'skill-creator skill',
+          ok: true,
+          detail: skillCreator
+            ? `installed (${skillCreator.scope} scope${skillCreator.version ? '; v' + skillCreator.version : ''})`
+            : 'not installed — run `aab init --install-skill-creator` before `aab actions solve`',
+        });
+
+        // PC scan probe — fast, deterministic, never hits network.
+        const pcProbe = quickPcScanProbe();
+        checks.push({
+          label: 'PC scan probe',
+          ok: pcProbe.ok,
+          detail: pcProbe.ok
+            ? `${pcProbe.platform} — ${pcProbe.cliTools} CLI tool(s), ${pcProbe.envVarMatches} env var(s) flagged`
+            : pcProbe.error ?? 'unknown error',
+        });
+
+        // Web reachability probe — quick HEAD against anthropic.com; ≤1.5s budget.
+        const web = await probeWebReachability({ timeoutMs: 1500 });
+        checks.push({
+          label: 'Web reachability',
+          ok: true,
+          detail: web.reachable
+            ? `${web.host} reachable (${web.latencyMs}ms)`
+            : `${web.host}: ${web.reason ?? 'unreachable'} — web recon will be degraded`,
         });
 
         // Foam recommendation (info-only — never fails doctor)

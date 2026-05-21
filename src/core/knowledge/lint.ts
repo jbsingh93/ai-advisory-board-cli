@@ -1,7 +1,7 @@
 /**
  * Wiki lint — static checks + maintenance writes (slug-map rebuild,
  * backlinks regeneration), plus optional LLM passes (contradictions, stale
- * claims, missing concepts). Reference: `PLAN/KNOWLEDGE_WIKI.md` §15.3.
+ * claims, missing concepts). Reference: `docs/development/KNOWLEDGE_WIKI.md` §15.3.
  */
 import {
   existsSync,

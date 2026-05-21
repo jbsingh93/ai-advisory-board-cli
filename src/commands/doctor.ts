@@ -10,7 +10,9 @@
  *   - .claude/agents/<member>.md present for each active member
  */
 import { Command } from 'commander';
-import { accessSync, constants, existsSync, readFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { closeContext, openContext } from './_context.js';
 import { c, brand } from '../ui/colors.js';
 import { detectClaudeCode } from '../env/detect-claude-code.js';
@@ -165,6 +167,48 @@ export function registerDoctorCommand(program: Command): void {
             ? `${web.host} reachable (${web.latencyMs}ms)`
             : `${web.host}: ${web.reason ?? 'unreachable'} — web recon will be degraded`,
         });
+
+        // Playwright MCP (UI test surface) — Phase 6.6 prerequisites.
+        // `.mcp.json` exists but `node_modules/@playwright/mcp/cli.js` does
+        // not → teammate forgot `npm install`. Warning, not failure.
+        const mcpConfig = join(projectRoot, '.mcp.json');
+        const mcpCli = join(projectRoot, 'node_modules', '@playwright', 'mcp', 'cli.js');
+        if (existsSync(mcpConfig)) {
+          checks.push({
+            label: 'Playwright MCP install',
+            ok: existsSync(mcpCli),
+            detail: existsSync(mcpCli)
+              ? '@playwright/mcp installed'
+              : '`.mcp.json` present but `node_modules/@playwright/mcp/cli.js` missing — run `npm install`',
+          });
+
+          // Browser binaries cache check — only relevant if @playwright/mcp
+          // is installed. Empty `~/.cache/ms-playwright/` → teammate forgot
+          // `npx playwright install`.
+          if (existsSync(mcpCli)) {
+            const cacheDir =
+              process.platform === 'win32'
+                ? join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'ms-playwright')
+                : process.platform === 'darwin'
+                  ? join(homedir(), 'Library', 'Caches', 'ms-playwright')
+                  : join(homedir(), '.cache', 'ms-playwright');
+            let browsersOk = false;
+            try {
+              if (existsSync(cacheDir) && statSync(cacheDir).isDirectory()) {
+                browsersOk = readdirSync(cacheDir).length > 0;
+              }
+            } catch {
+              browsersOk = false;
+            }
+            checks.push({
+              label: 'Playwright browsers',
+              ok: browsersOk,
+              detail: browsersOk
+                ? `cached at ${cacheDir}`
+                : `${cacheDir} is empty — run \`npx playwright install\` (≈500MB)`,
+            });
+          }
+        }
 
         // Foam recommendation (info-only — never fails doctor)
         const settings = await ctx.storage.loadSettings();

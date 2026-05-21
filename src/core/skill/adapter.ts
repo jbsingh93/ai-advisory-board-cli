@@ -1,5 +1,5 @@
 /**
- * Adapter pass — Phase 5 Chunk 4. Per PLAN/SKILL_CREATOR.md §9.
+ * Adapter pass — Phase 5 Chunk 4. Per docs/development/SKILL_CREATOR.md §9.
  *
  * Normalizes skill-creator's emitted SKILL.md frontmatter against the
  * current Claude Code spec. Defense-in-depth: skill-creator usually emits

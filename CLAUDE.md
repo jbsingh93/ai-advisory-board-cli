@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-`aabclitool` (binary: `aab`) — a Node 20+ TypeScript **CLI port + improvement** of the React/Gemini/Supabase app at `C:\Users\julia\Downloads\kode\sage-council`. Same product (multi-agent advisory board, sparring, action board, decision coach, principle explorer), different surface: terminal + local web dashboard instead of a hosted SPA, Claude sub-agents instead of Gemini, Claude Code skills instead of Supabase edge functions, local filesystem instead of Postgres.
+`ai-advisory-board` (binary: `aab`) — a Node 20+ TypeScript **CLI port + improvement** of the React/Gemini/Supabase app at `C:\Users\julia\Downloads\kode\sage-council`. Same product (multi-agent advisory board, sparring, action board, decision coach, principle explorer), different surface: terminal + local web dashboard instead of a hosted SPA, Claude sub-agents instead of Gemini, Claude Code skills instead of Supabase edge functions, local filesystem instead of Postgres.
 
 Convenes a panel of Claude sub-agents on a business question. Each "board member" is a real Claude Code sub-agent file at `.claude/agents/<slug>.md`. The CLI does **not** use the Anthropic SDK; it shells out to the local `claude` binary (`src/llm/claude-code-runner.ts`), so the user's Claude Max/Pro subscription is the LLM — no API key, no extra cost.
 
@@ -21,10 +21,10 @@ When porting or adding features, treat the sage-council source as the authoritat
 **Deliberate deltas from sage-council** (don't "fix" these back to match the original):
 - Storage: single `FsStorageService` interface, no Supabase / no demo-localStorage split.
 - LLM: one model path (Claude via `claude` CLI), not Gemini + storageType-conditional API key resolution.
-- Action board: scoped down per `PLAN/PLAN.md` Part 6 — kanban + skill-only solve (no full ZIP packager, no plan-edit service in v1).
+- Action board: scoped down per `docs/development/PLAN.md` Part 6 — kanban + skill-only solve (no full ZIP packager, no plan-edit service in v1).
 - Auth: none. Local-only by design.
 
-Source-of-truth design docs live in `PLAN/PLAN.md` (long-form, includes the sage-council source-tree map and the port plan) and `PLAN/CHECKLIST.md` (live status). `README.md` is the user-facing surface. `CHANGELOG.md` is the dated narrative log.
+Source-of-truth design docs live in `docs/development/PLAN.md` (long-form, includes the sage-council source-tree map and the port plan) and `docs/development/CHECKLIST.md` (live status). `README.md` is the user-facing surface. `CHANGELOG.md` is the dated narrative log.
 
 ## Common commands
 
@@ -46,11 +46,11 @@ Note: there are currently no test files (`*.test.ts` / `*.spec.ts`) checked in �
 
 ## Verification — live smoke is mandatory
 
-Typecheck + build is necessary but **not sufficient**. After every meaningful change to `src/`, run a live smoke against the real `aab` binary against real Claude calls. See **`PLAN/SMOKE_TESTING.md`** (authoritative reference, mirrors `PLAN/PLAYWRIGHT_MCP.md` for the UI side).
+Typecheck + build is necessary but **not sufficient**. After every meaningful change to `src/`, run a live smoke against the real `aab` binary against real Claude calls. See **`docs/development/SMOKE_TESTING.md`** (authoritative reference, mirrors `docs/development/PLAYWRIGHT_MCP.md` for the UI side).
 
 The non-negotiable rules:
 - **CLI changes** → run a live CLI smoke from the external test folder at `C:\Users\julia\Downloads\kode\ai-advisoryboardclitestfolder` (Windows) / `~/aab-smoke/` (macOS+Linux). **Never smoke from the project root** — it pollutes the source tree with `.claude/agents/<slug>.md` files, triggers project-mount detection that hijacks the next invocation, and contends for the workspace mutex with your dev workspace.
-- **UI changes** (anything in `gui/` or `src/gui/server.ts`) → run a Playwright MCP smoke (`PLAN/PLAYWRIGHT_MCP.md`).
+- **UI changes** (anything in `gui/` or `src/gui/server.ts`) → run a Playwright MCP smoke (`docs/development/PLAYWRIGHT_MCP.md`).
 - **Invocation**: `cd <test-folder>; node <projectRoot>/dist/bin/aab.js <args>`. Bootstrap once with `aab init --non-interactive --home --name smoke-<yyyy-mm-dd>` so the workspace lands under `~/.aabcli/<slug>/` (isolated, disposable). The test folder gets only `.claude/agents/*.md` written to it.
 - **PowerShell prompt quoting**: single-quote prompts that contain `$` (e.g. `'Should we ship the $50k pivot?'`). Double quotes expand `$50` as a variable.
 - **The reference smoke catches**: silent `cmd.exe` newline truncation on `.cmd` shims (commit `80f07ab`), Haiku ellipsis-cutoff prompt fragility, fallback-decision orchestrator failures, malformed JSON contracts. Typecheck catches none of these.

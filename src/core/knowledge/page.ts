@@ -2,7 +2,7 @@
  * Wiki page primitives — frontmatter parse/serialize, slug helpers,
  * `[[wikilink]]` extraction, and humanization rules.
  *
- * Frontmatter contract: `PLAN/KNOWLEDGE_WIKI.md` §8.
+ * Frontmatter contract: `docs/development/KNOWLEDGE_WIKI.md` §8.
  * Wiki-link syntax: §11.
  * File-naming rules: §10.
  */

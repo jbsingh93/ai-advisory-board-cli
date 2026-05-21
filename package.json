@@ -1,5 +1,5 @@
 {
-  "name": "aabclitool",
+  "name": "ai-advisory-board",
   "version": "0.1.0",
   "description": "AI Advisory Board CLI — convene a panel of Claude sub-agents on any business question, and turn the resulting action items into installed Claude Code skills.",
   "type": "module",
@@ -10,7 +10,9 @@
     "dist",
     "gui",
     "README.md",
-    "PLAN"
+    "LICENSE",
+    "NOTICE",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=20"
@@ -21,8 +23,14 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:install": "playwright install --with-deps",
     "lint": "eslint .",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "changeset": "changeset",
+    "changeset:version": "changeset version",
+    "changeset:publish": "npm run build && changeset publish"
   },
   "dependencies": {
     "chalk": "^5.3.0",
@@ -37,7 +45,9 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.31.0",
     "@playwright/mcp": "0.0.75",
+    "@playwright/test": "^1.49.0",
     "@types/express": "^5.0.0",
     "@types/node": "^22.5.5",
     "@types/proper-lockfile": "^4.1.4",
@@ -50,10 +60,28 @@
   "keywords": [
     "claude",
     "claude-code",
+    "claude-sub-agents",
     "advisory-board",
+    "multi-agent",
     "agents",
     "skills",
-    "cli"
+    "cli",
+    "decision-making",
+    "kanban"
   ],
-  "license": "MIT"
+  "license": "Apache-2.0",
+  "author": "Julian Bent Singh <dinegenboss@gmail.com> (https://github.com/jbsingh93)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jbsingh93/ai-advisory-board-cli.git"
+  },
+  "homepage": "https://github.com/jbsingh93/ai-advisory-board-cli#readme",
+  "bugs": {
+    "url": "https://github.com/jbsingh93/ai-advisory-board-cli/issues"
+  },
+  "funding": "https://github.com/sponsors/jbsingh93",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
 }

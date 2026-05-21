@@ -3,7 +3,7 @@
  * users who open the workspace in VS Code get a one-click install prompt for
  * `foam.foam-vscode`.
  *
- * Spec: `PLAN/KNOWLEDGE_WIKI.md` §17 ("aab init --foam"). Foam is the
+ * Spec: `docs/development/KNOWLEDGE_WIKI.md` §17 ("aab init --foam"). Foam is the
  * recommended human-side editor — speaks `[[wikilinks]]` natively (Obsidian
  * flavor), gives autocomplete + click navigation + graph view + backlinks
  * panel, MIT-licensed, free. Zero engineering on our side.

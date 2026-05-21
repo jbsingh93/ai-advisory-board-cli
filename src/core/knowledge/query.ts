@@ -1,6 +1,6 @@
 /**
  * Wiki query — one-shot Claude call with Read/Grep/Glob, no writes.
- * Reference: `PLAN/KNOWLEDGE_WIKI.md` §15.2.
+ * Reference: `docs/development/KNOWLEDGE_WIKI.md` §15.2.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';

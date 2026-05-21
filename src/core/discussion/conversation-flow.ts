@@ -253,7 +253,7 @@ async function loadBusinessContextSafe(storage: StorageService): Promise<Busines
  * Auto-ingest a concluded discussion into the Knowledge Wiki. Wrapped in
  * try/catch — a failed ingest never blocks discussion completion. Logs to
  * `wiki/log.md` with `[ingest-failed]` prefix on errors.
- * Reference: `PLAN/KNOWLEDGE_WIKI.md` §16.
+ * Reference: `docs/development/KNOWLEDGE_WIKI.md` §16.
  */
 async function maybeAutoIngestOnConclude(
   discussion: Discussion,
@@ -293,7 +293,7 @@ async function maybeAutoIngestOnConclude(
 /**
  * Auto-ingest a user's HITL response as a paste-style raw input. Same
  * non-blocking semantics as discussion ingest.
- * Reference: `PLAN/KNOWLEDGE_WIKI.md` §16 ("User HITL responses also get
+ * Reference: `docs/development/KNOWLEDGE_WIKI.md` §16 ("User HITL responses also get
  * auto-ingested").
  */
 async function maybeAutoIngestUserResponse(

@@ -1,7 +1,7 @@
 /**
  * Web recon — Phase 5 Skill Planner recon phase 3.
  *
- * Two passes per PLAN/SKILL_CREATOR.md §6.4:
+ * Two passes per docs/development/SKILL_CREATOR.md §6.4:
  *
  *   Pass 1 — General task research. One Sonnet call with WebSearch + WebFetch
  *            (maxTurns: 12). Output: bestPracticePatterns, recommendedTools,

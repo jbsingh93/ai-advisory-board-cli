@@ -1,5 +1,5 @@
 /**
- * Query skill prompt. Reference: `PLAN/KNOWLEDGE_WIKI.md` §15.2.
+ * Query skill prompt. Reference: `docs/development/KNOWLEDGE_WIKI.md` §15.2.
  *
  * Read-only — agent uses Read, Grep, Glob. It MUST cite wiki slugs it
  * actually used and mark inferred claims with `^[inferred]`.

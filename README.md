@@ -5,7 +5,7 @@ Convene a panel of Claude sub-agents on any business question — from your term
 **No API key. No cloud. No extra cost.** The CLI shells out to your local `claude` binary, so it uses the Claude Max/Pro subscription you already have.
 
 ```bash
-npm install -g aabclitool
+npm install -g ai-advisory-board
 cd path/to/your/project
 aab init
 aab discuss start "Should we charge usage-based or per-seat for our new B2B tool?"
@@ -40,14 +40,14 @@ That's it. No `.env` file, no separate setup.
 ## Install
 
 ```bash
-npm install -g aabclitool
+npm install -g ai-advisory-board
 ```
 
 Or, to install from a local checkout:
 
 ```bash
-git clone <this repo>
-cd aabclitool
+git clone https://github.com/jbsingh93/ai-advisory-board-cli
+cd ai-advisory-board-cli
 npm install
 npm run build
 npm link              # exposes `aab` globally
@@ -246,7 +246,7 @@ The same agent files work natively from inside Claude Code itself — say "use t
 
 ## Status
 
-This is a partial, in-progress implementation. The full design is in `PLAN/PLAN.md` (1700+ lines, six parts including two extreme-review addenda). Live progress against deliverables is tracked in `PLAN/CHECKLIST.md`.
+This is a partial, in-progress implementation. The full design is in `docs/development/PLAN.md` (1700+ lines, six parts including two extreme-review addenda). Live progress against deliverables is tracked in `docs/development/CHECKLIST.md`.
 
 **Working today:**
 
@@ -288,7 +288,7 @@ This is a partial, in-progress implementation. The full design is in `PLAN/PLAN.
 
 The CLI is structured around a single `StorageService` interface (filesystem-backed) and a `ClaudeCodeRunner` that shells out to `claude`. Discussions flow through `ConversationFlowManager` → `runMember` (one spawn per member) → `analyzeConversation` (one orchestrator spawn) → persistence. The web UI (`src/gui/server.ts`) is an Express + WebSocket server that calls the same engine and broadcasts progress events to a vanilla-JS frontend in `gui/`.
 
-See `PLAN/PLAN.md` for the full architecture, the multi-phase build plan, and the 27-zod-schema contract surface that every LLM call validates against.
+See `docs/development/PLAN.md` for the full architecture, the multi-phase build plan, and the 27-zod-schema contract surface that every LLM call validates against.
 
 ---
 

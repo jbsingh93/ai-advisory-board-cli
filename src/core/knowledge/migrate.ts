@@ -1,6 +1,6 @@
 /**
  * Migrate `BusinessContext` + `BusinessProfile` JSON into wiki pages.
- * Reference: `PLAN/KNOWLEDGE_WIKI.md` §19. Idempotent. Backs up the old
+ * Reference: `docs/development/KNOWLEDGE_WIKI.md` §19. Idempotent. Backs up the old
  * JSON to `business-context.json.migrated.bak` after success.
  */
 import { existsSync, renameSync, writeFileSync, mkdirSync } from 'node:fs';

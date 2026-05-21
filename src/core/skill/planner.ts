@@ -1,7 +1,7 @@
 /**
  * Skill Planner — Phase 5 reasoning engine (Chunk 3).
  *
- * Per PLAN/SKILL_CREATOR.md §6.5: runs ONE researchModel call (Opus 4.7,
+ * Per docs/development/SKILL_CREATOR.md §6.5: runs ONE researchModel call (Opus 4.7,
  * 1M context) with the four-section input bundle (action + recon triple +
  * settings + optional replan feedback), gets back a `SkillDesignProposal`,
  * validates against schema + semantic gates, and re-runs once with stronger

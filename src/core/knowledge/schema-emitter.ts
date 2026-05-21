@@ -3,7 +3,7 @@
  * (`wiki/index.md` with empty `<!-- AAB:SLUG-MAP -->` sentinels and
  * `wiki/log.md`).
  *
- * Reference: `PLAN/KNOWLEDGE_WIKI.md` §12. Idempotent — `aab init` calls
+ * Reference: `docs/development/KNOWLEDGE_WIKI.md` §12. Idempotent — `aab init` calls
  * `emitWikiSkeleton({ force: false })` so existing files are never
  * overwritten. `aab knowledge migrate --force-schema` is the only path that
  * re-writes `KNOWLEDGE.md`.

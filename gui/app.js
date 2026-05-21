@@ -136,7 +136,7 @@ function handleWsMessage(msg) {
     // Optional: show a system "Orchestrator analyzing..." line
     addSystemLine('Orchestrator analyzing the round…');
   } else if (msg.type === 'orchestrator_decision') {
-    addOrchestratorDecision(msg.decision);
+    addOrchestratorDecision(msg.decision, msg.roundNumber);
   } else if (msg.type === 'discussion_gated') {
     // Pre-round gate fired — no members actually spawned. Clear any
     // optimistic typing bubbles so they don't sit forever.
@@ -214,7 +214,9 @@ function navigate(route) {
   else if (route === 'knowledge') renderKnowledgeView(main);
   else if (route === 'coach') renderCoachView(main);
   else if (route === 'skills') renderSkillsView(main);
+  else if (route === 'usage') renderUsageView(main);
   else if (route === 'settings') renderSettingsView(main);
+  closeSidebar();
 }
 
 // ------------------------------------------------------------------
@@ -231,7 +233,7 @@ function renderDiscussionsView(main) {
       h('div', { class: 'view-subtitle' }, `${state.discussions.length} saved`),
     ]),
   );
-  const newBtn = h('button', { class: 'btn-primary' }, '+ New discussion');
+  const newBtn = h('button', { class: 'btn-primary', 'data-testid': 'new-discussion' }, '+ New discussion');
   newBtn.addEventListener('click', openNewDiscussionModal);
   header.appendChild(newBtn);
   view.appendChild(header);
@@ -241,7 +243,7 @@ function renderDiscussionsView(main) {
   if (state.discussions.length === 0) {
     body.appendChild(emptyState('💬', 'No discussions yet', 'Click "New discussion" to convene the board.'));
   } else {
-    const list = h('div', { class: 'discussion-list' });
+    const list = h('div', { class: 'discussion-list', 'data-testid': 'discussion-list' });
     state.discussions.forEach((d) => list.appendChild(renderDiscussionCard(d)));
     body.appendChild(list);
   }
@@ -251,7 +253,13 @@ function renderDiscussionsView(main) {
 }
 
 function renderDiscussionCard(d) {
-  const card = h('div', { class: 'discussion-card' });
+  const card = h('div', {
+    class: 'discussion-card',
+    'data-testid': `discussion-row-${shortIdOf(d.id)}`,
+    'data-discussion-id': d.id,
+    role: 'button',
+    tabindex: '0',
+  });
   card.appendChild(h('div', { class: 'discussion-card-q' }, d.question));
 
   const status = d.completedAt ? 'done' : d.pendingUserRequest ? 'awaiting' : 'open';
@@ -304,7 +312,7 @@ function openChatView(discussion) {
   view.appendChild(header);
 
   // Stream
-  const stream = h('div', { class: 'chat-stream', id: 'chat-stream' });
+  const stream = h('div', { class: 'chat-stream', id: 'chat-stream', 'data-testid': 'chat-stream', role: 'log', 'aria-live': 'polite', 'aria-relevant': 'additions' });
   for (const node of discussionTimeline(discussion)) stream.appendChild(node);
   if (discussion.pendingUserRequest) {
     stream.appendChild(pendingRequestBubble(discussion.pendingUserRequest));
@@ -353,7 +361,7 @@ function discussionTimeline(discussion) {
     }
 
     for (const r of round.responses) nodes.push(messageBubble(r));
-    if (round.orchestratorDecision) nodes.push(orchestratorBubble(round.orchestratorDecision));
+    if (round.orchestratorDecision) nodes.push(orchestratorBubble(round.orchestratorDecision, round.roundNumber));
 
     // Sparring injections attached to THIS round (anywhere in userResponses
     // whose roundNumber matches and type === 'sparring_injection').
@@ -373,7 +381,13 @@ function renderChatFooter(discussion) {
   const footer = h('div', { class: 'chat-footer', id: 'chat-footer' });
   if (discussion.completedAt) {
     const row = h('div', { class: 'chat-actions' });
-    row.appendChild(h('div', { class: 'message-meta' }, '✓ Discussion concluded.'));
+    row.appendChild(
+      h(
+        'div',
+        { class: 'message-meta', 'data-testid': 'discussion-concluded', role: 'status' },
+        '✓ Discussion concluded.',
+      ),
+    );
     const extractBtn = h(
       'button',
       {
@@ -399,10 +413,18 @@ function renderChatFooter(discussion) {
     return footer;
   }
   const row = h('div', { class: 'chat-actions' });
-  const cont = h('button', { class: 'btn-primary', id: 'btn-continue' }, '▸ Continue discussion');
+  const cont = h(
+    'button',
+    { class: 'btn-primary', id: 'btn-continue', 'data-testid': 'discussion-continue' },
+    '▸ Continue discussion',
+  );
   cont.addEventListener('click', () => triggerContinue(discussion));
   row.appendChild(cont);
-  const followBtn = h('button', { class: 'btn-secondary', id: 'btn-follow-up' }, '↳ Follow up');
+  const followBtn = h(
+    'button',
+    { class: 'btn-secondary', id: 'btn-follow-up', 'data-testid': 'discussion-followup-open' },
+    '↳ Follow up',
+  );
   followBtn.addEventListener('click', () => {
     state.followUpComposerOpen = true;
     refreshChatFooter(discussion);
@@ -427,6 +449,8 @@ function renderFollowUpComposer(discussion) {
 
   const textarea = h('textarea', {
     id: 'follow-up-input',
+    'data-testid': 'discussion-followup-input',
+    'aria-label': 'Follow-up question',
     rows: '3',
     placeholder: 'Ask the board a sharper question, or push back on a specific point…',
   });
@@ -466,7 +490,11 @@ function renderFollowUpComposer(discussion) {
   });
   actions.appendChild(cancel);
 
-  const submit = h('button', { class: 'btn-primary', id: 'btn-follow-up-submit' }, '↳ Send follow-up');
+  const submit = h(
+    'button',
+    { class: 'btn-primary', id: 'btn-follow-up-submit', 'data-testid': 'discussion-followup-send' },
+    '↳ Send follow-up',
+  );
   submit.addEventListener('click', () => {
     const question = textarea.value.trim();
     if (!question) {
@@ -540,15 +568,30 @@ function appendToStream(node) {
 
 function renderRespondForm(discussion) {
   const req = discussion.pendingUserRequest;
-  const wrap = h('div', { class: 'respond-form' });
+  const wrap = h('div', {
+    class: 'respond-form',
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-labelledby': 'hitl-reply-heading',
+    'data-testid': 'hitl-panel',
+  });
 
-  wrap.appendChild(h('div', { class: 'struct-section-title' }, 'Your reply'));
+  wrap.appendChild(h('div', { class: 'struct-section-title', id: 'hitl-reply-heading' }, 'Your reply'));
 
   let selectedOption = null;
   if (req.options?.length) {
     const opts = h('div', { class: 'respond-options' });
     req.options.forEach((opt, idx) => {
-      const chip = h('button', { class: 'chip respond-option', type: 'button' }, `${idx + 1}. ${opt}`);
+      const chip = h(
+        'button',
+        {
+          class: 'chip respond-option',
+          type: 'button',
+          'data-testid': `hitl-option-${idx}`,
+          'aria-label': `Option ${idx + 1}: ${opt}`,
+        },
+        `${idx + 1}. ${opt}`,
+      );
       chip.addEventListener('click', () => {
         selectedOption = opt;
         $$('.respond-option', opts).forEach((c) => c.classList.remove('selected'));
@@ -561,6 +604,8 @@ function renderRespondForm(discussion) {
 
   const textarea = h('textarea', {
     id: 'respond-input',
+    'data-testid': 'hitl-reply-input',
+    'aria-label': 'Reply to the board',
     rows: '3',
     placeholder: req.options?.length
       ? 'Pick an option above and/or write your answer…'
@@ -568,7 +613,11 @@ function renderRespondForm(discussion) {
   });
   wrap.appendChild(textarea);
 
-  const submit = h('button', { class: 'btn-primary', id: 'btn-respond' }, '↳ Send reply');
+  const submit = h(
+    'button',
+    { class: 'btn-primary', id: 'btn-respond', 'data-testid': 'hitl-reply-submit' },
+    '↳ Send reply',
+  );
   submit.addEventListener('click', () => {
     const content = textarea.value.trim();
     if (!content && !selectedOption) {
@@ -641,7 +690,7 @@ function startNewChatView(question, members) {
   header.appendChild(h('div', {}, ''));
   view.appendChild(header);
 
-  const stream = h('div', { class: 'chat-stream', id: 'chat-stream' });
+  const stream = h('div', { class: 'chat-stream', id: 'chat-stream', 'data-testid': 'chat-stream', role: 'log', 'aria-live': 'polite', 'aria-relevant': 'additions' });
   // User's question as the first bubble — like sending a message in a chat app
   stream.appendChild(userBubble(question, 'Question'));
   stream.appendChild(roundDivider(1));
@@ -683,15 +732,18 @@ function messageBubble(r) {
   const member = state.members.find((m) => m.id === r.memberId) || { name: r.memberName };
   const color = member.color || colorForMember(r.memberName);
   const initials = member.initials || initialsOf(r.memberName);
+  const slug = memberSlug(r.memberName);
+  const turn = r.turnNumber || 0;
 
   const wrap = h('div', {
     class: 'message',
-    'data-testid': 'response-card',
+    'data-testid': `member-message-${slug}-${turn}`,
+    'data-testid-kind': 'response-card',
     'data-member-id': r.memberId || '',
     'data-round': r.roundNumber || '',
-    'data-turn': r.turnNumber || '',
+    'data-turn': turn,
   });
-  wrap.appendChild(h('div', { class: 'avatar', 'data-color': color }, initials));
+  wrap.appendChild(h('div', { class: 'avatar', 'data-color': color, 'aria-hidden': 'true' }, initials));
 
   const body = h('div', { class: 'message-body' });
   const nameRow = h('div', { class: 'message-name-row' });
@@ -766,9 +818,17 @@ function typingBubble(memberName) {
   const member = state.members.find((m) => m.name === memberName) || { name: memberName };
   const color = member.color || colorForMember(memberName);
   const initials = member.initials || initialsOf(memberName);
+  const slug = memberSlug(memberName);
 
-  const wrap = h('div', { class: 'message', 'data-typing-for': memberName });
-  wrap.appendChild(h('div', { class: 'avatar', 'data-color': color }, initials));
+  const wrap = h('div', {
+    class: 'message',
+    'data-typing-for': memberName,
+    'data-testid': `member-typing-${slug}`,
+    role: 'status',
+    'aria-live': 'polite',
+    'aria-label': `${memberName} is thinking`,
+  });
+  wrap.appendChild(h('div', { class: 'avatar', 'data-color': color, 'aria-hidden': 'true' }, initials));
 
   const body = h('div', { class: 'message-body' });
   body.appendChild(h('div', { class: 'message-name' }, memberName));
@@ -817,15 +877,29 @@ function cssEscape(s) {
   return String(s).replace(/(["\\])/g, '\\$1');
 }
 
-function orchestratorBubble(decision) {
+function orchestratorBubble(decision, roundNumber) {
   const text = decisionLabel(decision);
-  return h('div', { class: 'message' }, [
-    h('div', { class: 'avatar', 'data-color': 'purple' }, '⚙'),
-    h('div', { class: 'message-body' }, [
-      h('div', { class: 'message-name' }, ['Orchestrator', h('span', { class: 'message-meta' }, `confidence ${decision.confidence ?? '–'}%`)]),
-      h('div', { class: 'system-bubble' }, text),
-    ]),
-  ]);
+  const round = roundNumber ?? decision.roundNumber ?? '';
+  return h(
+    'div',
+    {
+      class: 'message',
+      'data-testid': round !== '' ? `orchestrator-decision-${round}` : 'orchestrator-decision',
+      'data-action': decision.action || '',
+      role: 'status',
+      'aria-live': 'polite',
+    },
+    [
+      h('div', { class: 'avatar', 'data-color': 'purple', 'aria-hidden': 'true' }, '⚙'),
+      h('div', { class: 'message-body' }, [
+        h('div', { class: 'message-name' }, [
+          'Orchestrator',
+          h('span', { class: 'message-meta' }, `confidence ${decision.confidence ?? '–'}%`),
+        ]),
+        h('div', { class: 'system-bubble' }, text),
+      ]),
+    ],
+  );
 }
 
 function pendingRequestBubble(req) {
@@ -848,7 +922,19 @@ function pendingRequestBubble(req) {
         : []),
     ]),
   ];
-  return h('div', { class: 'message' }, [h('div', { class: 'avatar', 'data-color': 'yellow' }, '!'), h('div', { class: 'message-body' }, lines)]);
+  return h(
+    'div',
+    {
+      class: 'message',
+      'data-testid': 'hitl-prompt',
+      role: 'status',
+      'aria-live': 'polite',
+    },
+    [
+      h('div', { class: 'avatar', 'data-color': 'yellow', 'aria-hidden': 'true' }, '!'),
+      h('div', { class: 'message-body' }, lines),
+    ],
+  );
 }
 
 function decisionLabel(d) {
@@ -899,7 +985,7 @@ function addSystemLine(text) {
   scrollChat();
 }
 
-function addOrchestratorDecision(decision) {
+function addOrchestratorDecision(decision, roundNumber) {
   const stream = $('#chat-stream');
   if (!stream) return;
   // Remove the "analyzing" system line if present
@@ -907,7 +993,7 @@ function addOrchestratorDecision(decision) {
   if (lastSys && lastSys.textContent.includes('analyzing')) {
     lastSys.closest('.message')?.remove();
   }
-  stream.appendChild(orchestratorBubble(decision));
+  stream.appendChild(orchestratorBubble(decision, roundNumber));
   scrollChat();
 }
 
@@ -1023,10 +1109,23 @@ async function openNewDiscussionModal() {
 
   submit.disabled = false;
   for (const m of active) {
-    const chip = h('div', { class: 'chip selected', 'data-member-id': m.id });
-    chip.appendChild(h('div', { class: 'avatar', 'data-color': m.color || colorForMember(m.name) }, m.initials || initialsOf(m.name)));
+    const chip = h('button', {
+      class: 'chip selected',
+      type: 'button',
+      role: 'checkbox',
+      'aria-checked': 'true',
+      'aria-label': `Toggle ${m.name}`,
+      'data-member-id': m.id,
+      'data-testid': `new-discussion-member-${memberSlug(m.name)}`,
+    });
+    chip.appendChild(
+      h('div', { class: 'avatar', 'data-color': m.color || colorForMember(m.name), 'aria-hidden': 'true' }, m.initials || initialsOf(m.name)),
+    );
     chip.appendChild(h('span', {}, m.name));
-    chip.addEventListener('click', () => chip.classList.toggle('selected'));
+    chip.addEventListener('click', () => {
+      chip.classList.toggle('selected');
+      chip.setAttribute('aria-checked', chip.classList.contains('selected') ? 'true' : 'false');
+    });
     chips.appendChild(chip);
   }
   $('#new-question').focus();
@@ -2437,6 +2536,20 @@ function initialsOf(name) {
   if (parts.length === 0) return '?';
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+// Mirrors `memberAgentSlug()` in src/agents/emit-member-agent.ts — used to
+// derive stable data-testid suffixes for member-scoped UI elements.
+function memberSlug(name) {
+  return String(name || '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function shortIdOf(id) {
+  return String(id || '').slice(0, 6);
 }
 
 function formatRelative(iso) {
@@ -4217,7 +4330,226 @@ function testSkill(name, input) {
 }
 
 // ------------------------------------------------------------------
+// Usage dashboard (Phase 6.5)
+// ------------------------------------------------------------------
+
+function renderUsageView(main) {
+  const view = h('div', { class: 'view', 'data-testid': 'usage-view' });
+  const header = h('div', { class: 'view-header' });
+  header.appendChild(
+    h('div', {}, [
+      h('div', { class: 'view-title' }, 'Token usage & cost'),
+      h('div', { class: 'view-subtitle' }, 'Live aggregation of token-usage logs for this workspace'),
+    ]),
+  );
+  const rangeWrap = h('div', { class: 'usage-range' });
+  ['7', '30', '90', 'all'].forEach((d) => {
+    const btn = h('button', {
+      class: 'btn-secondary usage-range-btn',
+      'data-days': d,
+      'data-testid': `usage-range-${d}`,
+    }, d === 'all' ? 'All time' : `Last ${d} days`);
+    btn.addEventListener('click', () => loadUsage(d));
+    rangeWrap.appendChild(btn);
+  });
+  header.appendChild(rangeWrap);
+  view.appendChild(header);
+
+  const body = h('div', { class: 'view-body usage-body', 'data-testid': 'usage-body' });
+  body.appendChild(h('div', { class: 'usage-loading' }, 'Loading…'));
+  view.appendChild(body);
+  main.appendChild(view);
+  loadUsage('30');
+}
+
+async function loadUsage(daysSpec) {
+  const body = $('[data-testid="usage-body"]');
+  if (!body) return;
+  $$('.usage-range-btn').forEach((b) => b.classList.toggle('active', b.dataset.days === daysSpec));
+  body.innerHTML = '';
+  body.appendChild(h('div', { class: 'usage-loading' }, 'Loading…'));
+
+  let qs = '';
+  if (daysSpec !== 'all') {
+    const days = Number(daysSpec);
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() - (days - 1));
+    qs = `?since=${d.toISOString().slice(0, 10)}`;
+  } else {
+    qs = '?since=0000-01-01';
+  }
+  try {
+    const data = await fetchJSON('/api/usage' + qs);
+    body.innerHTML = '';
+    body.appendChild(renderUsageContent(data));
+  } catch (e) {
+    body.innerHTML = '';
+    body.appendChild(emptyState('⚠', 'Failed to load usage', e.message));
+  }
+}
+
+function renderUsageContent(data) {
+  const wrap = h('div', { class: 'usage-content' });
+  const { summary, totalLogs, since } = data;
+  if (totalLogs === 0) {
+    wrap.appendChild(emptyState('📊', 'No token usage logged yet', `No entries since ${since}. Start a discussion or run a skill plan to populate this view.`));
+    return wrap;
+  }
+
+  // Totals row
+  const totals = summary.totals;
+  const totalsRow = h('div', { class: 'usage-totals', 'data-testid': 'usage-totals' });
+  totalsRow.appendChild(usageStat('Total cost', formatCost(totals.costUsd), 'usage-stat-cost'));
+  totalsRow.appendChild(usageStat('Calls', formatNumber(totals.calls), 'usage-stat-calls'));
+  totalsRow.appendChild(usageStat('Total tokens', formatNumber(totals.totalTokens), 'usage-stat-tokens'));
+  totalsRow.appendChild(usageStat('Cached read', formatNumber(totals.cacheReadTokens), 'usage-stat-cache'));
+  wrap.appendChild(totalsRow);
+
+  // Daily sparkline
+  if (summary.byDay.length > 0) {
+    wrap.appendChild(h('h3', { class: 'usage-section-title' }, 'Daily spend'));
+    wrap.appendChild(renderUsageSparkline(summary.byDay));
+  }
+
+  // By feature + by model side-by-side
+  const split = h('div', { class: 'usage-split' });
+  split.appendChild(renderUsageBucketTable('By feature', summary.byFeature, 'usage-by-feature'));
+  split.appendChild(renderUsageBucketTable('By model', summary.byModel, 'usage-by-model'));
+  wrap.appendChild(split);
+
+  return wrap;
+}
+
+function usageStat(label, value, testidSuffix) {
+  return h('div', { class: 'usage-stat', 'data-testid': testidSuffix }, [
+    h('div', { class: 'usage-stat-label' }, label),
+    h('div', { class: 'usage-stat-value' }, value),
+  ]);
+}
+
+function renderUsageSparkline(byDay) {
+  const wrap = h('div', { class: 'usage-sparkline', 'data-testid': 'usage-sparkline' });
+  const max = Math.max(0.0001, ...byDay.map((d) => d.costUsd));
+  byDay.forEach((d) => {
+    const pct = Math.max(2, Math.round((d.costUsd / max) * 100));
+    const bar = h('div', { class: 'usage-sparkline-bar', title: `${d.key} · ${formatCost(d.costUsd)} · ${formatNumber(d.totalTokens)} tokens · ${d.calls} calls` });
+    bar.style.height = pct + '%';
+    bar.appendChild(h('span', { class: 'usage-sparkline-label' }, d.key.slice(5)));
+    wrap.appendChild(bar);
+  });
+  return wrap;
+}
+
+function renderUsageBucketTable(title, buckets, testid) {
+  const wrap = h('div', { class: 'usage-table-wrap', 'data-testid': testid });
+  wrap.appendChild(h('h3', { class: 'usage-section-title' }, title));
+  if (buckets.length === 0) {
+    wrap.appendChild(h('div', { class: 'usage-empty' }, 'No entries'));
+    return wrap;
+  }
+  const table = h('table', { class: 'usage-table' });
+  const head = h('tr', {}, [
+    h('th', {}, title.replace(/^By /, '')),
+    h('th', {}, 'Calls'),
+    h('th', {}, 'Tokens'),
+    h('th', {}, 'Cost'),
+  ]);
+  table.appendChild(h('thead', {}, head));
+  const tbody = h('tbody', {});
+  const maxCost = Math.max(0.0001, ...buckets.map((b) => b.costUsd));
+  buckets.forEach((b) => {
+    const pct = Math.round((b.costUsd / maxCost) * 100);
+    const row = h('tr', {}, [
+      h('td', { class: 'usage-table-key' }, b.key),
+      h('td', {}, formatNumber(b.calls)),
+      h('td', {}, formatNumber(b.totalTokens)),
+      h('td', { class: 'usage-table-cost' }, [
+        h('span', { class: 'usage-table-cost-value' }, formatCost(b.costUsd)),
+        (() => {
+          const bar = h('span', { class: 'usage-table-cost-bar' });
+          bar.style.width = pct + '%';
+          return bar;
+        })(),
+      ]),
+    ]);
+    tbody.appendChild(row);
+  });
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  return wrap;
+}
+
+function formatCost(usd) {
+  if (!usd || usd === 0) return '$0.00';
+  if (usd < 0.01) return '<$0.01';
+  return '$' + usd.toFixed(2);
+}
+
+function formatNumber(n) {
+  if (!Number.isFinite(n) || n === 0) return '0';
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
+  return String(n);
+}
+
+// ------------------------------------------------------------------
+// Theme toggle + mobile sidebar (Phase 6.5)
+// ------------------------------------------------------------------
+
+const THEME_KEY = 'aab-theme';
+
+function initTheme() {
+  let saved = 'dark';
+  try {
+    saved = localStorage.getItem(THEME_KEY) || 'dark';
+  } catch (_) { /* SSR / private mode */ }
+  if (saved !== 'light' && saved !== 'dark') saved = 'dark';
+  applyTheme(saved);
+  const btn = $('#theme-toggle');
+  if (btn) btn.addEventListener('click', toggleTheme);
+}
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  const icon = $('#theme-toggle-icon');
+  const label = $('#theme-toggle-label');
+  if (icon) icon.textContent = theme === 'light' ? '☀' : '🌙';
+  if (label) label.textContent = theme === 'light' ? 'Light' : 'Dark';
+  const btn = $('#theme-toggle');
+  if (btn) btn.setAttribute('aria-label', `Switch to ${theme === 'light' ? 'dark' : 'light'} theme`);
+}
+
+function toggleTheme() {
+  const current = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+  const next = current === 'light' ? 'dark' : 'light';
+  applyTheme(next);
+  try { localStorage.setItem(THEME_KEY, next); } catch (_) { /* swallow */ }
+}
+
+function initSidebarToggle() {
+  const toggle = $('#sidebar-toggle');
+  const scrim = $('#sidebar-scrim');
+  if (toggle) toggle.addEventListener('click', openSidebar);
+  if (scrim) scrim.addEventListener('click', closeSidebar);
+}
+
+function openSidebar() {
+  document.body.classList.add('sidebar-open');
+  const scrim = $('#sidebar-scrim');
+  if (scrim) scrim.hidden = false;
+}
+
+function closeSidebar() {
+  if (!document.body.classList.contains('sidebar-open')) return;
+  document.body.classList.remove('sidebar-open');
+  const scrim = $('#sidebar-scrim');
+  if (scrim) scrim.hidden = true;
+}
+
+// ------------------------------------------------------------------
 // Go
 // ------------------------------------------------------------------
 
+initTheme();
+initSidebarToggle();
 bootstrap();

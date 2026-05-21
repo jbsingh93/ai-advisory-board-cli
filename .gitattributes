@@ -1,0 +1,26 @@
+# Normalize all text files to LF on commit. Critical for this repo because:
+#   - bin/aab.ts and dist/bin/aab.js are shebang scripts. CRLF shebangs fail
+#     on Linux/macOS with "/usr/bin/env^M: No such file or directory".
+#   - The Windows shim-resolution code in src/llm/claude-code-runner.ts is
+#     tested on all three OSes via CI; mixed line endings would cause spurious
+#     diff churn between contributors on different platforms.
+
+* text=auto eol=lf
+
+# Force LF for executables and source — never CRLF, even on Windows checkout.
+bin/*.ts        text eol=lf
+src/**/*.ts     text eol=lf
+*.sh            text eol=lf
+*.js            text eol=lf
+*.json          text eol=lf
+*.md            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+
+# Treat these as binary so git doesn't try to munge them.
+*.png           binary
+*.jpg           binary
+*.gif           binary
+*.webm          binary
+*.zip           binary
+*.ico           binary

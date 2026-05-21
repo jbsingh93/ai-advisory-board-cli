@@ -1,7 +1,7 @@
 /**
  * PC scan — Phase 5 Skill Planner recon (read-only invariant).
  *
- * Per PLAN/SKILL_CREATOR.md §6.2: enumerate installed desktop apps, CLI
+ * Per docs/development/SKILL_CREATOR.md §6.2: enumerate installed desktop apps, CLI
  * tools, browser extensions, MCP servers, env vars, existing Claude Code
  * skills, Playwright availability, and Claude-for-Chrome / computer-use
  * heuristic flags. Hard rule: this file performs no writes, no network

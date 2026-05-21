@@ -3,7 +3,7 @@
  * across the wiki. Manual `mv` breaks `[[wikilinks]]` and is recoverable only
  * via `aab knowledge rename --auto-fix`.
  *
- * Spec: `PLAN/KNOWLEDGE_WIKI.md` §11.4 + §13 ("Rename behavior on the manifest").
+ * Spec: `docs/development/KNOWLEDGE_WIKI.md` §11.4 + §13 ("Rename behavior on the manifest").
  *
  * All writes are atomic at the file level (parent dir + write). The whole
  * operation runs under the workspace mutex (acquired by the caller via

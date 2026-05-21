@@ -8,7 +8,7 @@
  * defaults so the resulting object always satisfies `ConversationSummary`.
  *
  * This is the seed for Phase 1.5's auto-ingest hook
- * (see `PLAN/KNOWLEDGE_WIKI.md` §16): on discussion conclude, the summary +
+ * (see `docs/development/KNOWLEDGE_WIKI.md` §16): on discussion conclude, the summary +
  * full transcript become `raw/summaries/<short>.md` and `raw/discussions/<short>.md`,
  * then ingest creates/updates wiki pages from them.
  */

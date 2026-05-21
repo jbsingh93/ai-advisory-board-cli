@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release (changesets)
+    runs-on: ubuntu-latest
+
+    # Required for:
+    #   - id-token: write  → npm trusted publishing (OIDC, no NPM_TOKEN needed)
+    #   - contents: write  → changesets/action opens the release PR
+    #   - pull-requests: write → changesets/action updates the release PR
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Create release PR or publish
+        uses: changesets/action@v1
+        with:
+          # When the release PR is merged, this script runs `changeset publish`
+          # which publishes to npm. Trusted publishing via OIDC means no
+          # NPM_TOKEN is needed — npm verifies the GitHub Actions workflow
+          # identity via the id-token permission above.
+          publish: npm run changeset:publish
+          version: npm run changeset:version
+          commit: "chore: release"
+          title: "chore: release"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

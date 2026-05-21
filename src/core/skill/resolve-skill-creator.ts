@@ -4,7 +4,7 @@
  * Walks the Claude Code skill scope priority order (project → user → plugin)
  * looking for an installed `skill-creator/SKILL.md`. Used by `aab doctor`,
  * `aab init --install-skill-creator`, and `aab actions solve` (which gates
- * on its presence per PLAN/SKILL_CREATOR.md §8).
+ * on its presence per docs/development/SKILL_CREATOR.md §8).
  *
  * Returns `null` if not found; otherwise a `ResolvedSkill` with path + version
  * + scope so callers can surface where it lives and how to upgrade.

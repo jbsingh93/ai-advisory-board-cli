@@ -48,6 +48,41 @@ export function isAabGenerated(path: string): boolean {
   }
 }
 
+const KNOWN_COLORS = new Set([
+  'cyan', 'green', 'yellow', 'magenta', 'blue', 'red', 'orange', 'pink', 'purple',
+]);
+
+/**
+ * Parse the `color:` field out of the agent file's YAML frontmatter.
+ * Returns undefined if the file is missing, frontmatter is absent, or the
+ * value isn't one of the recognised palette names. Whitespace-tolerant and
+ * accepts optional surrounding quotes.
+ */
+export function readMemberAgentColor(name: string, projectRoot?: string): string | undefined {
+  const slug = memberAgentSlug(name);
+  const path = memberAgentPath(slug, projectRoot);
+  if (!existsSync(path)) return undefined;
+  try {
+    const raw = readFileSync(path, 'utf8');
+    // Frontmatter is the first --- … --- block. Use line-by-line so we only
+    // match top-level keys, never something nested in the body.
+    const lines = raw.split(/\r?\n/);
+    if (lines[0]?.trim() !== '---') return undefined;
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i] ?? '';
+      if (line.trim() === '---') break;
+      const m = /^color\s*:\s*(.+?)\s*$/.exec(line);
+      if (m) {
+        const v = m[1]!.replace(/^["']|["']$/g, '').toLowerCase();
+        return KNOWN_COLORS.has(v) ? v : undefined;
+      }
+    }
+  } catch {
+    // unreadable or transient FS error — treat as no color
+  }
+  return undefined;
+}
+
 interface EmitOptions {
   projectRoot?: string;
   /** Override the default tools list. */
@@ -116,7 +151,7 @@ function pickColor(name: string): string {
  * Knowledge Wiki addendum — appended to every member's agent body so they
  * know the wiki is at `wiki/`, how to resolve `[[wikilinks]]` via the
  * slug-map, and that they must cite slugs they actually read.
- * Reference: `PLAN/KNOWLEDGE_WIKI.md` §14.
+ * Reference: `docs/development/KNOWLEDGE_WIKI.md` §14.
  */
 const KNOWLEDGE_WIKI_ADDENDUM = [
   '',

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Unix shim that delegates to the Node-based mock claude.
+exec node "$(dirname "$0")/../mock-claude.mjs" "$@"

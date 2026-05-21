@@ -1,7 +1,7 @@
 /**
  * Manifest — `<workspace>/.manifest.json` — provenance ledger for the wiki.
  *
- * Format spec: `PLAN/KNOWLEDGE_WIKI.md` §13. Writes are atomic via
+ * Format spec: `docs/development/KNOWLEDGE_WIKI.md` §13. Writes are atomic via
  * `writeJsonAtomic` so concurrent ingest + rename + lint stay consistent
  * (the workspace mutex serialises them; the atomic write keeps a crash
  * from leaving the JSON half-written).

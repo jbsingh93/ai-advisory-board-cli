@@ -1993,3 +1993,320 @@ textarea, input, button { color: inherit; }
   font-weight: 500;
   white-space: pre-wrap;
 }
+
+/* =================================================================
+ * Phase 6.5 polish — light theme, theme toggle, mobile sidebar,
+ * usage dashboard.
+ * ================================================================= */
+
+/* ---------- Light theme override ----------
+ * The :root tokens above are the dark default. data-theme="light" remaps
+ * the same token names so every existing var(--bg) etc. stays green. */
+:root[data-theme="light"] {
+  --bg: #f8fafc;
+  --bg-elev: #ffffff;
+  --bg-elev-2: #eef2f7;
+  --border: #d8deea;
+  --border-strong: #b8c1d4;
+  --text: #1a1f29;
+  --text-dim: #4a5266;
+  --text-faint: #6c7589;
+
+  --brand: #6b46c1;
+  --brand-2: #0ea5e9;
+  --ok: #16a34a;
+  --warn: #d97706;
+  --err: #dc2626;
+  --info: #2563eb;
+
+  /* Members palette — slightly darker so they read on a white background. */
+  --m-cyan: #0891b2;
+  --m-green: #16a34a;
+  --m-yellow: #ca8a04;
+  --m-magenta: #c026d3;
+  --m-blue: #2563eb;
+  --m-red: #dc2626;
+  --m-orange: #ea580c;
+  --m-pink: #db2777;
+  --m-purple: #7c3aed;
+
+  --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-2: 0 8px 24px rgba(15, 23, 42, 0.08);
+}
+
+/* In light theme, avatar text should be light against the darker palette. */
+:root[data-theme="light"] .avatar {
+  color: #ffffff;
+}
+
+/* Persistent error banner reads as red in light mode too. */
+:root[data-theme="light"] .planner-error-banner {
+  color: #7f1d1d;
+  background: rgba(220, 38, 38, 0.08);
+}
+
+/* ---------- Theme toggle ---------- */
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  width: 100%;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.theme-toggle:hover {
+  background: var(--bg-elev-2);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.theme-toggle-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+.theme-toggle-label {
+  flex: 1;
+  text-align: left;
+}
+
+/* ---------- Mobile sidebar toggle + scrim ----------
+ * The toggle button starts as `display: none` here. The mobile media query
+ * promotes it to `display: flex`; the desktop media query keeps it hidden
+ * via `!important`. The scrim is gated by the `hidden` attribute (toggled
+ * from app.js) so it only paints when the user has explicitly opened the
+ * sidebar on mobile. */
+.sidebar-toggle {
+  display: none;
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 60;
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-size: 18px;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow-1);
+}
+.sidebar-scrim {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+/* ---------- Mobile responsive ---------- */
+@media (max-width: 760px) {
+  body {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 280px;
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+    box-shadow: var(--shadow-2);
+  }
+  body.sidebar-open .sidebar {
+    transform: translateX(0);
+  }
+  .sidebar-toggle {
+    display: flex;
+  }
+  .sidebar-scrim:not([hidden]) {
+    display: block;
+  }
+  body.sidebar-open .sidebar-scrim {
+    display: block;
+  }
+  .main {
+    padding-top: 56px; /* leave room for the floating hamburger button */
+  }
+  .view {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .view-header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .modal {
+    width: calc(100vw - 24px);
+    max-width: calc(100vw - 24px);
+  }
+}
+
+/* On non-mobile, never paint the hamburger or scrim — the sidebar is always docked. */
+@media (min-width: 761px) {
+  .sidebar-toggle { display: none !important; }
+  .sidebar-scrim { display: none !important; }
+}
+
+/* ---------- Usage dashboard ---------- */
+.usage-range {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.usage-range-btn {
+  padding: 6px 10px;
+  font-size: 12.5px;
+}
+.usage-range-btn.active {
+  background: var(--brand);
+  color: white;
+  border-color: var(--brand);
+}
+.usage-body {
+  padding-bottom: 32px;
+}
+.usage-loading {
+  padding: 32px 8px;
+  color: var(--text-faint);
+  text-align: center;
+}
+.usage-content {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.usage-totals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+.usage-stat {
+  padding: 14px 16px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.usage-stat-label {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 6px;
+}
+.usage-stat-value {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.usage-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0 0 8px;
+}
+.usage-sparkline {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 130px;
+  padding: 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow-x: auto;
+}
+.usage-sparkline-bar {
+  flex: 1 0 18px;
+  min-height: 4px;
+  background: linear-gradient(180deg, var(--brand) 0%, var(--brand-2) 100%);
+  border-radius: 4px 4px 0 0;
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  cursor: default;
+}
+.usage-sparkline-label {
+  position: absolute;
+  bottom: -18px;
+  font-size: 10px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.usage-split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+.usage-table-wrap {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.usage-table th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 11px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.usage-table td {
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.usage-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.usage-table-key {
+  color: var(--text);
+  font-weight: 500;
+  word-break: break-all;
+}
+.usage-table-cost {
+  position: relative;
+  min-width: 110px;
+}
+.usage-table-cost-value {
+  position: relative;
+  z-index: 1;
+}
+.usage-table-cost-bar {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 4px;
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--brand) 0%, var(--brand-2) 100%);
+  opacity: 0.55;
+}
+.usage-empty {
+  color: var(--text-faint);
+  padding: 6px 0;
+  font-size: 12.5px;
+}

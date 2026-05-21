@@ -4,7 +4,7 @@
  * Lives between `<!-- AAB:SLUG-MAP -->` and `<!-- /AAB:SLUG-MAP -->` sentinels
  * in `wiki/index.md`. Ingest re-renders it after every run; lint regenerates
  * it from scratch (idempotent). Agents read it as the cheap-pass map; if a
- * slug is missing they Glob `wiki/**\/<slug>.md`. See `PLAN/KNOWLEDGE_WIKI.md`
+ * slug is missing they Glob `wiki/**\/<slug>.md`. See `docs/development/KNOWLEDGE_WIKI.md`
  * §11.3 and §11.5.
  *
  * Aliases share the global namespace with canonical slugs. The slug-map

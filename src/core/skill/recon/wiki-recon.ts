@@ -8,7 +8,7 @@
  * recon-specific prompt that's tuned for stakeholder + decision + veto
  * extraction.
  *
- * Returns a `WikiContext` (PLAN/SKILL_CREATOR.md §6.3). Never throws on
+ * Returns a `WikiContext` (docs/development/SKILL_CREATOR.md §6.3). Never throws on
  * an empty/missing wiki — degraded output with a warning is the contract.
  */
 import { existsSync, readFileSync } from 'node:fs';

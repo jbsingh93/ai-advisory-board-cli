@@ -1,7 +1,7 @@
 /**
  * `aab knowledge` — wiki management.
  *
- * Phase 1.5 surface (per `PLAN/KNOWLEDGE_WIKI.md` §17):
+ * Phase 1.5 surface (per `docs/development/KNOWLEDGE_WIKI.md` §17):
  *   - Chunk 1 (this file as of initial drop): rename, show, list, open, edit,
  *     stats, related, unresolved
  *   - Chunk 2/3: ingest <path|url> [--paste] [--force]

@@ -7,9 +7,9 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <aside class="sidebar">
+    <aside class="sidebar" data-testid="sidebar" aria-label="Navigation sidebar">
       <div class="brand">
-        <span class="brand-mark"></span>
+        <span class="brand-mark" aria-hidden="true"></span>
         <div>
           <div class="brand-title">AI Advisory Board</div>
           <div class="brand-sub" id="workspace-label">…</div>
@@ -30,78 +30,117 @@
         </div>
       </div>
 
-      <nav class="nav">
-        <button class="nav-item active" data-route="discussions">
-          <span class="nav-icon">💬</span>
+      <nav class="nav" aria-label="Main">
+        <button class="nav-item active" data-route="discussions" data-testid="tab-discussions">
+          <span class="nav-icon" aria-hidden="true">💬</span>
           <span>Discussions</span>
         </button>
-        <button class="nav-item" data-route="actions">
-          <span class="nav-icon">📋</span>
+        <button class="nav-item" data-route="actions" data-testid="tab-actions">
+          <span class="nav-icon" aria-hidden="true">📋</span>
           <span>Action Board</span>
         </button>
-        <button class="nav-item" data-route="members">
-          <span class="nav-icon">👥</span>
+        <button class="nav-item" data-route="members" data-testid="tab-members">
+          <span class="nav-icon" aria-hidden="true">👥</span>
           <span>Board members</span>
         </button>
-        <button class="nav-item" data-route="principles" data-testid="nav-principles">
-          <span class="nav-icon">🧭</span>
+        <button class="nav-item" data-route="principles" data-testid="tab-principles">
+          <span class="nav-icon" aria-hidden="true">🧭</span>
           <span>Principles</span>
         </button>
-        <button class="nav-item" data-route="coach" data-testid="nav-coach">
-          <span class="nav-icon">🧠</span>
+        <button class="nav-item" data-route="coach" data-testid="tab-coach">
+          <span class="nav-icon" aria-hidden="true">🧠</span>
           <span>Coach</span>
         </button>
-        <button class="nav-item" data-route="knowledge" data-testid="nav-knowledge">
-          <span class="nav-icon">📚</span>
+        <button class="nav-item" data-route="knowledge" data-testid="tab-knowledge">
+          <span class="nav-icon" aria-hidden="true">📚</span>
           <span>Knowledge</span>
         </button>
-        <button class="nav-item" data-route="skills" data-testid="nav-skills">
-          <span class="nav-icon">🧠</span>
+        <button class="nav-item" data-route="skills" data-testid="tab-skills">
+          <span class="nav-icon" aria-hidden="true">🧠</span>
           <span>Skills</span>
         </button>
-        <button class="nav-item" data-route="settings">
-          <span class="nav-icon">⚙️</span>
+        <button class="nav-item" data-route="usage" data-testid="tab-usage">
+          <span class="nav-icon" aria-hidden="true">📊</span>
+          <span>Usage</span>
+        </button>
+        <button class="nav-item" data-route="settings" data-testid="tab-settings">
+          <span class="nav-icon" aria-hidden="true">⚙️</span>
           <span>Settings</span>
         </button>
       </nav>
 
       <div class="sidebar-footer">
-        <span class="status-dot" id="ws-dot"></span>
-        <span id="ws-label">connecting…</span>
+        <button
+          class="theme-toggle"
+          id="theme-toggle"
+          type="button"
+          aria-label="Toggle theme"
+          data-testid="theme-toggle"
+          title="Toggle theme"
+        >
+          <span class="theme-toggle-icon" id="theme-toggle-icon" aria-hidden="true">🌙</span>
+          <span class="theme-toggle-label" id="theme-toggle-label">Dark</span>
+        </button>
+        <span class="status-dot" id="ws-dot" aria-hidden="true"></span>
+        <span id="ws-label" role="status" aria-live="polite" data-testid="ws-status">connecting…</span>
       </div>
     </aside>
 
-    <main class="main" id="main">
+    <button
+      class="sidebar-toggle"
+      id="sidebar-toggle"
+      type="button"
+      aria-label="Open menu"
+      data-testid="sidebar-toggle"
+    >
+      <span aria-hidden="true">☰</span>
+    </button>
+    <div class="sidebar-scrim" id="sidebar-scrim" hidden></div>
+
+    <main class="main" id="main" data-testid="main" role="main">
       <!-- Active view rendered here -->
     </main>
 
     <!-- New-discussion modal -->
     <div class="modal-backdrop" id="new-discussion-modal" hidden>
-      <div class="modal">
+      <div
+        class="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-discussion-title"
+        data-testid="new-discussion-modal"
+      >
         <div class="modal-header">
-          <h2>New discussion</h2>
-          <button class="icon-btn" id="modal-close" aria-label="Close">×</button>
+          <h2 id="new-discussion-title">New discussion</h2>
+          <button class="icon-btn" id="modal-close" aria-label="Close" data-testid="new-discussion-close">×</button>
         </div>
         <div class="modal-body">
           <label class="field-label" for="new-question">Your question</label>
           <textarea
             id="new-question"
+            data-testid="new-discussion-question"
             placeholder="e.g. Should we charge usage-based or per-seat for our new B2B tool?"
             rows="3"
           ></textarea>
-          <label class="field-label">Members</label>
-          <div class="member-chips" id="member-chips"></div>
+          <label class="field-label" id="new-discussion-members-label">Members</label>
+          <div class="member-chips" id="member-chips" role="group" aria-labelledby="new-discussion-members-label"></div>
         </div>
         <div class="modal-footer">
           <button class="btn-secondary" id="modal-cancel">Cancel</button>
-          <button class="btn-primary" id="modal-submit">Start discussion</button>
+          <button class="btn-primary" id="modal-submit" data-testid="new-discussion-start">Start discussion</button>
         </div>
       </div>
     </div>
 
     <!-- Generic edit modal (member / principle) -->
     <div class="modal-backdrop" id="edit-modal" hidden>
-      <div class="modal modal-wide">
+      <div
+        class="modal modal-wide"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="edit-modal-title"
+        data-testid="edit-modal"
+      >
         <div class="modal-header">
           <h2 id="edit-modal-title">Edit</h2>
           <button class="icon-btn" id="edit-modal-close" aria-label="Close">×</button>
@@ -117,7 +156,13 @@
 
     <!-- Confirm modal -->
     <div class="modal-backdrop" id="confirm-modal" hidden>
-      <div class="modal">
+      <div
+        class="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-modal-title"
+        data-testid="confirm-modal"
+      >
         <div class="modal-header">
           <h2 id="confirm-modal-title">Are you sure?</h2>
           <button class="icon-btn" id="confirm-modal-close" aria-label="Close">×</button>

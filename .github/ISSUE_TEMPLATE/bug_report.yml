@@ -1,0 +1,71 @@
+name: Bug report
+description: Report something that isn't working as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please paste the output of `aab doctor --json` below — it captures the most common failure modes (Claude CLI on PATH, workspace resolution, agent files).
+
+  - type: input
+    id: aab-version
+    attributes:
+      label: aab version
+      description: Output of `aab --version`
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: node-version
+    attributes:
+      label: Node version
+      description: Output of `node --version`
+      placeholder: "v20.11.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other (specify in details)
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: aab doctor output
+      description: Output of `aab doctor --json`. This is the single most useful thing you can include.
+      render: json
+    validations:
+      required: false
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what actually happened?
+      placeholder: |
+        Steps to reproduce:
+        1. ...
+        2. ...
+
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: debug-output
+    attributes:
+      label: Debug output (optional)
+      description: If reproducible, run with `aab --debug <command>` and paste the relevant portion. Redact anything sensitive.
+      render: shell
+    validations:
+      required: false

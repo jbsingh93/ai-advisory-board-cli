@@ -1,5 +1,5 @@
 /**
- * Install — Phase 5 Chunk 4. Per PLAN/SKILL_CREATOR.md §10.
+ * Install — Phase 5 Chunk 4. Per docs/development/SKILL_CREATOR.md §10.
  *
  *   cp -r workspace/ → .claude/skills/<name>/    (project scope, default)
  *   cp -r workspace/ → ~/.claude/skills/<name>/  (--scope user)

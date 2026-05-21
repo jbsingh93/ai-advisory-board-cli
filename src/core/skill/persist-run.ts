@@ -1,5 +1,5 @@
 /**
- * Persistence — Phase 5 Chunk 4. Per PLAN/SKILL_CREATOR.md §11.
+ * Persistence — Phase 5 Chunk 4. Per docs/development/SKILL_CREATOR.md §11.
  *
  * Writes a `SkillGenerationRun` JSON (with the full Planner proposal +
  * capability profile embedded in metadata) under

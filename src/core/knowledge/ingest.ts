@@ -1,7 +1,7 @@
 /**
  * Wiki ingest pipeline.
  *
- * Phases (per `PLAN/KNOWLEDGE_WIKI.md` §15.1):
+ * Phases (per `docs/development/KNOWLEDGE_WIKI.md` §15.1):
  *  1. Resolve the source → write to `raw/<bucket>/`.
  *  2. Manifest dedup check (skip if hash exists, unless `force`).
  *  3. Run the ingest agent (one `runClaude` call with `Read,Grep,Glob,Write,Edit`).
@@ -355,7 +355,7 @@ export interface IngestUrlOptions {
  * write `raw/urls/<hash6>.md` + `<hash6>.meta.json`, then run the standard
  * ingest pipeline on the snapshot. The snapshot step itself is currently
  * skeleton: we record the URL and meta, and the agent fetches the body via
- * its WebFetch tool. Reference: `PLAN/KNOWLEDGE_WIKI.md` §15.1 step 1.
+ * its WebFetch tool. Reference: `docs/development/KNOWLEDGE_WIKI.md` §15.1 step 1.
  */
 export async function ingestUrl(opts: IngestUrlOptions): Promise<IngestResult> {
   const url = opts.url.trim();

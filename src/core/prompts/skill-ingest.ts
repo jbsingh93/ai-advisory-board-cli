@@ -1,5 +1,5 @@
 /**
- * Ingest skill prompt. Reference: `PLAN/KNOWLEDGE_WIKI.md` §15.1.
+ * Ingest skill prompt. Reference: `docs/development/KNOWLEDGE_WIKI.md` §15.1.
  *
  * The agent reads `wiki/KNOWLEDGE.md`, then `wiki/index.md` (slug-map), then
  * the source at `rawPath`. It creates/updates wiki pages with proper

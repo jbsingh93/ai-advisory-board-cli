@@ -47,6 +47,7 @@ import {
   isAabGenerated,
   memberAgentPath,
   memberAgentSlug,
+  readMemberAgentColor,
 } from '../agents/emit-member-agent.js';
 import { logger } from '../core/logger.js';
 import { generateUUID, nowIso } from '../core/utils.js';
@@ -93,6 +94,7 @@ import { resolveSkill } from '../core/skill/resolve-skill-creator.js';
 import { listInstalledSkills } from '../commands/skills.js';
 import { scan as scanPc } from '../core/skill/recon/pc-scan.js';
 import type { SkillDesignProposal } from '../core/parsing/llm-response-schemas.js';
+import { summariseUsage } from '../core/tokens/usage-summary.js';
 
 const PRINCIPLE_CATEGORIES: PrincipleCategory[] = [
   'life',
@@ -192,7 +194,7 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
           projectRoot,
         },
         settings,
-        members: enrichMembers(members),
+        members: enrichMembers(members, projectRoot),
         principles,
         actionItems,
         discussions: discussionPage.discussions,
@@ -242,7 +244,31 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
   app.get('/api/members', async (_req, res) => {
     try {
       const members = await opts.storage.loadBoardMembers();
-      res.json(enrichMembers(members));
+      res.json(enrichMembers(members, projectRoot));
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  // Phase 6.5 — Usage dashboard. Aggregates token-usage JSONL logs into the
+  // totals / by-day / by-feature / by-model shape the GUI renders. The
+  // `since` query (YYYY-MM-DD) trims the daily-file scan window; the default
+  // is the last 30 days. `limit` caps the raw log fetch to keep large
+  // workspaces snappy.
+  app.get('/api/usage', async (req, res) => {
+    try {
+      const sinceParam = typeof req.query.since === 'string' ? req.query.since : undefined;
+      const since =
+        sinceParam && /^\d{4}-\d{2}-\d{2}$/.test(sinceParam)
+          ? sinceParam
+          : (() => {
+              const d = new Date();
+              d.setUTCDate(d.getUTCDate() - 29); // last 30 days inclusive
+              return d.toISOString().slice(0, 10);
+            })();
+      const limit = req.query.limit ? Math.max(1, Math.min(100000, Number(req.query.limit))) : undefined;
+      const logs = await opts.storage.loadTokenUsageLogs(limit !== undefined ? { since, limit } : { since });
+      res.json({ since, summary: summariseUsage(logs), totalLogs: logs.length });
     } catch (error) {
       sendError(res, 500, error);
     }
@@ -2275,15 +2301,23 @@ function pickMembers(all: AdvisoryBoardMember[], ids?: string[]): AdvisoryBoardM
   return all.filter((m) => m.isActive && set.has(m.id));
 }
 
-function enrichMembers(members: AdvisoryBoardMember[]): Array<AdvisoryBoardMember & { slug: string; initials: string }> {
-  return members.map(enrichOne);
+function enrichMembers(
+  members: AdvisoryBoardMember[],
+  projectRoot?: string,
+): Array<AdvisoryBoardMember & { slug: string; initials: string; color?: string }> {
+  return members.map((m) => enrichOne(m, projectRoot));
 }
 
-function enrichOne(m: AdvisoryBoardMember): AdvisoryBoardMember & { slug: string; initials: string } {
+function enrichOne(
+  m: AdvisoryBoardMember,
+  projectRoot?: string,
+): AdvisoryBoardMember & { slug: string; initials: string; color?: string } {
+  const color = readMemberAgentColor(m.name, projectRoot);
   return {
     ...m,
     slug: memberAgentSlug(m.name),
     initials: initialsOf(m.name),
+    ...(color ? { color } : {}),
   };
 }
 

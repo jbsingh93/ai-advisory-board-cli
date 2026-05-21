@@ -1,5 +1,5 @@
 /**
- * Brief assembly — Phase 5 Chunk 4. Per PLAN/SKILL_CREATOR.md §7.
+ * Brief assembly — Phase 5 Chunk 4. Per docs/development/SKILL_CREATOR.md §7.
  *
  * The brief is the JSON payload we send as the user message to a headless
  * skill-creator invocation. It's mostly the Planner's accepted proposal

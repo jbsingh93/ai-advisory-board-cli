@@ -1,7 +1,7 @@
 /**
  * Planner-review — Phase 5 Chunk 3.
  *
- * Interactive review flow per PLAN/SKILL_CREATOR.md §6.6. CLI surface uses
+ * Interactive review flow per docs/development/SKILL_CREATOR.md §6.6. CLI surface uses
  * `enquirer` (multi-select for integrations + stakeholders; select for tier
  * radio; confirm for accept). Web UI surfaces equivalent shapes via
  * `/api/actions/:id/plan` + the proposal modal.

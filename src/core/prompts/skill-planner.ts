@@ -1,7 +1,7 @@
 /**
  * Skill Planner system prompt — the most important prompt in the CLI.
  *
- * Per PLAN/SKILL_CREATOR.md §6.5a:
+ * Per docs/development/SKILL_CREATOR.md §6.5a:
  *   <role>
  *   <skill_operating_model>     — ported from sage-council
  *   <master_gpt_prompter_hardening>
@@ -283,7 +283,7 @@ ${fewShotBlock}`;
 /**
  * Few-shot library — three condensed examples that span the three primary
  * domain × integration-kind combinations the Planner needs to internalize.
- * Full examples live in PLAN/SKILL_CREATOR.md §6.5b; the embedded versions
+ * Full examples live in docs/development/SKILL_CREATOR.md §6.5b; the embedded versions
  * are pared to the load-bearing fields (action + recon summary + proposal
  * key fields) so we don't blow the context budget.
  */

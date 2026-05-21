@@ -1,5 +1,5 @@
 /**
- * skill-creator invocation — Phase 5 Chunk 4. Per PLAN/SKILL_CREATOR.md §8.
+ * skill-creator invocation — Phase 5 Chunk 4. Per docs/development/SKILL_CREATOR.md §8.
  *
  * Headless spawn pattern:
  *   claude -p "<user msg>" --append-system-prompt-file <skill-creator/SKILL.md>

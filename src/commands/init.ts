@@ -241,9 +241,10 @@ async function runInit(opts: InitOptions): Promise<void> {
   // Next steps
   process.stdout.write('\n' + c.bold('Next steps:') + '\n');
   process.stdout.write(`  ${c.cyan('aab doctor')}                 ${c.hint('— verify everything is wired up')}\n`);
-  process.stdout.write(`  ${c.cyan('aab settings get')}\n`);
+  process.stdout.write(`  ${c.cyan('aab ui')}                     ${c.hint('— open the local web dashboard at http://127.0.0.1:3737 (recommended)')}\n`);
   process.stdout.write(`  ${c.cyan('aab discuss start')} ${c.hint('"What should we focus on this quarter?"')}\n`);
   process.stdout.write(`  ${c.cyan('aab knowledge ingest')} ${c.hint('<path-or-url>  — seed the wiki')}\n`);
+  process.stdout.write(`  ${c.cyan('aab settings get')}\n`);
   process.stdout.write('\n');
 }
 

@@ -44,6 +44,62 @@ aab --debug discuss start "<q>"   # see spawn args + stderr
 
 Note: there are currently no test files (`*.test.ts` / `*.spec.ts`) checked in — `npm test` succeeds vacuously. Likewise no `eslint.config.*` is present; `npm run lint` requires one before it does anything useful. Don't claim "tests pass" or "lint clean" as verification.
 
+## Publishing — OSS release pipeline
+
+This package is published to npm as `ai-advisory-board` (binary `aab`). Public repo: <https://github.com/jbsingh93/ai-advisory-board-cli>. Release flow is fully automated via changesets + npm OIDC trusted publishing — no `NPM_TOKEN` secret is needed.
+
+**The boring path for any user-visible change:**
+
+```bash
+npx changeset             # describe the bump (patch/minor/major + 1-line summary)
+git add .changeset/*.md
+git commit -m "..."
+git push                  # main triggers .github/workflows/release.yml
+```
+
+The `Release` workflow opens (or updates) a **"chore: release"** PR that bumps `package.json` + appends to `CHANGELOG.md` + deletes consumed changesets. Merging that PR re-runs the workflow, which publishes to npm via OIDC with a SLSA provenance attestation.
+
+**Non-user-visible changes** (dep bumps, CI tweaks, doc edits) skip the changeset — they just ride along in the next release.
+
+**Hard-won gotchas — read before touching `.github/workflows/release.yml`:**
+
+- **Node 24, not 22** for the release runner. Trusted publishing requires npm CLI ≥ 11.5.1; Node 22.x ships with npm 10.x which sees OIDC is available but can't actually use it, and `npm publish` fails with a misleading `E404 Not Found`. Don't try to fix this with `npm install -g npm@latest` — the self-upgrade breaks with `MODULE_NOT_FOUND` on `promise-retry`. Just stay on Node 24.
+- **`repository.url` in `package.json` must exactly match the GitHub repo URL** (`git+https://github.com/jbsingh93/ai-advisory-board-cli.git`) — npm's trusted publisher validates this on every publish.
+- **First publish of a new package name has to be manual** (`npm publish --provenance=false` from a local terminal with 2FA). Trusted Publishing can't bootstrap a package that doesn't exist yet. After that one-time manual publish, configure the trusted publisher at `https://www.npmjs.com/package/<name>/access` and all future publishes go through OIDC.
+- **`publishConfig.provenance: true`** in `package.json` makes provenance mandatory. Locally that fails with "Automatic provenance generation not supported for provider: null" because there's no CI provider — override with `--provenance=false` for any local one-off publish; CI runs (GitHub Actions OIDC) supply the provider automatically.
+- **Tarball-content guard** in `.github/workflows/ci.yml` blocks `docs/`, `tests/`, and `test-artifacts/` from accidentally shipping. If you change `files` in `package.json`, update that regex too.
+
+## GitHub CLI (`gh`) for repo operations
+
+`gh` is installed at `C:\Program Files\GitHub CLI\gh.exe` on this machine but the global PATH is sometimes stale in fresh Bash sessions — invoke via the full path (`& "C:\Program Files\GitHub CLI\gh.exe" …` from PowerShell, or `"/c/Program Files/GitHub CLI/gh.exe" …` from Bash) when needed. Auth state is stored in the Windows credential keyring — `gh auth status` confirms it.
+
+Git Bash on Windows rewrites API endpoint paths that start with `/`. When calling `gh api`, **omit the leading slash**: use `gh api repos/jbsingh93/ai-advisory-board-cli/...`, never `gh api /repos/...` — the latter gets mangled into a filesystem path.
+
+**Common operations used in this repo:**
+
+```bash
+# Watch a workflow run live (Bash example — Windows path with space)
+GH="/c/Program Files/GitHub CLI/gh.exe"
+"$GH" run list --repo jbsingh93/ai-advisory-board-cli --limit 5
+"$GH" run watch <id> --repo jbsingh93/ai-advisory-board-cli --exit-status
+"$GH" run view <id> --repo jbsingh93/ai-advisory-board-cli --log-failed
+
+# Inspect a PR
+"$GH" pr view <n> --repo jbsingh93/ai-advisory-board-cli --json title,statusCheckRollup
+"$GH" pr diff <n> --repo jbsingh93/ai-advisory-board-cli
+
+# Squash-merge (only merge mode allowed on this repo)
+"$GH" pr merge <n> --repo jbsingh93/ai-advisory-board-cli --squash --delete-branch
+
+# Flip repo settings (examples — note the leading-slash rule)
+"$GH" api -X PUT repos/jbsingh93/ai-advisory-board-cli/actions/permissions/workflow \
+  -f default_workflow_permissions=write -F can_approve_pull_request_reviews=true
+"$GH" api -X PUT repos/jbsingh93/ai-advisory-board-cli/vulnerability-alerts
+"$GH" api -X PUT repos/jbsingh93/ai-advisory-board-cli/automated-security-fixes
+```
+
+**Trusted-publisher hard requirement**: GitHub Actions must be allowed to create PRs at the repo level. Setting is at `Settings → Actions → General → Workflow permissions`. If a Release workflow fails with `HttpError: GitHub Actions is not permitted to create or approve pull requests`, flip it via the API call above.
+
 ## Verification — live smoke is mandatory
 
 Typecheck + build is necessary but **not sufficient**. After every meaningful change to `src/`, run a live smoke against the real `aab` binary against real Claude calls. See **`docs/development/SMOKE_TESTING.md`** (authoritative reference, mirrors `docs/development/PLAYWRIGHT_MCP.md` for the UI side).

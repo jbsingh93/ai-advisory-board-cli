@@ -1,5 +1,11 @@
 # CHANGELOG — AI Advisory Board CLI
 
+## 0.1.1
+
+### Patch Changes
+
+- c216efe: `aab init` now suggests `aab ui` in the "Next steps" output. The web dashboard at `http://127.0.0.1:3737` is the most welcoming entry point for first-time users, so it's now surfaced right after `aab doctor` with a "(recommended)" hint.
+
 A chronological log of meaningful changes. Group by date; sub-section by topic. Each entry lists the user request that triggered it, the files touched, the why, and what was verified live.
 
 The format is loosely "Keep a Changelog" but date-grouped — we're not yet versioned. Once we ship `aab@1.0.0`, switch to per-version sections.
@@ -15,6 +21,7 @@ The format is loosely "Keep a Changelog" but date-grouped — we're not yet vers
 **What:** Closed out all 6 chunks of Phase 6.6 + the cross-cutting items. The dashboard is now (a) MCP-drivable via stable `data-testid` locators per the registry in `docs/development/PLAYWRIGHT_MCP.md` §6, (b) accessible to screen readers (landmarks + live regions + dialog semantics + labelled chips), (c) covered by a checked-in spec library that doubles as the source-of-truth for future `@playwright/test` ports, (d) wired up to a deterministic CI suite that boots a tempdir workspace + mock-claude shim so PR runs don't burn real subscription tokens, (e) gated by a 3-OS × 2-Node × 4-shard GitHub Actions matrix.
 
 **Files touched:**
+
 - `gui/index.html` — sidebar nav now carries `data-testid="tab-{route}"` on all 9 nav buttons (was: only 5 had `nav-{route}` testids — renamed for consistency). `<aside aria-label="Navigation sidebar">`, `<nav aria-label="Main">`, `<main role="main" data-testid="main">`. Every decorative emoji span (`nav-icon`, `brand-mark`, `status-dot`, theme-toggle icon) gets `aria-hidden="true"`. `ws-label` is now `role="status" aria-live="polite"`. New-discussion / edit / confirm modals all carry `role="dialog" aria-modal="true" aria-labelledby` (so they're announced as dialogs, not generic divs). Question textarea and Start button gain `new-discussion-question` / `new-discussion-start` testids.
 - `gui/app.js` — added `memberSlug(name)` helper mirroring `memberAgentSlug()` and `shortIdOf(id)` for the discussion-row testid. Wired the full Phase 6.6 §6 registry into the live DOM: `new-discussion` on the + New discussion button; `new-discussion-member-<slug>` on each chip (chips are now `<button role="checkbox" aria-checked aria-label="Toggle <name>">` — keyboard-reachable + screen-reader-friendly); `discussion-row-<shortId>` on every row card (`role="button" tabindex="0"`); `chat-stream` with `role="log" aria-live="polite" aria-relevant="additions"`; `member-typing-<slug>` on typing bubbles (`role="status" aria-live="polite" aria-label="<member> is thinking"`); `member-message-<slug>-<turn>` on each response card (preserves `data-testid-kind="response-card"` for backward-compat with `docs/specs/sparring-anchor-deepdive.md`); `orchestrator-decision-<round>` on the orchestrator card (`role="status"` + `data-action` for inspection); `discussion-continue` / `discussion-followup-open` / `discussion-followup-input` / `discussion-followup-send` on the chat-footer controls; `hitl-prompt` on the yellow warning bubble (`role="status" aria-live="polite"`); `hitl-panel` on the respond form (`role="dialog" aria-modal="true" aria-labelledby="hitl-reply-heading"`); `hitl-option-<index>` on each option chip (`aria-label="Option <n>: <text>"`); `hitl-reply-input` (`aria-label="Reply to the board"`) + `hitl-reply-submit`; `discussion-concluded` on the concluded marker (`role="status"`). Orchestrator bubble signature gained an explicit `roundNumber` argument; the `addOrchestratorDecision` WS handler now passes `msg.roundNumber` through.
 - `src/commands/doctor.ts` — two new checks land when `.mcp.json` is present in the agents-dir: (a) `Playwright MCP install` (✗ if `node_modules/@playwright/mcp/cli.js` is missing — hint: `npm install`); (b) `Playwright browsers` (✗ if the platform-appropriate `ms-playwright` cache directory is missing or empty — hint: `npx playwright install`). Both checks are skipped when `.mcp.json` doesn't exist (so users without the MCP wiring aren't bothered).
@@ -27,11 +34,13 @@ The format is loosely "Keep a Changelog" but date-grouped — we're not yet vers
 - **`package.json`:** `@playwright/test@^1.49` devDep added; new scripts `test:e2e`, `test:e2e:ui`, `test:e2e:install`.
 
 **Tests:**
+
 - Full vitest suite: **275/275 passing** unchanged (Phase 6.6 work is UI-side; no vitest fixtures regressed).
 - Playwright deterministic suite: `AAB_UI_BASE_URL=http://127.0.0.1:3737 AAB_UI_SKIP_SERVER=1 npx playwright test --project=chromium` → **6/6 passing** in 3.3s against the live `smoke-kw-2026-05-19` workspace.
 - Typecheck: clean. Build: `dist/bin/aab.js` 648.13 KB.
 
 **Verified — live Playwright MCP smoke on `~/.aabcli/smoke-kw-2026-05-19` (2026-05-21):**
+
 - **Sidebar landmarks:** snapshot shows `complementary "Navigation sidebar"` (the `<aside>` `aria-label`) and `navigation "Main"` (the `<nav>` `aria-label`). All 9 nav buttons render with only their visible labels — the emoji prefixes are `aria-hidden`, so screen readers don't double-announce. `main` is correctly identified as the document landmark. `status [ref=…]: connected` confirms the `ws-label` live region works.
 - **Tab testids:** `browser_evaluate` confirmed `[data-testid="tab-discussions"]` through `[data-testid="tab-settings"]` all resolve (all 9 routes). Sidebar `<aside>` carries `aria-label="Navigation sidebar"` and the main landmark carries `role="main"`. Theme toggle exposes `aria-label="Switch to light theme"` (toggles to "Switch to dark theme" on click).
 - **New-discussion modal:** opening the modal yields `role="dialog" aria-modal="true" aria-labelledby="new-discussion-title"`. Question textarea and Start button resolve via their testids. Member chips: `new-discussion-member-elon-musk` / `new-discussion-member-julian-bent-singh` / `new-discussion-member-alexandra-chen-cfa` all render as `<button role="checkbox" aria-checked="true" aria-label="Toggle <name>">` — pre-selected by default, toggle-able via click, screen-reader-friendly.
@@ -50,6 +59,7 @@ Screenshots: `test-artifacts/p66-discussions-tab.png`, `test-artifacts/p66-chat-
 **What:** Closed out the four open polish items on Phase 6.5 (per-member color from frontmatter, token-usage dashboard, light theme + toggle, mobile responsive sidebar) and flipped the four scope-reference stubs to ✅ (each was already shipped in its owning Phase 2-5 §UI section — they were leftover index entries from when Phase 6.5 was a unified bucket).
 
 **Files touched:**
+
 - `src/agents/emit-member-agent.ts` — added `readMemberAgentColor(name, projectRoot?)` helper. Walks the YAML frontmatter line-by-line (stops at the closing `---` so body-level `color:` text can't poison the result), lowercases the value, validates against the 9-color palette, returns undefined on any miss/error.
 - `src/gui/server.ts` — `enrichMembers()` / `enrichOne()` now take a `projectRoot` and add `color` to the wire object when the agent file has one. Two callsites updated (`/api/state` + `/api/members`). New endpoint `GET /api/usage[?since=YYYY-MM-DD&limit=N]` that returns `{ since, totalLogs, summary }` after running the pure aggregator. The GUI already does `m.color || colorForMember(m.name)` so the fallback chain just works.
 - `src/core/tokens/usage-summary.ts` — new pure aggregator that buckets `TokenUsageLog[]` into totals + byDay (ascending) + byFeature/byModel (sorted by cost desc). Falls back to `"unknown"` for missing feature/model/date so a malformed JSONL line never crashes the dashboard. Window start/end auto-derived from the data.
@@ -58,12 +68,14 @@ Screenshots: `test-artifacts/p66-discussions-tab.png`, `test-artifacts/p66-chat-
 - `gui/style.css` — appended `:root[data-theme="light"]` token overrides (light bg, darker member palette for contrast on white). Added the theme-toggle styles, the floating hamburger + scrim styles, the `@media (max-width: 760px)` mobile block (sidebar slides in from `translateX(-100%)`, view padding adjusts for the floating button) and a complementary `@media (min-width: 761px)` block that force-hides the hamburger so the desktop layout is untouched. Added the entire `.usage-*` family (totals grid, sparkline bars with hover tooltips, table with inline cost-share bars).
 
 **Tests (16 new, 275/275 total passing):**
+
 - `src/agents/__tests__/read-member-agent-color.test.ts` (8 tests) — missing file, basic parse, quoted value, case-insensitive match, unknown color rejected, body-level `color:` ignored, no-frontmatter file ignored, parser stops at the closing `---`.
 - `src/core/tokens/__tests__/usage-summary.test.ts` (8 tests) — empty input gives zeroed totals, totals sum correctly across logs, byDay sorted ascending, byFeature/byModel sorted by cost desc, cache tokens accumulated separately, windowStart/windowEnd track earliest/latest, missing fields fall back to `"unknown"`.
 
 **Why these four were the actual Phase 6.5 work:** Per the "Scope clarified 2026-05-19" note in `docs/development/CHECKLIST.md`, Phase 6.5 is the polish + cross-cutting + shipped-views index. The four cross-reference stubs (`Discussion: spar`, `Decision Coach chat view`, `Sparring 1:1 chat view`, `Skill-creator run-launch + telemetry + preflight-wizard UI`) all had their authoritative implementation in Phase 2-5 §UI subsections — every one of those is ✅. The remaining checkboxes were the polish backlog: per-member color from frontmatter, token-usage dashboard, light theme + toggle, mobile responsive sidebar.
 
 **Verified — live Playwright MCP smoke on `~/.aabcli/smoke-kw-2026-05-19` (2026-05-21):**
+
 - **Per-member color from frontmatter:** `GET /api/members` returns `Elon Musk → pink`, `Julian Bent Singh → yellow`, `Alexandra Chen, CFA → red` (all sourced from the agent files' `color:` frontmatter, not the deterministic hash). Chat-view DOM verified: `EM` avatar carries `data-color="pink"` — the message bubble for the same member with the deterministic-hash fallback would have rendered a different palette slot.
 - **Usage dashboard:** sidebar shows `📊 Usage` nav item; clicking it loads totals (`Total cost $0.00`, `Calls 3`, `Total tokens 42.3k`, `Cached read 16.9k`), `Daily spend` sparkline with hover tooltip (`2026-05-19 · $0.00 · 42.3k tokens · 3 calls`), `By feature` table (`discussions 2 · 28.5k`, `sparring 1 · 13.7k`), `By model` table (`sonnet 2 · 28.5k`, `opus 1 · 13.7k`). All four range buttons (`Last 7 days` / `Last 30 days` / `Last 90 days` / `All time`) wired with the `active` class state.
 - **Light theme + persistence:** toggling cycles `data-theme` between `light` (resolves `--bg: #f8fafc`, `--text: #1a1f29`) and `dark`. The choice persists across page reload via `localStorage["aab-theme"]`.
@@ -83,16 +95,19 @@ Screenshots: `test-artifacts/p65-usage-dark.png`, `test-artifacts/p65-usage-ligh
 **Spec:** `docs/development/SKILL_CREATOR.md` §6.3 rewritten with the full 9-tier shape, three-pass recon-prompt instructions, anti-bias check, downstream-impact analysis (brief truncation order + Planner directive + validator gate).
 
 **Engine — Chunk 1 (schema + recon-prompt extension):**
+
 - `src/core/skill/recon/wiki-recon.ts` — `WikiContext` grows 4 new top-level fields: `playbooks: WikiPlaybook[]` (FULL bodies + confidence), `templates: WikiTemplate[]` (FULL bodies + optional exampleOutput), `domainKnowledge: WikiDomainKnowledge[]` (summary + excerpt), `pastLessons: WikiPastLesson[]` (summary + actionable rule). Maxturns bumped 8 → 12 (recon agent now opens full bodies). New `PROMPT_TEMPLATE` with three-pass instructions (tier classification → open Tier 1 bodies in full → extract Tier 2-3 by summary) + explicit anti-bias check ("do not over-weight stakeholder extraction — most pages in a healthy wiki are about procedures, templates, and concepts, not humans"). Synonym tolerance: `procedures`/`processes` → `playbooks`; `formats`/`examples` → `templates`; `knowledge`/`facts` → `domainKnowledge`; `lessons`/`learnings` → `pastLessons`. Dedupe by slug across canonical + synonym fields.
 - `src/core/skill/recon/orchestrator.ts` — extended degraded-mode shape + the `onPhaseDone` summary now reports knowledge-tier counts ("3 playbooks, 1 template, 5 knowledge, …") so the GUI's planner-progress-pane surfaces the new tier signal too.
 
 **Engine — Chunk 2 (Planner reasoning + brief assembly):**
+
 - `src/core/prompts/skill-planner.ts` — new ~30-line directive added to `<orchestration_directives>` explaining that wiki Tier 1 is "the most load-bearing signal in the whole recon" and giving per-tier execution rules. Includes the explicit validation-gate warning so the model knows the schema will reject if Tier 1 is populated but uncited.
 - `src/core/parsing/llm-response-schemas.ts` — `validateProposalSemantics` grows a `WikiKnowledgeSlugs` parameter and a new citation gate. Two sub-checks: (a) if any Tier 1 slot has slugs, the proposal's `valueRationale` must cite at least one of them; (b) every playbook slug must appear somewhere meaningful (`valueRationale` OR `proposedWorkflow` OR an integration). Failure surfaces a clean error like "wiki playbook(s) ignored entirely: our-launch-playbook. Playbooks are the most load-bearing wiki tier."
 - `src/core/skill/planner.ts` — wires the wiki slug arrays into the validation call so the gate fires automatically.
 - `src/core/skill/build-brief.ts` — new `WikiKnowledgeBundle` field that carries FULL bodies of playbooks + templates to skill-creator. Updated truncation priority order (drops in this order: web innovations → integration citations → narrative edits → domainKnowledge excerpts → template bodies trimmed to 1500 chars → playbook bodies trimmed to 3000 chars as last resort). New `wikiKnowledgeIsBakeIn` constraint added to `DEFAULT_CONSTRAINTS`: tells skill-creator that the wiki bundle is "the user's OPERATING BRAIN, not background hints" — playbook bodies must be quoted verbatim, template bodies are the output shape, domain knowledge inlined where it informs decisions, past-lesson actionables surface as MUST NOT or preflight, every wiki entry cited by slug.
 
 **Bugs caught + fixed during the real-Claude verification cascade** (5 attempts total, each catching a different schema-too-strict bug — Opus runs vary field names every time):
+
 1. **`touchpointKind` enum too narrow** — Opus emitted `draft-slack-message`; my enum was `draft-email | slack-mention | calendar-invite | doc-share | other`. Fix: drop the enum, accept any string (this field is display-only — downstream code never switches on it).
 2. **`integrations: Required`** — Opus put the integration list under `proposalIntegrations` or nested it in `tiers.maximalist.integrations`. Fix: add top-level synonym remap.
 3. **`skillSummary: Required`** — Opus put the summary under `summary` or `description`. Fix: synonym remap.
@@ -101,19 +116,20 @@ Screenshots: `test-artifacts/p65-usage-dark.png`, `test-artifacts/p65-usage-ligh
 
 **Before / after diff — definitive proof the wiki is now load-bearing:**
 
-| Same action (Ship Q3 launch YouTube video distribution pipeline) | Empty wiki | Seeded wiki |
-|---|---|---|
-| `wiki/` references in emitted SKILL.md | **0** | **24** |
-| Wiki full-body files shipped in `references/` | none | 2 (playbook + template) |
-| CTA copy in skill body | generic "Start your trial" | **verbatim:** "Start your 7-day free trial — no credit card required. Link in the description." |
-| MUST NOT vetoes | generic best-practice (no iframe, no LinkedIn URL, etc.) | 10 vetoes, every one cites the wiki page it came from — Opus pulled A/B-test statistics directly from the wiki body ("38% lower conversion", "23% lower watch completion") and made them mandatory rules |
-| Step rationale | generic | cites Phase numbers from the playbook ("Phase 5, step 1–2", "ENDORSED DIRECTION: Slack-only communication") |
-| Preamble | minimal | new "## Wiki Sources Baked Into This Skill" section listing both pages with their full text linked into `references/` |
-| Wall-clock | 11m 59s | 10m 56s |
+| Same action (Ship Q3 launch YouTube video distribution pipeline) | Empty wiki                                               | Seeded wiki                                                                                                                                                                                              |
+| ---------------------------------------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `wiki/` references in emitted SKILL.md                           | **0**                                                    | **24**                                                                                                                                                                                                   |
+| Wiki full-body files shipped in `references/`                    | none                                                     | 2 (playbook + template)                                                                                                                                                                                  |
+| CTA copy in skill body                                           | generic "Start your trial"                               | **verbatim:** "Start your 7-day free trial — no credit card required. Link in the description."                                                                                                          |
+| MUST NOT vetoes                                                  | generic best-practice (no iframe, no LinkedIn URL, etc.) | 10 vetoes, every one cites the wiki page it came from — Opus pulled A/B-test statistics directly from the wiki body ("38% lower conversion", "23% lower watch completion") and made them mandatory rules |
+| Step rationale                                                   | generic                                                  | cites Phase numbers from the playbook ("Phase 5, step 1–2", "ENDORSED DIRECTION: Slack-only communication")                                                                                              |
+| Preamble                                                         | minimal                                                  | new "## Wiki Sources Baked Into This Skill" section listing both pages with their full text linked into `references/`                                                                                    |
+| Wall-clock                                                       | 11m 59s                                                  | 10m 56s                                                                                                                                                                                                  |
 
 The emitted skill body opens with a "Wiki Sources Baked Into This Skill" section that names both wiki pages by slug + path to their full text in `references/`. The preflight section quotes the playbook's discipline rules ("Never skip or reorder the 5 phases. Lock the script before visual work begins. Accept no creative revisions after Day 11's single consolidated note pass.") and ABORTs execution if any gate is unmet. The MUST NOT section embeds the wiki's anti-patterns as enforceable rules. Each integration step cites the playbook's Phase + step number it's executing. The skill is the user's playbook, in executable form.
 
 **Tests:** 16 new vitest tests bringing the suite to **259/259 passing** (was 244). New coverage spans:
+
 - Wiki recon: 7 tests for Tier 1 parsing (playbooks confidence + verbatim body, templates with optional exampleOutput, domainKnowledge + pastLessons, synonym remap, body-required guard, dedup-by-slug, default-confidence fallback).
 - Brief assembly: 3 tests for the `wikiKnowledgeIsBakeIn` constraint surface + FULL-body propagation through `buildSkillCreatorBrief` + truncation order that preserves playbooks to the very end.
 - Schema validator: 4 tests for the wiki citation gate (positive + negative + playbook-in-workflow-counts-as-cited + backwards-compat no-op when omitted).
@@ -163,6 +179,7 @@ The emitted skill body opens with a "Wiki Sources Baked Into This Skill" section
 **What:** Ran the live Playwright MCP smoke against `aab ui` in the external test folder (per CLAUDE.md §Verification — UI changes in `gui/` or `src/gui/server.ts` mandate a Playwright MCP smoke). Verified the Skills tab + skill detail modal + Action Board Plan/Solve buttons + the Planner progress pane streaming real `planner_recon_progress` WS events (PC scan: 35 apps + 6 CLI tools live-scanned on the test machine; wiki recon + web research completed via real Sonnet calls; live stream populated with 3 phase summaries: `pc-scan: 35 apps, 6 CLI tools, 0 MCP, 0 env` / `wiki-recon: 0 pages, 0 stakeholders, 0 vetoes` / `web-research: 5 patterns, 5 tools, 0 app surfaces`). The proposal modal renders all sections correctly (verified via simulated `planner_proposal_ready` event with a realistic SkillDesignProposal — 3 integration rows spanning 3 source types, 1 stakeholder row, tier radio with maximalist pre-checked, cost line `$2.20 · ~8 min`, all 3 action buttons visible). Re-plan modal opens; 10-char feedback guard works (toast: "Feedback must be at least 10 characters."); close button dismisses cleanly.
 
 **Bug caught + fixed via the smoke:** `planner_failed` events surfaced a toast that auto-dismissed after 4.5s and `hidePlannerProgress()`'d the progress modal — after a 10+ min Opus wait the user was left with no proof of failure. Fix in `gui/app.js`:
+
 - Keep the progress modal open on `planner_failed`.
 - Mark the reasoning phase `data-status="failed"` (red-tinted CSS via the new `.planner-phase[data-status="failed"]` rule).
 - Render a sticky `<div class="planner-error-banner" data-testid="planner-error-banner">` inside the pane with the error message verbatim.
@@ -172,6 +189,7 @@ The emitted skill body opens with a "Wiki Sources Baked Into This Skill" section
 **Files changed:** `gui/app.js` (rewrote the `aab-planner-event` failure handlers + added `showPlannerError()`), `gui/style.css` (added `.planner-phase[data-status="failed"]` + `.planner-error-banner` rules), `docs/development/CHECKLIST.md` (flipped the live MCP smoke item to ✅), `CHANGELOG.md` (this entry).
 
 **Verified:**
+
 - Typecheck clean, 236/236 tests still passing.
 - Live MCP smoke against the running UI server caught the actual bug (transient toast on long-running failures) and the fix verified via simulated event dispatch.
 - The CLAUDE.md mandate "every meaningful change to `gui/` or `src/gui/server.ts` must be exercised via Playwright MCP before being declared done" is now actually met for Phase 5, not just paid lip service to.
@@ -185,17 +203,20 @@ The emitted skill body opens with a "Wiki Sources Baked Into This Skill" section
 **What:** All 6 chunks of Phase 5 shipped per the authoritative `docs/development/SKILL_CREATOR.md` spec. The headline feature — `aab actions plan|solve` driven by an agentic Skill Planner that reasons across PC scan + Knowledge Wiki + live web research, then hands a structured proposal to Anthropic's official `skill-creator` skill — is live end-to-end with CLI + GUI + WS + 80 new vitest tests + 8 Playwright MCP regression specs.
 
 **Engine — Chunk 1 (skill-creator detection + bootstrap):**
+
 - `src/core/skill/resolve-skill-creator.ts` — scope walker (project → user → plugin) with hand-rolled YAML frontmatter parse for `name:` + `version:`; `resolveSkillCreator()` thin alias; `skillCreatorInstallHint()` surfaces the `/plugin install skill-creator@claude-plugins-official` command (interactive-only per [#38505](https://github.com/anthropics/claude-code/issues/38505)).
 - `aab init --install-skill-creator` — auto-detects + prints install instructions when missing.
 - `aab doctor` adds 3 checks: skill-creator presence + PC scan probe (fast, no LLM) + web reachability to anthropic.com (≤1.5s HEAD).
 
 **Engine — Chunk 2 (recon: PC + Wiki + Web):**
+
 - `src/core/skill/recon/pc-scan.ts` — read-only inventory: desktop apps (Windows registry/Programs/Applications walk; macOS `/Applications`; Linux `.desktop` files), CLI tools (`where`/`which` + cheap `--version` probe across 60 candidates), MCP servers (parses `.mcp.json` at project + user + global scope), browser extensions (Chrome/Edge/Firefox manifest.json walk), env-var allowlist (80+ patterns for `STRIPE_*, HUBSPOT_*, …`), Claude-for-Chrome auth heuristic, computer-use availability heuristic. Pure function: `scan({ projectRoot, envOverride })` for unit-testability. Hard rule: never writes, never hits the network.
 - `src/core/skill/recon/wiki-recon.ts` — one Sonnet call with `Read/Grep/Glob/maxTurns:8`; recon-specific prompt tuned for stakeholder + decision + veto extraction (NOT the generic `aab knowledge query` prompt); dual-path role extraction (frontmatter `role:` if present, body-paragraph extraction otherwise) since Phase 1.5's entity frontmatter doesn't carry `role:` natively. Returns structured `WikiContext` with `relevantPages` + `stakeholders` + `endorsedDirections` + `vetoes` + `pastDecisions`.
 - `src/core/skill/recon/web-recon.ts` — two-pass design per T1.3: (Pass 1) general task research (`WebSearch + WebFetch + maxTurns:12`); (Pass 2) per-detected-app integration-surface research on the top 5 apps from PC scan, each with `maxTurns:6`. Pass 2 is what makes the maximalist tier actually maximalist — it surfaces "Elgato Teleprompter has a local HTTP API at port 9012 callable via `Bash(curl *)`" rather than generic best-practice patterns. Returns `WebResearchContext` with `appIntegrationSurfaces[]` + `bestPracticePatterns` + `recommendedTools` + `recentInnovations` + `warningsAndPitfalls` + `webPassesCompleted` for degraded-recon visibility.
 - `src/core/skill/recon/orchestrator.ts` — `Promise.allSettled` over the three recon phases; aggregates warnings into a top-level `warnings[]` slot; emits `planner_recon_progress` + `planner_recon_done` events to a streaming `onPhaseDone` callback that the WS broadcast layer + CLI spinner both consume.
 
 **Engine — Chunk 3 (Planner reasoning + user review):**
+
 - `src/core/prompts/skill-planner.ts` — **the most important prompt in the CLI**. Structured per SKILL_CREATOR.md §6.5a: `<role>` + `<skill_operating_model>` (the 14-line "what is a skill" preamble) + `<master_gpt_prompter_hardening>` (reasoning/tool-use/autonomy/self-verification blocks) + `<ambition_directive>` (three-tier framing + hard ≥3 maximalist gate) + `<orchestration_directives>` (per-recon-surface instructions; chrome-extension + computer-use as first-class kinds) + `<invocation_hint_directive>` (5 worked examples spanning all kinds) + `<output_contract>` (JSON-only) + `<input>` (action + recon triple + settings + replan-feedback) + `<few_shot_examples>` (3 condensed examples: Elgato creative-prod + pricing strategic + LinkedIn chrome-extension). Exposed `renderSkillPlannerPrompt({ ... })`.
 - `src/core/skill/planner.ts` — `runPlanner()` orchestrates the Opus 4.7 reasoning call (`researchModel`, `maxTurns:1`, `allowedTools:[]`); parses against `skillDesignProposalSchema`; runs `validateProposalSemantics` for the hard gates beyond shape (kebab-case skillName, ≥3 integrations spanning ≥2 source types, reserved-name refusal); re-runs once with a stronger nudge injected into `<replan_feedback>` on validation failure; back-fills `requiredTools` from `invocationHint.tools` on success. `projectGrantedTools()` is the pure function the planner-review layer + GUI both use to compute the final `allowed-tools` allowlist from accepted integrations + stakeholders.
 - `src/core/parsing/llm-response-schemas.ts` — added `skillDesignProposalSchema` with full nested validation (Integration / Stakeholder / Workflow / Warning / Mismatch sub-schemas), `validateProposalSemantics()` for semantic gates, `RESERVED_SKILL_NAMES` set.
@@ -203,6 +224,7 @@ The emitted skill body opens with a "Wiki Sources Baked Into This Skill" section
 - `aab actions plan <id>` — first-class command (NOT a debug flag) per the spec's "users will want to see the proposal before committing to a solve." Supports `--planner-tier`, `--planner-no-{web,pc-scan,wiki}`, `--out <path>` for markdown export, `--yes` for auto-accept, `--json` for machine-readable.
 
 **Engine — Chunk 4 (skill-creator invocation + adapter + install + persist):**
+
 - `src/core/skill/build-brief.ts` — assembles the JSON brief sent as the user message to a headless skill-creator call. Embeds the full Planner proposal verbatim (the brief's core, not a hint). Truncates over 60 KB in priority order: `webResearch.recentInnovations` → integration citations → `userNarrativeEdits` last. `renderUserMessage` wraps the JSON brief in a fenced block + the `SKILL_CREATOR_DONE: <skillName>` completion sentinel.
 - `src/core/skill/invoke-skill-creator.ts` — `claude -p --append-system-prompt-file <skill-creator/SKILL.md>` with `allowedTools=Write,Edit,Read,Glob,Bash`, `cwd=<runId workspace tempdir>`, 20-min timeout, `outputFormat: 'stream-json'` for live tool-use events. `walkWorkspace` inventories emitted files. `stubSkillCreatorRun` writes a synthetic SKILL.md for offline testing — used by `aab actions solve --stub`.
 - `src/llm/claude-code-runner.ts` — `RunOptions` gains `appendSystemPromptFile` + explicit `outputFormat` options (streaming auto-engages when `onEvent` is set, but solve callers can force stream-json without a callback).
@@ -213,16 +235,19 @@ The emitted skill body opens with a "Wiki Sources Baked Into This Skill" section
 - `aab actions solve <id>` — full SKILL_CREATOR.md §5 flag surface: `--no-planner`, `--planner-tier`, `--planner-no-{web,pc-scan,wiki}`, `--skill-name`, `--scope`, `--no-install`, `--budget-cap-usd`, `--stub`, `--yes`.
 
 **Engine — Chunk 5 (`aab actions runs` + `aab skills`):**
+
 - `aab actions runs {list,show,export,delete}` — list with shortId + status icon + cost + duration; show pretty-prints metadata + embedded Planner proposal markdown render; export writes the SKILL.md + supporting files + a re-rendered `proposal.md` into a directory (jszip deferred to Phase 5.5 — directory is the v1 contract).
 - New top-level `aab skills` command in `src/commands/skills.ts`: `list` (enumerates project + user + plugin scopes via the same scope walker), `show` (pretty-prints SKILL.md), `test` (round-trip via `claude -p --append-system-prompt-file`), `uninstall` (archives to `.snapshots/skills/<name>-<ts>/`), `restore` (restores from `.snapshots/skills/`).
 
 **Web UI + Server — Chunk 6:**
+
 - `src/gui/server.ts` adds: `POST /api/actions/:id/plan` (returns 202 + planId; runs async, streams via WS; caches the accepted profile in an in-memory `planCache: Map<planId, ResolvedSkillCapabilityProfile>` for `/solve` re-entry); `GET /api/plans/:planId[?as=md]`; `POST /api/plans/:planId/replan` (server-enforced ≥10 char + max-3 cap); `POST /api/actions/:id/solve` (accepts `planId` to reuse cached profile); `GET /api/actions/:id/runs`; `GET /api/skill-runs/:id`; `DELETE /api/skill-runs/:id`; `GET /api/recon/environment` (fast read-only PC scan, no LLM); `GET /api/skills`; `GET /api/skills/:name`. `coerceSolveEventForWs` helper maps `SolveEvent`s to wire-shape WS events with planId/runId stamped at the top level.
 - `gui/app.js` adds: Plan + Solve buttons on every action card; the Planner progress pane modal (4-phase grid + live tool-call stream, last 20 rows); the proposal modal (tier radio + per-integration toggle rows + per-stakeholder toggle rows + narrative editor textarea + cost line + Accept / Re-plan / Reject / Export-md buttons); the re-plan feedback modal; the run-detail modal (reused from Skills tab); the Skills tab (`renderSkillsView`) with show + test buttons; the `aab-planner-event` browser-event dispatcher for forwarding all `planner_*` and `skill_run_*` WS events to the planner UI.
 - `gui/index.html` adds: the 🧠 Skills nav item; the planner-progress / proposal / replan-feedback / run-detail modal backdrops with all `data-testid` attributes per spec.
 - `gui/style.css` adds: `.kanban-card-actions`, `.planner-phase` (color-coded by status), `.planner-stream`, `.planner-proposal` block styles, `.planner-tier-row`, `.planner-rationale`, `.planner-integration-row`, `.planner-stakeholder-row`, `.planner-kind` (mono chip), `.planner-cost`, `.skills-view`, `.skills-row`, `.skill-detail-body`.
 
 **Specs (Playwright MCP regression library):**
+
 - `docs/specs/skill-plan-only.md` — Plan button → proposal modal → export-to-md.
 - `docs/specs/skill-planner-maximalist.md` — Recipe A/D seed → ≥3 integrations across ≥2 surfaces → toggle behavior.
 - `docs/specs/skill-planner-replan.md` — proposal → Re-plan → feedback ≥10 chars → re-planned proposal mentions feedback keyword.
@@ -237,12 +262,14 @@ The emitted skill body opens with a "Wiki Sources Baked Into This Skill" section
 **Live smoke:** Stub-mode `aab actions solve d525be59 --no-planner --stub --yes` from the external test folder (`C:\Users\julia\Downloads\kode\ai-advisoryboardclitestfolder`) completed in 315ms end-to-end. Produced a valid SKILL.md at `.claude/skills/phase-5-smoke-action/SKILL.md` with the deterministic `grantedTools` projection (`Read, Write, Glob, Grep`). `actionItem.linkedSkill` populated. `aab actions runs show c47ee06b` renders the full embedded Planner proposal. `aab skills list` enumerates the new skill alongside the stubbed skill-creator. `aab skills uninstall phase-5-smoke-action --yes` archives cleanly to `.snapshots/skills/phase-5-smoke-action-<ts>/`. **`aab doctor` from the same folder passes all 14 checks** including the 3 new Phase 5 checks (skill-creator presence, PC scan probe surfacing platform + cli-tool count, web reachability to anthropic.com in <500ms). Real-Claude end-to-end smoke against `docs/development/SKILL_CREATOR.md` §20a Recipes A/D/E/F deferred to user — each Planner run is ~$2.20 ($1.74 Planner + $0.45 skill-creator typical) — but the orchestrator + brief + adapter + install + persist + WS pipeline is verified to work without burning tokens via the stub path; the only thing real-Claude validates beyond stub is skill-creator's emit quality (which Anthropic's own ~117k weekly-install skill is responsible for, not our bridge code).
 
 **Strategic notes:**
+
 - The deliberate reframe from the original sage-council port plan (~5,000 LOC of skill-builder + 14-prompt pipeline) to a thin orchestrator around Anthropic's official skill-creator saved ~85% of the engineering work and redirected the capacity into the agentic Skill Planner — the actual depth-of-feature contribution this CLI makes that doesn't exist in either sage-council or Anthropic's stock skill-creator. Net diff per the spec's §3: ~5,000 LOC removed; ~800 LOC added — actual shipped count is ~1,400 LOC across `src/core/skill/` + the Planner prompt template + the GUI integration.
 - The depth-of-feature thesis ("Planner reasons about ≥3 multi-tool orchestrations spanning ≥2 distinct surfaces, including first-class `chrome-extension` and `computer-use` invocation kinds") is enforced at three layers: (1) the prompt's `<ambition_directive>` hard gate, (2) the `skillDesignProposalSchema` zod validation, (3) the `validateProposalSemantics` function that runs after schema parse. Failures trigger one automatic re-run with the validation errors injected into `<replan_feedback>`; if that also fails, `ContractError` surfaces with hints pointing at `--planner-tier standard` or wiki/MCP seeding.
 - The `invocationHint.kind` enum is the load-bearing addition that turns "skills as prompt packs" into "skills as agents" — each integration carries an executable contract (the verbatim snippet for bash/mcp/write, or the user-handoff prose for chrome-extension/computer-use). The brief constraint instructs skill-creator to embed snippets verbatim, not paraphrase.
 - The two-step Plan → Solve UX (Solve button always goes through Plan first) is deliberate: per the spec, "users will want to see the Planner's proposal before committing to burn ~$2 on skill-creator." Cheap discovery, expensive commitment.
 
 **Docs:**
+
 - `docs/development/CHECKLIST.md` — all Phase 5 boxes flipped to ✅; phase emoji flipped to ✅; new ~600-word closeout narrative under "What's running right now"; "Next sensible chunk" pointer advanced to Phase 6.
 - `docs/development/SKILL_CREATOR.md` — unchanged (it's the authoritative spec; this PR is the implementation).
 - `CHANGELOG.md` — this entry.
@@ -260,26 +287,31 @@ The emitted skill body opens with a "Wiki Sources Baked Into This Skill" section
 **What:** Closed the half-finished HITL loop. `aab discuss start` could produce a `pendingUserRequest`, but there was no way to reply or to drive round 2. Now there is.
 
 **Engine** (`src/core/discussion/conversation-flow.ts`)
+
 - `continueDiscussion({ discussion, members, settings, storage, ... })` — runs the **pre-round clarification gate** (one orchestrator call) before any model spawn. If the gate returns `request_user_input`, sets `pendingUserRequest`, saves, and returns `{ gated: true }` without burning member tokens. Otherwise generates round N+1, runs post-round orchestrator, persists.
 - `respondToUserRequest({ discussion, content, selectedOption?, ... })` — appends a `UserResponse{type:'advisory_board_requested'}`, clears `pendingUserRequest`, then calls `continueDiscussion` with `skipPreRoundGate: true` (the orchestrator just asked for this exact reply — re-running it would loop forever) and the user's reply threaded as `userFollowUp.content`.
 - Bonus: when a discussion concludes via `maxTurns`, any leftover `pendingUserRequest` is cleared so the UI never shows "done" alongside an unanswerable HITL prompt. Same fix in `startDiscussion` for round-1-ends-at-maxTurns.
 
 **CLI** (`src/commands/discuss.ts`)
+
 - `aab discuss continue <idOrShort> [--agents-dir <path>]`
 - `aab discuss respond <idOrShort> <answer> [--option <i>] [--agents-dir <path>]` — `--option` is 1-based, validated against the actual `pendingUserRequest.options[]` list.
 - Refactored `start`/`continue`/`respond` to share `verifyAgentFiles()` + `progressHandler()` helpers.
 - Added `.warn()` to the TTY-fallback shim in `src/ui/spinner.ts` so cold-shell mode doesn't crash when we surface a gate decision.
 
 **Web UI** (`src/gui/server.ts`, `gui/app.js`, `gui/style.css`)
+
 - `POST /api/discussions/:id/continue` and `/respond` — same 202 + WS-broadcast pattern as `POST /api/discussions`. Returns `409 Conflict` when state forbids the action (already concluded, awaiting input, etc.).
 - New `discussion_gated` WS event when the pre-round gate stops things short.
 - Chat view footer now has: a **Continue button** when the discussion is open and not gated; an **inline reply form** (with option chips when the orchestrator listed any) when there's a pending HITL; "✓ Discussion concluded." line when done.
 
 **Verified live (May 2026):**
+
 - `start` → 3 members responded → orchestrator gated next round → `respond --option 1` with answer → 3 members responded round 2 → orchestrator asked again → maxTurns auto-concluded.
-- Pre-round gate fires *before* any member spawn — confirmed zero member tokens spent when the orchestrator wants user input first.
+- Pre-round gate fires _before_ any member spawn — confirmed zero member tokens spent when the orchestrator wants user input first.
 
 **Docs:**
+
 - `docs/development/CHECKLIST.md` — flipped 6 boxes to ✅; rewrote "What's running right now" with the live milestone.
 - `README.md` — updated "Working today" + commands table; added the gate explanation.
 
@@ -292,6 +324,7 @@ The emitted skill body opens with a "Wiki Sources Baked Into This Skill" section
 **What:** Ask one specific board member, a subset of the board, or everyone — without the orchestrator deciding.
 
 **Engine** (`src/core/discussion/conversation-flow.ts`)
+
 - `addFollowUpQuestion({ discussion, question, members, targetType, ... })` with `targetType: 'all' | 'specific' | 'subset'`.
 - Candidate pool restricted to the discussion's original `selectedMemberIds` — a follow-up can never pull in a member the discussion never had.
 - Pre-round clarification gate fires here too, per PLAN §4.3.1.
@@ -300,10 +333,12 @@ The emitted skill body opens with a "Wiki Sources Baked Into This Skill" section
 - Exported new `FollowUpTargetType` type.
 
 **CLI**
+
 - `aab discuss follow-up <idOrShort> <question> [--all|--member <name>|--members <a,b,c>]`
 - Mutually exclusive flags. Member token resolution by id, slug, exact name (case-insensitive), or unambiguous prefix. `--members` requires at least 2 distinct members (one is `--member`, all is `--all`).
 
 **Web UI**
+
 - `POST /api/discussions/:id/follow-up` — body `{ question, targetType, selectedMemberId?, selectedMemberIds? }`. Validates targetType + selection. Same WS broadcast pipeline.
 - New chat-footer **Follow up** button. Click opens an inline composer with a textarea + a deselectable member-chip selector. Frontend infers `targetType` from chip count (all selected → `'all'`, exactly 1 → `'specific'`, in between → `'subset'`).
 
@@ -320,15 +355,18 @@ The emitted skill body opens with a "Wiki Sources Baked Into This Skill" section
 **Root cause investigation:** Server returned 3 members fine via `/api/state`. The bug was the modal showing empty chips — caused by either (a) workspace resolution drift between `aab init` and `aab ui` cwd, or (b) a fresh modal opening before bootstrap had finished.
 
 **Empty-state bug fix** (`gui/app.js`)
+
 - New-discussion modal now shows a **loud yellow warning** when `state.members` is empty: prints workspace ID, full root path in monospace, and explicit instructions ("either run `aab init` here, or click Board members to add one"). Start button is disabled until at least one active member exists.
 - `openNewDiscussionModal` is now `async` and refreshes state from server before opening — protects against stale state if the user just edited members in another tab.
 
 **Workspace transparency** (`gui/index.html`, `gui/app.js`, `gui/style.css`)
+
 - New **workspace card** in the sidebar above the nav with three rows: scope pill (`home`/`project`, color-coded cyan/green), member count (`N/M active`), and the full root path in monospace. Updates whenever members change.
 - Server `/api/state` now returns `workspace.scope` and `workspace.projectRoot` (used by the card and by future "is this the right workspace?" checks).
 - Added `getWorkspaceScope()` to `FsStorageService`.
 
 **Members CRUD** — fully working from the UI
+
 - Server: `POST /api/members`, `PATCH /api/members/:id`, `DELETE /api/members/:id`. CRUD also touches `.claude/agents/<slug>.md`:
   - On create: emits the agent file via `emitMemberAgentFile`.
   - On update: re-emits when name/persona/voice/expertise/tools changed; if name changed, deletes the old slug file (only if AAB-generated).
@@ -336,14 +374,17 @@ The emitted skill body opens with a "Wiki Sources Baked Into This Skill" section
 - Client: each member card has Edit + Delete buttons + an iOS-style switch for activate/deactivate. Inactive members fade to 55% opacity. "+ Add member" button on the view header opens a generic edit modal with name / title / expertise (comma-separated) / persona / voiceGuide.
 
 **Principles CRUD**
+
 - Server: `POST /api/principles`, `PATCH /api/principles/:id`, `DELETE /api/principles/:id`. `coerceCategory()` validates against the `PrincipleCategory` enum.
 - Client: "+ Add principle" button. Edit form with title / description / behavior / category dropdown / priority. Click any card to edit. Inline switch for activate/deactivate.
 
 **Settings editing**
+
 - Server: `PATCH /api/settings` — merges with current settings, with type coercion for numeric fields that arrive as strings from the form.
 - Client: 12-field form with proper input types — text fields, number fields with min/max, dropdowns for orchestrator style + model aliases (incl. specific Claude IDs), iOS-style switches for booleans (`autoSummarization`, `enableUserInteraction`), help text under tricky fields.
 
 **Visual polish** (`gui/style.css`)
+
 - Bumped contrast tokens: `--text` `#e6e9ef` → `#f1f3f7`, `--text-dim` `#98a3b8` → `#b4bccc`, `--text-faint` `#6b7689` → `#818a9d`, borders darker by ~10%. The "dim disabled-look" in the user's first screenshot is gone.
 - New iOS-style `.switch` component with smooth slide animation.
 - New `.btn-danger` (filled red) and `.btn-danger-ghost` (outlined red) for destructive actions.
@@ -352,6 +393,7 @@ The emitted skill body opens with a "Wiki Sources Baked Into This Skill" section
 - View-header `gap: 16px` so action buttons (`+ Add member`) don't crowd the title.
 
 **Verified live (curl):**
+
 - `POST /api/members` → created Test Member, agent file `test-member.md` appeared in `.claude/agents/`
 - `PATCH /api/members/:id` `{isActive: false}` → updated correctly
 - `DELETE /api/members/:id` → returned 204, agent file was cleaned up
@@ -367,8 +409,11 @@ The emitted skill body opens with a "Wiki Sources Baked Into This Skill" section
 **Root cause:** `.modal-backdrop { display: flex }` overrode the `[hidden]` UA-stylesheet rule. The HTML `hidden` attribute corresponds to `display: none` via the `[hidden]` UA rule, which has the same CSS specificity (0,0,1,0) as a class selector. Cascade tie → author rule wins → modal visible. Was always broken; only became visible when I added a 2nd and 3rd `.modal-backdrop` element (`#edit-modal`, `#confirm-modal`).
 
 **Fix** (`gui/style.css` — one line at top of Modal block):
+
 ```css
-[hidden] { display: none !important; }
+[hidden] {
+  display: none !important;
+}
 ```
 
 Covers all `hidden` attribute usages, not just modals (also fixes a brief flash of the empty workspace card before bootstrap completed).
@@ -380,6 +425,7 @@ Covers all `hidden` attribute usages, not just modals (also fixes a brief flash 
 **Trigger:** "I want to display the user's message on the discussion as well, like it was a message app. Also display in the 3 dots animation what's happening — searching the web etc. If possible stream the answer or at least display the answers as the board members are done and not all shown at the end."
 
 **(1) User messages as chat bubbles** (`gui/app.js`, `gui/style.css`)
+
 - New `userBubble(text, label, selectedOption?)` renderer — right-aligned, brand-gradient color, asymmetric corners (`14px 14px 4px 14px`), 👤 avatar.
 - New `discussionTimeline(discussion)` walker that interleaves user bubbles with member responses correctly:
   - Initial question (from `userResponses[type='initial_question']`) at the top
@@ -390,12 +436,14 @@ Covers all `hidden` attribute usages, not just modals (also fixes a brief flash 
 - New `.message-user`, `.user-bubble`, `.avatar-user` styles.
 
 **(2) Per-member streaming response broadcast**
+
 - Engine extended `StartProgressEvent` union: `member_done` now carries `response: Response` and `roundNumber: number`. Added new `member_activity` and `orchestrator_decided` variants.
 - All three runMember call sites (`startDiscussion`, `continueDiscussion`, `addFollowUpQuestion`) pass the response/roundNumber on `member_done` and emit `orchestrator_decided` after the post-round orchestrator call.
-- Server: unified `broadcastRoundProgress` to broadcast `member_response` *immediately* on each `member_done` engine event (not in a post-hoc loop at end). `orchestrator_decided` → `orchestrator_decision` WS event mid-stream. Old "loop through every round at end and rebroadcast all responses" is gone.
+- Server: unified `broadcastRoundProgress` to broadcast `member_response` _immediately_ on each `member_done` engine event (not in a post-hoc loop at end). `orchestrator_decided` → `orchestrator_decision` WS event mid-stream. Old "loop through every round at end and rebroadcast all responses" is gone.
 - The `POST /api/discussions` handler now uses the same unified broadcaster (with empty `discussionId` for the initial round — client matches typing bubbles by `memberName`, not by discussionId).
 
 **(3) Live activity in typing dots** (`src/llm/claude-code-runner.ts`, `src/core/discussion/run-member.ts`, `gui/app.js`, `gui/style.css`)
+
 - `runClaude` got new `onEvent?: (event: ClaudeStreamEvent) => void` + `streaming?: boolean` options. When set, switches to `--output-format stream-json --verbose` and parses stdout line-by-line via a new `onLine` callback in `spawnRaw`. Final `{type:"result"...}` line is still extracted into `result.json` so token-usage logging keeps working.
 - Added `parseLastResultLine()` helper.
 - `runMember` got new `onActivity?` option. Internally creates `makeActivityForwarder()` that maps Claude stream events to friendly strings:
@@ -412,12 +460,14 @@ Covers all `hidden` attribute usages, not just modals (also fixes a brief flash 
 - Added small `cssEscape()` helper for safe attribute selector building.
 
 **(4) Race-condition fix: pre-create typing bubbles**
+
 - Bug surfaced after (2)+(3): user clicked Submit, saw user bubble + Round 1 divider but no typing bubbles. Server WS events fired correctly (verified), but the browser was still awaiting the POST response when `member_thinking` arrived → `addTypingBubble` ran with no `#chat-stream` in DOM yet → silent no-op.
-- `submitNewDiscussion` now opens the chat view *before* the fetch (synchronous DOM setup) and pre-creates a typing bubble for each selected member up front. The dedupe in `addTypingBubble` (`if (existing) return`) means subsequent server `member_thinking` events are no-ops once they arrive.
+- `submitNewDiscussion` now opens the chat view _before_ the fetch (synchronous DOM setup) and pre-creates a typing bubble for each selected member up front. The dedupe in `addTypingBubble` (`if (existing) return`) means subsequent server `member_thinking` events are no-ops once they arrive.
 - On `discussion_gated` (pre-round gate fired, no members spawned), pending typing bubbles are cleaned up so they don't sit forever.
 - In `finalizeChat`, any typing bubble that never got a matching `member_response` (silent member failure) gets replaced with a `✗ No response` system bubble — useful safety net for genuine failures, but it became the symptom of the next bug.
 
 **Verified live (WS monitor):**
+
 ```
 [ws] member_thinking · Elon Musk
 [ws] member_activity · Elon Musk → searching the web…  (Bitcoin price today May 2026)
@@ -433,14 +483,16 @@ Covers all `hidden` attribute usages, not just modals (also fixes a brief flash 
 
 ### Bug: orphan typing bubbles after responses arrive
 
-**Trigger:** Screenshot showing pre-created typing bubbles still saying "writing response …" at the top of the stream while the actual responses appeared *below* them. Eventually `discussion_completed` fired and `finalizeChat` converted the orphans to "✗ No response — failed or timed out", which looked alarming.
+**Trigger:** Screenshot showing pre-created typing bubbles still saying "writing response …" at the top of the stream while the actual responses appeared _below_ them. Eventually `discussion_completed` fired and `finalizeChat` converted the orphans to "✗ No response — failed or timed out", which looked alarming.
 
 **Root cause:** The WS `member_response` event had no top-level `memberName` field — only `msg.response.memberName`. But the client handler read:
+
 ```js
 } else if (msg.type === 'member_response') {
   replaceTypingWithResponse(msg.memberName, msg.response);  // msg.memberName = undefined
 }
 ```
+
 `state.pendingTyping.get(undefined)` → undefined → else branch → `appendChild(responseBubble)` at the bottom. The pre-created typing bubble stayed orphaned.
 
 **This bug was always there.** It was invisible before today's pre-creation work because typing bubbles only existed for the brief window between `member_thinking` and the end-of-round response broadcast — and even then, the response usually didn't replace, it just got `appendChild`'d underneath. With pre-creation, the typing bubble lives for the whole round, making the orphan behavior obvious.
@@ -448,13 +500,16 @@ Covers all `hidden` attribute usages, not just modals (also fixes a brief flash 
 **Fix — three layers, all additive (no regression):**
 
 1. **Client handler reads the right field, with fallback** (`gui/app.js`):
+
    ```js
    const name = msg.memberName || msg.response?.memberName;
    replaceTypingWithResponse(name, msg.response);
    ```
+
    Handles both the new (top-level) and old (nested) shape.
 
 2. **Server adds `memberName` + `memberId` at top-level of `member_response` event for symmetry** (`src/gui/server.ts`):
+
    ```js
    broadcast({
      type: 'member_response',
@@ -465,11 +520,13 @@ Covers all `hidden` attribute usages, not just modals (also fixes a brief flash 
      ...
    });
    ```
+
    Future code that reads `msg.memberName` for any event type now Just Works.
 
 3. **`replaceTypingWithResponse` falls back to DOM search** (`gui/app.js`) — uses the existing `[data-typing-for="..."]` attribute on every typing bubble. If `state.pendingTyping` ever drifts out of sync (some future code path forgets to update it), the DOM is the source of truth and the bubble still gets replaced.
 
 **Verified live (WS monitor):**
+
 ```
 [member_response] msg.memberName= "Elon Musk"           · msg.response.memberName= "Elon Musk"
 [member_response] msg.memberName= "Julian Bent Singh"   · msg.response.memberName= "Julian Bent Singh"

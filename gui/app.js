@@ -780,7 +780,12 @@ function messageBubble(r) {
   }
   body.appendChild(nameRow);
 
-  const bubble = h('div', { class: 'bubble' }, r.content);
+  // Member responses are markdown — render to HTML (the same lightweight
+  // renderer the Knowledge view uses, so [[wikilinks]] resolve too). The
+  // `bubble-md` modifier swaps `white-space: pre-wrap` for normal flow so the
+  // injected block elements don't pick up the source newlines as blank space.
+  const bubble = h('div', { class: 'bubble bubble-md' });
+  bubble.innerHTML = renderWikiBody(r.content || '');
   body.appendChild(bubble);
 
   // Structured details
@@ -789,7 +794,7 @@ function messageBubble(r) {
     const struct = h('div', { class: 'struct' });
     if (sd.keyPoints?.length) struct.appendChild(structSection('Key points', sd.keyPoints, '•'));
     if (sd.questionsForOthers?.length) struct.appendChild(structSection('Questions for others', sd.questionsForOthers, '?'));
-    if (sd.actionSteps?.length) struct.appendChild(structSection('Action steps', sd.actionSteps, '→'));
+    if (sd.actionSteps?.length) struct.appendChild(actionStepsSection(sd.actionSteps, r.memberName));
     if (typeof sd.confidence === 'number') {
       const row = h('div', { class: 'confidence-row' });
       row.appendChild(h('span', {}, `Confidence ${sd.confidence}%`));
@@ -812,6 +817,60 @@ function structSection(title, items, marker) {
   items.forEach((it) => ul.appendChild(h('li', {}, `${marker ? marker + ' ' : ''}${it}`)));
   sec.appendChild(ul);
   return sec;
+}
+
+// Action steps get a per-item "+ Add" button that pushes the step straight onto
+// the Action Board (POST /api/actions), mirroring sage-council's flow. The board
+// + nav badge refresh via the `action_created` WS broadcast.
+function actionStepsSection(items, memberName) {
+  const sec = h('div', { class: 'struct-section' });
+  sec.appendChild(h('div', { class: 'struct-section-title' }, 'Action steps'));
+  const ul = h('ul', { class: 'action-steps' });
+  items.forEach((it) => {
+    const li = h('li', { class: 'action-step' });
+    li.appendChild(h('span', { class: 'action-step-text' }, `→ ${it}`));
+    const btn = h(
+      'button',
+      {
+        class: 'btn-ghost action-step-add',
+        type: 'button',
+        title: 'Add to Action Board',
+        'data-testid': 'add-action-step',
+      },
+      '+ Add',
+    );
+    btn.addEventListener('click', () => addActionStepToBoard(it, memberName, btn));
+    li.appendChild(btn);
+    ul.appendChild(li);
+  });
+  sec.appendChild(ul);
+  return sec;
+}
+
+async function addActionStepToBoard(stepText, memberName, btn) {
+  if (btn.disabled) return;
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Adding…';
+  try {
+    await fetchJSON('/api/actions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        title: String(stepText).slice(0, 200),
+        description: memberName ? `Suggested by ${memberName}` : '',
+        priority: 'medium',
+        discussionId: state.currentDiscussion?.id,
+      }),
+    });
+    btn.textContent = '✓ Added';
+    btn.classList.add('added');
+    toast('Added to Action Board', 'ok');
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = prev;
+    toast(`Failed to add: ${err.message}`, 'error');
+  }
 }
 
 function typingBubble(memberName) {
@@ -2606,6 +2665,7 @@ const wikiState = {
   filter: 'all',
   search: '',
   ingesting: false,
+  ingestFiles: [], // File objects queued from the file/folder picker
   querying: false,
   linting: false,
 };
@@ -2663,11 +2723,21 @@ function renderKnowledgeView(main) {
         <div class="panel-body">
           <div class="field-group">
             <label class="field-label" for="wiki-ingest-paste">Paste markdown / text</label>
-            <textarea id="wiki-ingest-paste" rows="8" placeholder="Drop any context, notes, or research here…"></textarea>
+            <textarea id="wiki-ingest-paste" rows="5" placeholder="Drop any context, notes, or research here…"></textarea>
           </div>
           <div class="field-group">
-            <label class="field-label" for="wiki-ingest-url">…or a URL</label>
-            <input type="url" id="wiki-ingest-url" placeholder="https://example.com/article" />
+            <label class="field-label" for="wiki-ingest-url">URLs <span class="field-hint">— one per line</span></label>
+            <textarea id="wiki-ingest-url" rows="3" placeholder="https://example.com/article&#10;https://example.com/another"></textarea>
+          </div>
+          <div class="field-group">
+            <label class="field-label">Local files &amp; folders</label>
+            <div class="wiki-ingest-pickers">
+              <button type="button" class="btn-secondary" id="wiki-ingest-pick-files">Choose files…</button>
+              <button type="button" class="btn-secondary" id="wiki-ingest-pick-folder">Choose folder…</button>
+            </div>
+            <input type="file" id="wiki-ingest-file-input" multiple hidden />
+            <input type="file" id="wiki-ingest-folder-input" webkitdirectory directory hidden />
+            <ul class="wiki-ingest-filelist" id="wiki-ingest-filelist"></ul>
           </div>
           <div class="panel-actions">
             <button class="btn-secondary" id="wiki-ingest-cancel">Cancel</button>
@@ -2698,6 +2768,11 @@ function renderKnowledgeView(main) {
   $('#wiki-ingest-close').addEventListener('click', () => $('#wiki-ingest-panel').hidden = true);
   $('#wiki-ingest-cancel').addEventListener('click', () => $('#wiki-ingest-panel').hidden = true);
   $('#wiki-ingest-go').addEventListener('click', () => doIngest());
+  $('#wiki-ingest-pick-files').addEventListener('click', () => $('#wiki-ingest-file-input').click());
+  $('#wiki-ingest-pick-folder').addEventListener('click', () => $('#wiki-ingest-folder-input').click());
+  $('#wiki-ingest-file-input').addEventListener('change', (e) => { addIngestFiles(e.target.files); e.target.value = ''; });
+  $('#wiki-ingest-folder-input').addEventListener('change', (e) => { addIngestFiles(e.target.files); e.target.value = ''; });
+  renderIngestFileList();
   $('#wiki-lint-btn').addEventListener('click', () => doLint());
   $('#wiki-query-go').addEventListener('click', () => doQuery());
   $('#wiki-query-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') doQuery(); });
@@ -2826,37 +2901,161 @@ function renderSidecar(fm, data) {
   return out.join('');
 }
 
+// File types the ingest agent can make sense of. Folders often hold images,
+// binaries, lockfiles etc. — we filter to these so a folder pick doesn't queue
+// (and bill) hundreds of irrelevant files.
+const INGEST_EXTS = new Set([
+  'md', 'markdown', 'txt', 'text', 'rst', 'org', 'log',
+  'json', 'csv', 'tsv', 'yaml', 'yml',
+  'html', 'htm', 'pdf',
+]);
+const INGEST_MAX_FILE_BYTES = 20 * 1024 * 1024; // 20 MB per file
+
+function ingestExtOk(name) {
+  const dot = name.lastIndexOf('.');
+  if (dot < 0) return false;
+  return INGEST_EXTS.has(name.slice(dot + 1).toLowerCase());
+}
+
+function ingestFileKey(f) {
+  return `${f.webkitRelativePath || f.name}::${f.size}`;
+}
+
+function addIngestFiles(fileList) {
+  const incoming = Array.from(fileList || []);
+  let skippedType = 0;
+  let skippedSize = 0;
+  let added = 0;
+  const have = new Set(wikiState.ingestFiles.map(ingestFileKey));
+  for (const f of incoming) {
+    if (!ingestExtOk(f.name)) { skippedType++; continue; }
+    if (f.size > INGEST_MAX_FILE_BYTES) { skippedSize++; continue; }
+    const key = ingestFileKey(f);
+    if (have.has(key)) continue;
+    have.add(key);
+    wikiState.ingestFiles.push(f);
+    added++;
+  }
+  renderIngestFileList();
+  const notes = [];
+  if (added) notes.push(`${added} file${added === 1 ? '' : 's'} queued`);
+  if (skippedType) notes.push(`${skippedType} skipped (unsupported type)`);
+  if (skippedSize) notes.push(`${skippedSize} skipped (>20 MB)`);
+  if (notes.length) toast(notes.join(' · '), skippedType || skippedSize ? '' : 'ok');
+}
+
+function removeIngestFile(idx) {
+  wikiState.ingestFiles.splice(idx, 1);
+  renderIngestFileList();
+}
+
+function renderIngestFileList() {
+  const ul = $('#wiki-ingest-filelist');
+  if (!ul) return;
+  const files = wikiState.ingestFiles;
+  if (!files.length) { ul.innerHTML = ''; return; }
+  ul.innerHTML = files
+    .map((f, i) => {
+      const label = f.webkitRelativePath || f.name;
+      return `<li><span class="fname" title="${escapeHtml(label)}">${escapeHtml(label)}</span>` +
+        `<span class="fsize">${fmtBytes(f.size)}</span>` +
+        `<button type="button" class="icon-btn" data-rm="${i}" aria-label="Remove ${escapeHtml(label)}">×</button></li>`;
+    })
+    .join('');
+  $$('#wiki-ingest-filelist [data-rm]').forEach((b) => {
+    b.addEventListener('click', () => removeIngestFile(Number(b.dataset.rm)));
+  });
+}
+
+function fmtBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error('failed to read file'));
+    reader.readAsDataURL(file);
+  });
+}
+
 async function doIngest() {
   if (wikiState.ingesting) return;
   const paste = $('#wiki-ingest-paste').value.trim();
-  const url = $('#wiki-ingest-url').value.trim();
-  if (!paste && !url) {
-    toast('Provide pasted text or a URL', 'error');
+  const urls = $('#wiki-ingest-url').value.split('\n').map((s) => s.trim()).filter(Boolean);
+  const files = wikiState.ingestFiles.slice();
+
+  // Build a flat queue — each source is its own ingest run / wiki page(s).
+  const queue = [];
+  if (paste) queue.push({ kind: 'paste', label: 'pasted text', body: { paste } });
+  for (const url of urls) queue.push({ kind: 'url', label: url, body: { url } });
+  for (const f of files) queue.push({ kind: 'file', label: f.webkitRelativePath || f.name, file: f });
+
+  if (!queue.length) {
+    toast('Add text, one or more URLs, or pick files/folders', 'error');
     return;
   }
+  if (queue.length > 12 && !confirm(`Ingest ${queue.length} sources? Each is a separate model call and may take a while.`)) {
+    return;
+  }
+
   wikiState.ingesting = true;
   const btn = $('#wiki-ingest-go');
   btn.disabled = true;
-  btn.textContent = 'Ingesting…';
+  let okCount = 0;
+  let pageCount = 0;
+  let failCount = 0;
   try {
-    const res = await fetch('/api/knowledge/ingest', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(paste ? { paste } : { url }),
-    });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    const total = (data.producedPages?.length || 0) + (data.updatedPages?.length || 0);
-    toast(`Ingest complete — ${total} pages touched`, 'ok');
-    $('#wiki-ingest-panel').hidden = true;
-    $('#wiki-ingest-paste').value = '';
-    $('#wiki-ingest-url').value = '';
-    await refreshKnowledgeState();
-    const pages = await fetch('/api/knowledge/pages').then((r) => r.json());
-    wikiState.pages = pages.pages || [];
-    rerenderKnowledge();
-  } catch (err) {
-    toast(`Ingest failed: ${err.message}`, 'error');
+    for (let i = 0; i < queue.length; i++) {
+      const item = queue[i];
+      btn.textContent = queue.length > 1 ? `Ingesting ${i + 1}/${queue.length}…` : 'Ingesting…';
+      try {
+        let body;
+        if (item.kind === 'file') {
+          const contentBase64 = await fileToBase64(item.file);
+          body = { file: { name: item.file.webkitRelativePath || item.file.name, contentBase64 } };
+        } else {
+          body = item.body;
+        }
+        const res = await fetch('/api/knowledge/ingest', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        okCount++;
+        pageCount += (data.producedPages?.length || 0) + (data.updatedPages?.length || 0);
+      } catch (err) {
+        failCount++;
+        toast(`Failed: ${item.label} — ${err.message}`, 'error');
+      }
+    }
+
+    if (failCount === 0) {
+      toast(`Ingest complete — ${okCount} source${okCount === 1 ? '' : 's'}, ${pageCount} page${pageCount === 1 ? '' : 's'} touched`, 'ok');
+    } else {
+      toast(`Ingest finished — ${okCount} ok, ${failCount} failed`, okCount === 0 ? 'error' : '');
+    }
+
+    if (okCount > 0) {
+      $('#wiki-ingest-panel').hidden = true;
+      $('#wiki-ingest-paste').value = '';
+      $('#wiki-ingest-url').value = '';
+      wikiState.ingestFiles = [];
+      renderIngestFileList();
+      await refreshKnowledgeState();
+      const pages = await fetch('/api/knowledge/pages').then((r) => r.json());
+      wikiState.pages = pages.pages || [];
+      rerenderKnowledge();
+    }
   } finally {
     wikiState.ingesting = false;
     btn.disabled = false;

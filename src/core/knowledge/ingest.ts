@@ -260,10 +260,53 @@ export async function ingestFile(opts: IngestFileOptions): Promise<IngestResult>
     throw new UserError(`ingest: not a file: ${opts.path}`);
   }
   const buf = readFileSync(opts.path);
+  return ingestFileBuffer({
+    buffer: buf,
+    originalName: basename(opts.path),
+    workspace: opts.workspace,
+    settings: opts.settings,
+    force: opts.force,
+    hintType: opts.hintType,
+    modelOverride: opts.modelOverride,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Buffer ingest (uploaded file content — e.g. from the web UI file picker,
+// where the browser hands us bytes + a name but never an absolute path)
+// ---------------------------------------------------------------------------
+
+export interface IngestBufferOptions {
+  /** File contents. */
+  buffer: Buffer;
+  /** Display name including extension (may be a `folder/sub/file.md` rel path). */
+  originalName: string;
+  workspace: ResolvedWorkspace;
+  settings: AppSettings;
+  force?: boolean;
+  hintType?: PageType;
+  modelOverride?: string;
+}
+
+/**
+ * Ingest from an in-memory buffer rather than a filesystem path. Shared by
+ * `ingestFile` (reads a path → buffer) and the web UI upload route. The only
+ * difference from `ingestFile` is the source of the bytes; everything
+ * downstream (hash, raw-file copy, inline-body optimisation, manifest) is
+ * identical, so the `sourceType` stays `'file'`.
+ */
+export async function ingestFileBuffer(opts: IngestBufferOptions): Promise<IngestResult> {
+  const buf = opts.buffer;
+  if (!buf || buf.length === 0) {
+    throw new UserError('ingest: file is empty.');
+  }
+  // `originalName` may carry a relative path (folder upload) — keep only the
+  // leaf for slug/extension purposes, but preserve the full name in the manifest.
+  const leaf = basename(opts.originalName.replace(/\\/g, '/')) || 'upload';
   const hash = sha256Hex(buf);
   const h6 = hash.slice(0, 6);
-  const ext = extname(opts.path).toLowerCase() || '.md';
-  const sanitizedName = sanitizeFilename(basename(opts.path, extname(opts.path)));
+  const ext = extname(leaf).toLowerCase() || '.md';
+  const sanitizedName = sanitizeFilename(basename(leaf, extname(leaf)));
   const rawFilename = `${h6}-${sanitizedName}${ext}`;
   const p = paths(opts.workspace.root);
   ensureWikiDirs(opts.workspace.root);
@@ -276,7 +319,7 @@ export async function ingestFile(opts: IngestFileOptions): Promise<IngestResult>
   // For text-based files, inline the body so the agent doesn't need to spend
   // a tool-call round-trip reading it.
   let inlineBody: string | undefined;
-  if (['.md', '.txt', '.json', '.csv', '.yaml', '.yml'].includes(ext)) {
+  if (['.md', '.markdown', '.txt', '.json', '.csv', '.tsv', '.yaml', '.yml'].includes(ext)) {
     try {
       inlineBody = buf.toString('utf8');
     } catch {
@@ -290,7 +333,7 @@ export async function ingestFile(opts: IngestFileOptions): Promise<IngestResult>
     rawRelPath,
     sourceType: 'file',
     hash,
-    originalName: basename(opts.path),
+    originalName: opts.originalName,
     hintType: opts.hintType,
     inlineBody,
     force: opts.force,

@@ -58,7 +58,7 @@ import { walkWikiPages, parsePage, serializePage, extractWikiLinks, toPosix, typ
 import { buildSlugMap, resolveSlug, extractBacklinksSection } from '../core/knowledge/slug-map.js';
 import { loadManifest, markUserEdited } from '../core/knowledge/manifest.js';
 import { renameSlug } from '../core/knowledge/rename.js';
-import { ingestFile, ingestPaste, ingestUrl, ingestDiscussionRaw } from '../core/knowledge/ingest.js';
+import { ingestFile, ingestFileBuffer, ingestPaste, ingestUrl, ingestDiscussionRaw } from '../core/knowledge/ingest.js';
 import { queryWiki } from '../core/knowledge/query.js';
 import { lintWiki } from '../core/knowledge/lint.js';
 import { existsSync as fsExistsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -162,7 +162,15 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
   const guiDir = resolveGuiDir();
 
   const app = express();
-  app.use(express.json({ limit: '256kb' }));
+  // Most routes carry tiny JSON. The wiki-ingest route is the exception: it can
+  // carry a base64-encoded local file (file/folder picker in the web UI), so it
+  // gets a much larger body cap. Localhost-only, single trusted client.
+  const jsonStd = express.json({ limit: '256kb' });
+  const jsonLarge = express.json({ limit: '64mb' });
+  app.use((req, res, next) => {
+    if (req.method === 'POST' && req.path === '/api/knowledge/ingest') return jsonLarge(req, res, next);
+    return jsonStd(req, res, next);
+  });
 
   // ---------- WebSocket broadcast plumbing ----------
   const sockets = new Set<WebSocket>();
@@ -1619,19 +1627,37 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
 
   app.post('/api/knowledge/ingest', async (req, res) => {
     try {
-      const body = (req.body ?? {}) as { paste?: string; url?: string; path?: string; force?: boolean; type?: string };
+      const body = (req.body ?? {}) as {
+        paste?: string;
+        url?: string;
+        path?: string;
+        file?: { name?: string; contentBase64?: string };
+        force?: boolean;
+        type?: string;
+      };
       const workspace = resolveWorkspaceForWiki();
       const settings = await opts.storage.loadSettings();
-      broadcast({ type: 'wiki_ingest_started', sourceType: body.url ? 'url' : body.path ? 'file' : 'pasted' });
+      const sourceType = body.url ? 'url' : body.path || body.file ? 'file' : 'pasted';
+      broadcast({ type: 'wiki_ingest_started', sourceType });
       let result;
       if (body.paste) {
         result = await ingestPaste({ text: body.paste, workspace, settings, force: body.force, hintType: body.type as PageType | undefined });
       } else if (body.url) {
         result = await ingestUrl({ url: body.url, workspace, settings, force: body.force, hintType: body.type as PageType | undefined });
+      } else if (body.file?.contentBase64) {
+        const buffer = Buffer.from(body.file.contentBase64, 'base64');
+        result = await ingestFileBuffer({
+          buffer,
+          originalName: body.file.name?.trim() || 'upload',
+          workspace,
+          settings,
+          force: body.force,
+          hintType: body.type as PageType | undefined,
+        });
       } else if (body.path) {
         result = await ingestFile({ path: body.path, workspace, settings, force: body.force, hintType: body.type as PageType | undefined });
       } else {
-        res.status(400).json({ error: 'Provide paste, url, or path.' });
+        res.status(400).json({ error: 'Provide paste, url, file, or path.' });
         return;
       }
       for (const page of result.producedPages) broadcast({ type: 'wiki_ingest_page_written', path: page, action: 'created' });

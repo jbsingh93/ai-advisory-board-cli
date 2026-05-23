@@ -23,6 +23,7 @@ import { foamAlreadyRecommended } from '../core/knowledge/foam.js';
 import { resolveSkillCreator } from '../core/skill/resolve-skill-creator.js';
 import { quickPcScanProbe } from '../core/skill/recon/pc-scan.js';
 import { probeWebReachability } from '../core/skill/recon/web-probe.js';
+import { checkForUpdate, UPGRADE_COMMAND } from '../core/update-check.js';
 
 interface CheckResult {
   label: string;
@@ -166,6 +167,19 @@ export function registerDoctorCommand(program: Command): void {
           detail: web.reachable
             ? `${web.host} reachable (${web.latencyMs}ms)`
             : `${web.host}: ${web.reason ?? 'unreachable'} — web recon will be degraded`,
+        });
+
+        // Update check — info-only, never fails doctor. Queries the npm
+        // registry (≤1.5s) and falls back to the cached result when offline.
+        const update = await checkForUpdate({ timeoutMs: 1500 });
+        checks.push({
+          label: 'CLI version',
+          ok: true,
+          detail: update.updateAvailable
+            ? `v${update.current} — update available (v${update.latest}); run \`${UPGRADE_COMMAND}\``
+            : update.latest
+              ? `v${update.current} (latest)`
+              : `v${update.current} — ${update.error ?? 'update check skipped'}`,
         });
 
         // Playwright MCP (UI test surface) — Phase 6.6 prerequisites.

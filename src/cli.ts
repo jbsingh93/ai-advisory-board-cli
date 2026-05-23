@@ -6,6 +6,7 @@ import { AabError, CancelledError } from './core/errors.js';
 import { logger, setLogLevel, type LogLevel } from './core/logger.js';
 import { c } from './ui/colors.js';
 import { PRODUCT_NAME, VERSION } from './version.js';
+import { maybeNotifyUpdate } from './core/update-check.js';
 import { registerInitCommand } from './commands/init.js';
 import { registerSettingsCommand } from './commands/settings.js';
 import { registerDoctorCommand } from './commands/doctor.js';
@@ -43,11 +44,14 @@ export async function runCli(argv: string[]): Promise<void> {
     .option('--debug', 'verbose logging (sets log level to debug)')
     .option('--log-level <level>', 'silent | error | warn | info | debug | trace')
     .option('--quiet', 'suppress non-error stderr output')
-    .hook('preAction', (thisCommand) => {
+    .hook('preAction', (thisCommand, actionCommand) => {
       const opts = thisCommand.opts<GlobalOpts>();
       if (opts.debug) setLogLevel('debug');
       else if (opts.logLevel) setLogLevel(opts.logLevel);
       else if (opts.quiet) setLogLevel('error');
+      // Non-blocking "update available" notice. `doctor` reports it as its own
+      // check, so skip the banner there to avoid saying it twice.
+      if (actionCommand.name() !== 'doctor') maybeNotifyUpdate({ json: opts.json });
     });
 
   // Subcommands

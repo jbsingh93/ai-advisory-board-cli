@@ -154,6 +154,7 @@ export async function startDiscussion(opts: StartDiscussionOptions): Promise<Sta
       storage: opts.storage,
       discussionId,
       projectRoot: opts.projectRoot,
+      workspaceRoot: opts.storage.getWorkspaceRoot(),
       signal: opts.signal,
       onActivity: (a) =>
         opts.onProgress?.({ stage: 'member_activity', memberName: member.name, ...a }),
@@ -229,18 +230,12 @@ export async function startDiscussion(opts: StartDiscussionOptions): Promise<Sta
 }
 
 async function loadBusinessContextSafe(storage: StorageService): Promise<BusinessContext[]> {
-  // Phase 1.5: if a Knowledge Wiki is present, members read it natively via
-  // Read/Grep/Glob (system-prompt addendum from `emit-member-agent.ts`).
-  // Returning [] here skips the legacy inline business-context block in
-  // `build-user-message.ts`. The legacy JSON path is still functional for
-  // workspaces without a wiki (transition window).
-  try {
-    const root = storage.getWorkspaceRoot();
-    const p = paths(root);
-    if (existsSync(p.wiki) && existsSync(p.wikiKnowledge)) return [];
-  } catch {
-    // fall through to legacy loader
-  }
+  // Always inject any structured business context we have, even when a wiki is
+  // present. The wiki (members read it natively via Read/Grep/Glob, pointed at
+  // the absolute path in the user message) is the rich source, but a compact
+  // inline context guarantees members have baseline grounding even if their
+  // wiki pass comes up thin — earlier we returned [] here and, combined with a
+  // broken wiki path, members ended up with no context at all.
   try {
     return await storage.loadBusinessContext();
   } catch (error) {
@@ -487,6 +482,7 @@ export async function continueDiscussion(
         storage: opts.storage,
         discussionId: discussion.id,
         projectRoot: opts.projectRoot,
+        workspaceRoot: opts.storage.getWorkspaceRoot(),
         signal: opts.signal,
         isFollowUp: true,
         followUpQuestion: opts.userFollowUp?.content,
@@ -823,6 +819,7 @@ export async function addFollowUpQuestion(
       storage: opts.storage,
       discussionId: discussion.id,
       projectRoot: opts.projectRoot,
+      workspaceRoot: opts.storage.getWorkspaceRoot(),
       signal: opts.signal,
       isFollowUp: true,
       followUpQuestion: trimmed,

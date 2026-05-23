@@ -37,6 +37,13 @@ export interface RunOptions {
   maxBudgetUsd?: number;
   /** Working directory for the spawn (defaults to cwd). */
   cwd?: string;
+  /**
+   * Extra directories to grant the session access to, via `--add-dir`. Needed
+   * when a sub-agent must Read/Grep/Glob files outside its `cwd` — e.g. members
+   * reading the Knowledge Wiki, which lives under the workspace root, not the
+   * project dir where `.claude/agents/` is discovered.
+   */
+  addDirs?: string[];
   /** External AbortSignal — kills the spawned process when triggered. */
   signal?: AbortSignal;
   /** Wall-clock timeout in ms (default 5 min). */
@@ -220,6 +227,12 @@ export async function runClaude(opts: RunOptions): Promise<RunResult> {
   // tools allowlist
   if (opts.allowedTools && opts.allowedTools.length > 0) {
     args.push('--allowedTools', opts.allowedTools.join(','));
+  }
+
+  // extra readable directories (e.g. the workspace root so members can reach
+  // the Knowledge Wiki, which lives outside the project cwd)
+  if (opts.addDirs && opts.addDirs.length > 0) {
+    for (const dir of opts.addDirs) args.push('--add-dir', dir);
   }
 
   // max turns

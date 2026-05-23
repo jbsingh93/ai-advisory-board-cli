@@ -3,6 +3,7 @@
  * into a Response struct. Token usage from the JSON envelope is logged via
  * fireTokenUsage().
  */
+import { join } from 'node:path';
 import { extractText, runClaude, type ClaudeStreamEvent } from '../../llm/claude-code-runner.js';
 import { logger } from '../logger.js';
 import { generateUUID, nowIso } from '../utils.js';
@@ -28,6 +29,12 @@ export interface RunMemberOptions extends BuildMessageOptions {
   settings: AppSettings;
   /** Where the .claude/agents/ directory lives. Default: process.cwd(). */
   projectRoot?: string;
+  /**
+   * Workspace root (the dir that contains `wiki/`). Used to (a) tell the member
+   * the absolute wiki path and (b) grant Read/Grep/Glob access to it via
+   * `--add-dir`, since the member's cwd is the project dir, not the workspace.
+   */
+  workspaceRoot?: string;
   /** Optional storage to log token usage. */
   storage?: StorageService;
   /** Discussion id for token logs. */
@@ -55,11 +62,15 @@ export interface RunMemberResult {
 const DEFAULT_TOOLS = ['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'];
 
 export async function runMember(opts: RunMemberOptions): Promise<RunMemberResult> {
-  const userMessage = buildMemberUserMessage(opts);
+  // Derive the absolute wiki path from the workspace root so the member can be
+  // told where to look and granted access to it.
+  const wikiDir = opts.wikiDir ?? (opts.workspaceRoot ? join(opts.workspaceRoot, 'wiki') : undefined);
+  const userMessage = buildMemberUserMessage({ ...opts, wikiDir });
   const slug = memberAgentSlug(opts.member.name);
   const tools = opts.member.allowedTools ?? DEFAULT_TOOLS;
+  const addDirs = opts.workspaceRoot ? [opts.workspaceRoot] : undefined;
 
-  logger.debug('[runMember] dispatch', { slug, round: opts.roundNumber, msgLen: userMessage.length });
+  logger.debug('[runMember] dispatch', { slug, round: opts.roundNumber, msgLen: userMessage.length, wikiDir });
 
   const result = await runClaude({
     prompt: userMessage,
@@ -69,6 +80,7 @@ export async function runMember(opts: RunMemberOptions): Promise<RunMemberResult
     maxTurns: 5,
     maxBudgetUsd: opts.settings.perCallBudgetUsd,
     cwd: opts.projectRoot,
+    addDirs,
     signal: opts.signal,
     onEvent: opts.onActivity ? makeActivityForwarder(opts.onActivity) : undefined,
   });

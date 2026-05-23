@@ -46,6 +46,12 @@ export function renderDiscussionMarkdown(d: Discussion): string {
   );
   lines.push('');
 
+  // ---------- The user's own input ----------
+  // Collected up front and clearly labelled so the ingest agent can mine the
+  // user's words (their framing, follow-ups, and HITL answers) for durable
+  // facts about them and their business — distinct from advisor opinion.
+  lines.push(...renderUserInputSection(d));
+
   // ---------- Summary (if present) ----------
   if (d.summary) {
     lines.push(...renderSummarySection(d.summary));
@@ -112,6 +118,34 @@ export function renderDiscussionMarkdown(d: Discussion): string {
   lines.push('');
 
   return lines.join('\n');
+}
+
+function renderUserInputSection(d: Discussion): string[] {
+  const out: string[] = [];
+  out.push("## The user's input & context");
+  out.push('');
+  out.push('*The user\'s own words — mine these for durable facts about the user and their business.*');
+  out.push('');
+  out.push(`- **Question asked:** ${d.question.replace(/\n+/g, ' ').trim()}`);
+
+  // Follow-up questions the user posed in later rounds.
+  for (const round of d.rounds) {
+    if (round.followUpQuestion && round.followUpQuestion.trim()) {
+      out.push(`- **Follow-up (round ${round.roundNumber}):** ${round.followUpQuestion.replace(/\n+/g, ' ').trim()}`);
+    }
+  }
+
+  // The user's direct replies (initial framing + HITL answers). `userResponses`
+  // includes the initial question echo; skip that exact dup, keep the rest.
+  const replies = (d.userResponses ?? [])
+    .map((r) => (r.content ?? '').trim())
+    .filter((c) => c.length > 0 && c !== d.question.trim());
+  for (const reply of replies) {
+    out.push(`- **User said:** ${reply.replace(/\n+/g, ' ')}`);
+  }
+
+  out.push('');
+  return out;
 }
 
 function renderSummarySection(s: ConversationSummary): string[] {

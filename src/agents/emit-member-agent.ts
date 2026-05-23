@@ -155,19 +155,21 @@ function pickColor(name: string): string {
  */
 const KNOWLEDGE_WIKI_ADDENDUM = [
   '',
-  '## Knowledge Wiki',
+  '## Knowledge Wiki — your primary source of truth about the user',
   '',
-  'Your project has a knowledge wiki at `wiki/` (markdown files with YAML frontmatter). The schema is in `wiki/KNOWLEDGE.md` — read it first if you haven\'t this session.',
+  'The user has a knowledge wiki: markdown files with YAML frontmatter holding what we know about them, their business, goals, prior decisions, and context. **Your task message gives the wiki\'s absolute directory path under a `## Knowledge base` heading** — use that exact path (the wiki lives outside your working directory, so relative paths like `wiki/` will NOT resolve). Read `<wikiDir>/KNOWLEDGE.md` once for the schema if you haven\'t this session.',
   '',
-  '**To find context for a question:**',
-  '1. `Read wiki/index.md` — the catalog AND the canonical slug→path map (look for the `<!-- AAB:SLUG-MAP -->` section near the bottom; it lists every page\'s slug, file path, type, and one-line summary, including aliases). This is your cheap-pass retrieval and your link resolver.',
-  '2. `Grep wiki/` for keywords from the question (target the `summary:` and `tags:` frontmatter fields first; they\'re the next cheap pass).',
+  '**Consulting the wiki is NOT optional — do it before every answer:**',
+  '1. `Read <wikiDir>/index.md` — the catalog AND the canonical slug→path map (the `<!-- AAB:SLUG-MAP -->` section lists every page\'s slug, path, type, and one-line summary, including aliases). This is your cheap-pass retrieval and your link resolver.',
+  '2. `Grep` the wiki directory for keywords from the question (target the `summary:` and `tags:` frontmatter first).',
   '3. `Read` 3-10 of the most relevant pages.',
-  '4. Follow `[[wikilinks]]` to connected pages when useful. Resolve them via the slug-map in step 1. If a slug isn\'t in the slug-map (stale index), fall back to `Glob \'wiki/**/<slug>.md\'` — slug uniqueness guarantees ≤1 hit. Block links (`[[slug#section-header]]`) point to a specific markdown header inside the target page; just Read the page and find the header.',
+  '4. Follow `[[wikilinks]]` to connected pages when useful. Resolve them via the slug-map in step 1. If a slug isn\'t in the slug-map (stale index), fall back to `Glob \'**/<slug>.md\'` under the wiki dir — slug uniqueness guarantees ≤1 hit. Block links (`[[slug#section-header]]`) point to a markdown header inside the target page; Read the page and find the header.',
+  '',
+  '**Web search is the fallback, not the default.** The wiki is what makes your advice specific to THIS user. Only reach for WebSearch/WebFetch to fill gaps the wiki genuinely does not cover (fresh market data, current events). Never give generic advice when the wiki has relevant context.',
   '',
   '**When citing in your response:** put the wiki slugs you actually used into your `sources` field. E.g., `sources: [{"title": "Pricing Strategy", "url": "wiki/concepts/pricing-strategy"}]`. Do not invent slugs you didn\'t read.',
   '',
-  '**Never write to `wiki/`.** The ingest agent owns mutation. If you discover something worth filing, mention it in your `actionableInsights` so the user can ingest it explicitly. Do not attempt to rename slugs — that\'s `aab knowledge rename`\'s job.',
+  '**Never write to the wiki.** The ingest agent owns mutation. If you discover something worth filing, mention it in your `actionSteps` so the user can ingest it. Do not rename slugs — that\'s `aab knowledge rename`\'s job.',
 ].join('\n');
 
 function buildAgentBody(member: AdvisoryBoardMember): string {
@@ -203,6 +205,7 @@ function buildAgentBody(member: AdvisoryBoardMember): string {
     `- \`[SPARRING]\` — private 1:1 deep-dive; respond with markdown (not JSON).`,
     ``,
     `## Core Principles`,
+    `- **Ground every recommendation in the user's specific situation** — pull from the Knowledge Wiki and business context before answering. Reference what you actually know about them; never give generic advice that ignores their context.`,
     `- Apply first-principles thinking: break down to fundamental truths.`,
     `- Challenge assumptions explicitly when warranted.`,
     `- Provide concrete, actionable recommendations.`,

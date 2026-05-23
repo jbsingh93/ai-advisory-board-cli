@@ -30,6 +30,13 @@ export interface BuildMessageOptions {
   isFollowUp?: boolean;
   /** Free-form follow-up question to put at the bottom (overrides original q). */
   followUpQuestion?: string;
+  /**
+   * Absolute path to the Knowledge Wiki directory (`<workspace>/wiki`). When
+   * present, the member is instructed to consult it BEFORE answering — it holds
+   * everything known about the user and their business. The path is absolute
+   * because the member's cwd is the project dir, not the workspace.
+   */
+  wikiDir?: string;
 }
 
 const MAX_BUSINESS_CONTEXT_CHARS = 3500;
@@ -58,6 +65,24 @@ export function buildMemberUserMessage(opts: BuildMessageOptions): string {
   if (opts.followUpQuestion) {
     lines.push('## User follow-up question');
     lines.push(opts.followUpQuestion.trim());
+    lines.push('');
+  }
+
+  // Knowledge Wiki — the single most important grounding step. Members spawn
+  // with cwd = project dir, so the wiki (under the workspace root) is reachable
+  // only by its absolute path, granted via `--add-dir`.
+  if (opts.wikiDir) {
+    const dir = opts.wikiDir.replace(/\\/g, '/');
+    lines.push('## Knowledge base — CONSULT THIS FIRST (do not skip)');
+    lines.push(
+      `The user's Knowledge Wiki lives at \`${dir}\`. It holds what we already know about the user, their business, goals, prior decisions, and context. **Before you answer, you MUST:**`,
+    );
+    lines.push(`1. \`Read ${dir}/index.md\` — the catalog + slug-map of every page.`);
+    lines.push(`2. \`Grep\` that directory for the key terms in the question (search the \`summary:\`/\`tags:\` frontmatter first).`);
+    lines.push('3. `Read` the 3-10 most relevant pages and follow useful `[[wikilinks]]`.');
+    lines.push(
+      'Ground your answer in what you find there — tailor it to THIS user, not generic advice. Only use web search to fill genuine gaps the wiki does not cover. Put the wiki slugs you actually used in your `sources`.',
+    );
     lines.push('');
   }
 

@@ -75,6 +75,7 @@ import {
   extractActionItems,
   type ExtractedActionItem,
 } from '../core/actions/conversation-analyzer.js';
+import { buildSourceContext } from '../core/actions/source-context.js';
 import { enhancePersona, type EnhancementType } from '../core/members/ai-enhancer.js';
 import { generateVoiceGuide } from '../core/members/voice-guide.js';
 import { coachReply, newDecisionSession } from '../core/coach/decision-coach.js';
@@ -133,6 +134,33 @@ function coerceActionStatus(value: unknown, fallback: ActionStatus = 'pending'):
     if (v === 'done') return 'completed';
   }
   return fallback;
+}
+
+/**
+ * Load the discussion + members and snapshot the source context for an action
+ * item. Best-effort: any failure (missing discussion, storage hiccup) yields
+ * `undefined` so action creation never breaks on enrichment.
+ */
+async function resolveSourceContext(
+  storage: FsStorageService,
+  args: { discussionId: string; title?: string; memberId?: string; memberName?: string },
+): Promise<ActionItem['sourceContext']> {
+  try {
+    const discussion = await storage.loadDiscussionById(args.discussionId);
+    if (!discussion) return undefined;
+    const members = await storage.loadBoardMembers();
+    return buildSourceContext(discussion, members, {
+      memberId: args.memberId,
+      memberName: args.memberName,
+      stepText: args.title,
+    });
+  } catch (err) {
+    logger.debug('[actions] sourceContext resolution failed', {
+      discussionId: args.discussionId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return undefined;
+  }
 }
 
 const DEFAULT_PORT = 3737;
@@ -304,7 +332,10 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
 
   app.post('/api/actions', async (req, res) => {
     try {
-      const body = (req.body ?? {}) as Partial<ActionItem>;
+      const body = (req.body ?? {}) as Partial<ActionItem> & {
+        sourceMemberId?: string;
+        sourceMemberName?: string;
+      };
       if (!body.title || typeof body.title !== 'string' || !body.title.trim()) {
         res.status(400).json({ error: 'title is required' });
         return;
@@ -312,15 +343,30 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
       const now = nowIso();
       const priority = coerceActionPriority(body.priority);
       const status = coerceActionStatus(body.status);
+      const title = body.title.trim();
+      const discussionId = typeof body.discussionId === 'string' ? body.discussionId : undefined;
+
+      // Snapshot discussion provenance so a later Plan/Solve gets the member's
+      // real reasoning + the original question, not just "Suggested by X".
+      const sourceContext = discussionId
+        ? await resolveSourceContext(opts.storage, {
+            discussionId,
+            title,
+            memberId: body.sourceMemberId,
+            memberName: body.sourceMemberName,
+          })
+        : undefined;
+
       const item: ActionItem = {
         id: generateUUID(),
-        discussionId: typeof body.discussionId === 'string' ? body.discussionId : undefined,
-        title: body.title.trim(),
+        discussionId,
+        title,
         description: typeof body.description === 'string' ? body.description : '',
         priority,
         status,
         assignedTo: typeof body.assignedTo === 'string' && body.assignedTo.trim() ? body.assignedTo.trim() : undefined,
         dueDate: typeof body.dueDate === 'string' && body.dueDate.trim() ? body.dueDate.trim() : undefined,
+        ...(sourceContext ? { sourceContext } : {}),
         createdAt: now,
         updatedAt: now,
       };
@@ -396,15 +442,22 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
       // Two modes: list candidates (no body) OR persist accepted items.
       if (Array.isArray(body.accept)) {
         const created: ActionItem[] = [];
+        const members = await opts.storage.loadBoardMembers();
         for (const raw of body.accept) {
           if (!raw || typeof raw !== 'object') continue;
           const cand = raw as Partial<ExtractedActionItem>;
           if (!cand.title || typeof cand.title !== 'string' || !cand.title.trim()) continue;
           const now = nowIso();
+          const title = cand.title.trim().slice(0, 200);
+          const sourceContext = buildSourceContext(discussion, members, {
+            memberId: cand.sourceMemberId,
+            memberName: cand.sourceMemberName,
+            stepText: title,
+          });
           const item: ActionItem = {
             id: generateUUID(),
             discussionId: discussion.id,
-            title: cand.title.trim().slice(0, 200),
+            title,
             description: typeof cand.description === 'string' ? cand.description : '',
             priority: coerceActionPriority(cand.priority),
             status: 'pending',
@@ -416,6 +469,7 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
               typeof cand.suggestedDueDate === 'string' && cand.suggestedDueDate.trim()
                 ? cand.suggestedDueDate.trim()
                 : undefined,
+            ...(sourceContext ? { sourceContext } : {}),
             createdAt: now,
             updatedAt: now,
           };

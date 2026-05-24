@@ -27,6 +27,7 @@ import {
   toActionItem,
   type ExtractedActionItem,
 } from '../core/actions/conversation-analyzer.js';
+import { buildSourceContext } from '../core/actions/source-context.js';
 import { runSolve } from '../core/skill/solve-orchestrator.js';
 import { renderProposalMarkdown } from '../core/skill/planner-review.js';
 import { formatDuration, formatUsd } from '../core/utils.js';
@@ -85,9 +86,14 @@ export function registerActionsCommand(program: Command): void {
           const dueDate = opts.due ?? '';
           const assignee = opts.assignee ?? '';
           let discussionId: string | undefined;
+          let sourceContext: ActionItem['sourceContext'];
           if (opts.discussion) {
             const linked = await resolveDiscussion(ctx.storage, opts.discussion);
             discussionId = linked.id;
+            // Best-effort: infer the source member from the title text and
+            // snapshot their reasoning + the original question.
+            const members = await ctx.storage.loadBoardMembers();
+            sourceContext = buildSourceContext(linked, members, { stepText: finalTitle });
           }
           const now = nowIso();
           const item: ActionItem = {
@@ -99,6 +105,7 @@ export function registerActionsCommand(program: Command): void {
             status: 'pending',
             assignedTo: assignee || undefined,
             dueDate: dueDate || undefined,
+            ...(sourceContext ? { sourceContext } : {}),
             createdAt: now,
             updatedAt: now,
           };

@@ -230,6 +230,9 @@ CRITICAL FIELD CONVENTIONS (the validator is strict about these):
 
 export interface RenderPlannerPromptOptions {
   actionItemJson: string;
+  /** Discussion provenance for the action — the advisor's reasoning + original
+   *  question. Rendered as its own load-bearing block (see prompt). */
+  sourceContext?: string;
   discussionSummary?: string;
   reconResultJson: string;
   wikiContextJson: string;
@@ -264,6 +267,13 @@ ${OUTPUT_CONTRACT}
 
 <input>
 <action>${opts.actionItemJson}</action>
+<source_context>
+The action title above is a one-line distillation. THIS block is the authoritative
+statement of intent: it carries the advisor's actual reasoning and the question the
+board was answering. When the title is terse or ambiguous, resolve it against this
+context — design the skill for what the advisor MEANT, not just the literal title.
+${opts.sourceContext ?? '(no discussion provenance — this action was added manually)'}
+</source_context>
 <linked_discussion_summary>${opts.discussionSummary ?? ''}</linked_discussion_summary>
 <recon>
   <pc_scan>${opts.reconResultJson}</pc_scan>

@@ -901,6 +901,60 @@ textarea, input, button { color: inherit; }
   background: var(--bg-elev-2);
 }
 
+/* ---------- Action source / provenance ---------- */
+
+.action-source-link {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin-top: 6px;
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: 11px;
+  color: var(--text-faint);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.action-source-link:hover { color: var(--accent); text-decoration: underline; }
+
+.action-source-box {
+  margin-top: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, var(--bg-elev-2));
+  border-radius: 6px;
+  background: var(--bg-elev-2);
+}
+.action-source-box .action-source-link {
+  font-size: 12px;
+  color: var(--accent);
+  margin-top: 0;
+  white-space: normal;
+}
+.action-source-meta {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-top: 6px;
+}
+.action-source-reasoning {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.45;
+  margin-top: 6px;
+  max-height: 9.5em;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+.action-source-points {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.action-source-points li { margin: 2px 0; }
+
 /* ---------- Action modal (add/edit + extract) ---------- */
 
 .modal-input,

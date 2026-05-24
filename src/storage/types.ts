@@ -174,6 +174,30 @@ export interface Discussion {
 // Action Board (kanban + skill-only solve, per Part 6)
 // ============================================================
 
+/**
+ * Snapshot of the discussion context an action item was born from. Captured at
+ * "add to action board" time so the Skill Planner / skill-creator get the
+ * member's actual reasoning — not just the one-line step title — and so the UI
+ * can link back to the source discussion. All fields optional + the whole
+ * object optional: items added without a discussion (manual `aab actions add`)
+ * carry no sourceContext, and older items predate the field.
+ */
+export interface ActionItemSourceContext {
+  /** The original business question the discussion was convened on. */
+  discussionQuestion?: string;
+  /** The board member who suggested this step. */
+  memberId?: string;
+  memberName?: string;
+  /** Member's role/title (e.g. "CFA, capital allocation") for planner context. */
+  memberTitle?: string;
+  /** Excerpt of the member's full response — the "why/how" behind the step. */
+  memberReasoning?: string;
+  /** Key points from the same response (structuredData.keyPoints). */
+  relatedKeyPoints?: string[];
+  /** Round the suggestion came from. */
+  roundNumber?: number;
+}
+
 export interface ActionItem {
   id: string;
   discussionId?: string;
@@ -183,6 +207,8 @@ export interface ActionItem {
   status: 'pending' | 'in-progress' | 'completed';
   assignedTo?: string;
   dueDate?: string;
+  /** Discussion provenance snapshot — see {@link ActionItemSourceContext}. */
+  sourceContext?: ActionItemSourceContext;
   linkedSkill?: {
     name: string;
     runId: string;

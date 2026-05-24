@@ -794,7 +794,7 @@ function messageBubble(r) {
     const struct = h('div', { class: 'struct' });
     if (sd.keyPoints?.length) struct.appendChild(structSection('Key points', sd.keyPoints, '•'));
     if (sd.questionsForOthers?.length) struct.appendChild(structSection('Questions for others', sd.questionsForOthers, '?'));
-    if (sd.actionSteps?.length) struct.appendChild(actionStepsSection(sd.actionSteps, r.memberName));
+    if (sd.actionSteps?.length) struct.appendChild(actionStepsSection(sd.actionSteps, r.memberName, r.memberId));
     if (typeof sd.confidence === 'number') {
       const row = h('div', { class: 'confidence-row' });
       row.appendChild(h('span', {}, `Confidence ${sd.confidence}%`));
@@ -822,7 +822,7 @@ function structSection(title, items, marker) {
 // Action steps get a per-item "+ Add" button that pushes the step straight onto
 // the Action Board (POST /api/actions), mirroring sage-council's flow. The board
 // + nav badge refresh via the `action_created` WS broadcast.
-function actionStepsSection(items, memberName) {
+function actionStepsSection(items, memberName, memberId) {
   const sec = h('div', { class: 'struct-section' });
   sec.appendChild(h('div', { class: 'struct-section-title' }, 'Action steps'));
   const ul = h('ul', { class: 'action-steps' });
@@ -839,7 +839,7 @@ function actionStepsSection(items, memberName) {
       },
       '+ Add',
     );
-    btn.addEventListener('click', () => addActionStepToBoard(it, memberName, btn));
+    btn.addEventListener('click', () => addActionStepToBoard(it, memberName, memberId, btn));
     li.appendChild(btn);
     ul.appendChild(li);
   });
@@ -847,7 +847,7 @@ function actionStepsSection(items, memberName) {
   return sec;
 }
 
-async function addActionStepToBoard(stepText, memberName, btn) {
+async function addActionStepToBoard(stepText, memberName, memberId, btn) {
   if (btn.disabled) return;
   const prev = btn.textContent;
   btn.disabled = true;
@@ -861,6 +861,10 @@ async function addActionStepToBoard(stepText, memberName, btn) {
         description: memberName ? `Suggested by ${memberName}` : '',
         priority: 'medium',
         discussionId: state.currentDiscussion?.id,
+        // Lets the server snapshot this member's reasoning + the question into
+        // the action's sourceContext (powers a richer Skill Planner brief).
+        sourceMemberId: memberId || undefined,
+        sourceMemberName: memberName || undefined,
       }),
     });
     btn.textContent = '✓ Added';
@@ -1494,6 +1498,29 @@ function renderKanbanBoard(items) {
   return board;
 }
 
+// Find the source discussion object for an action (if it's still in state) and
+// the question it was born from (prefer the snapshot, fall back to live state).
+function sourceDiscussionFor(a) {
+  if (!a || !a.discussionId) return null;
+  return state.discussions.find((d) => d.id === a.discussionId) || null;
+}
+function sourceQuestionOf(a) {
+  return (a && a.sourceContext && a.sourceContext.discussionQuestion) || sourceDiscussionFor(a)?.question || null;
+}
+// Open the source discussion for an action. Uses the in-state copy when present;
+// otherwise fetches it so deep navigation works even after a fresh load.
+async function openSourceDiscussion(a) {
+  if (!a || !a.discussionId) return;
+  const inState = sourceDiscussionFor(a);
+  if (inState) { openChatView(inState); return; }
+  try {
+    const d = await fetchJSON(`/api/discussions/${a.discussionId}`);
+    openChatView(d);
+  } catch (e) {
+    toast('Could not open source discussion: ' + e.message, 'err');
+  }
+}
+
 function actionCard(a) {
   const card = h('div', {
     class: 'kanban-card',
@@ -1516,6 +1543,24 @@ function actionCard(a) {
   if (a.dueDate) meta.appendChild(h('span', {}, '· due ' + a.dueDate.slice(0, 10)));
   if (a.assignedTo) meta.appendChild(h('span', {}, '· ' + a.assignedTo));
   card.appendChild(meta);
+  const srcQuestion = sourceQuestionOf(a);
+  if (srcQuestion) {
+    const src = h(
+      'button',
+      {
+        class: 'action-source-link',
+        type: 'button',
+        'data-testid': 'action-source-link',
+        title: `From discussion: ${srcQuestion}`,
+      },
+      `↩ ${ellipsisJs(srcQuestion, 64)}`,
+    );
+    src.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      openSourceDiscussion(a);
+    });
+    card.appendChild(src);
+  }
   if (a.linkedSkill) {
     card.appendChild(h('div', { class: 'message-meta' }, `🧠 skill: ${a.linkedSkill.name}`));
   }
@@ -1668,6 +1713,40 @@ function openActionEditModal(item) {
   row2.appendChild(h('div', {}, [h('label', { class: 'field-label' }, 'Due date'), dueInput]));
   row2.appendChild(h('div', {}, [h('label', { class: 'field-label' }, 'Assignee'), assigneeInput]));
   body.appendChild(row2);
+
+  // Source / provenance — where this action came from. Read-only; gives the
+  // user (and the Skill Planner) the discussion + member reasoning behind it.
+  const srcQuestion = item ? sourceQuestionOf(item) : null;
+  const sc = item?.sourceContext;
+  if (srcQuestion || sc) {
+    body.appendChild(h('label', { class: 'field-label' }, 'Source'));
+    const srcBox = h('div', { class: 'action-source-box', 'data-testid': 'action-source-box' });
+    if (srcQuestion) {
+      const link = h(
+        'button',
+        { class: 'action-source-link', type: 'button', 'data-testid': 'action-source-open' },
+        `↩ From discussion: ${ellipsisJs(srcQuestion, 90)}`,
+      );
+      link.addEventListener('click', () => { close(); openSourceDiscussion(item); });
+      srcBox.appendChild(link);
+    }
+    if (sc?.memberName) {
+      srcBox.appendChild(
+        h('div', { class: 'action-source-meta' },
+          `Suggested by ${sc.memberName}${sc.memberTitle ? ' · ' + sc.memberTitle : ''}` +
+            (typeof sc.roundNumber === 'number' ? ` · round ${sc.roundNumber}` : '')),
+      );
+    }
+    if (sc?.memberReasoning) {
+      srcBox.appendChild(h('div', { class: 'action-source-reasoning' }, sc.memberReasoning));
+    }
+    if (sc?.relatedKeyPoints?.length) {
+      const ul = h('ul', { class: 'action-source-points' });
+      sc.relatedKeyPoints.forEach((p) => ul.appendChild(h('li', {}, p)));
+      srcBox.appendChild(ul);
+    }
+    body.appendChild(srcBox);
+  }
   inner.appendChild(body);
 
   const foot = h('div', { class: 'modal-footer' });

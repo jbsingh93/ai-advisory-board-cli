@@ -12,7 +12,7 @@
  *   3. webResearch.bestPracticePatterns sources
  *   4. userNarrativeEdits (last — user authorship is precious)
  */
-import type { ActionItem, ConversationSummary } from '../../storage/types.js';
+import type { ActionItem, ActionItemSourceContext, ConversationSummary } from '../../storage/types.js';
 import type { ResolvedSkillCapabilityProfile } from './planner-review.js';
 import type { WikiPlaybook, WikiTemplate, WikiDomainKnowledge, WikiPastLesson } from './recon/wiki-recon.js';
 
@@ -43,6 +43,8 @@ export interface SkillCreatorBrief {
     title: string;
     description: string;
     priority: string;
+    /** Provenance snapshot — suggesting member's reasoning + original question. */
+    sourceContext?: ActionItemSourceContext;
     linkedDiscussion?: { id: string; summary: ConversationSummary };
   };
   skillPlannerProposal: ResolvedSkillCapabilityProfile['proposal'];
@@ -126,6 +128,7 @@ export function buildSkillCreatorBrief(opts: BuildBriefOptions): {
       title: opts.action.title,
       description: opts.action.description,
       priority: opts.action.priority,
+      ...(opts.action.sourceContext ? { sourceContext: opts.action.sourceContext } : {}),
       ...(opts.action.discussionId && opts.discussionSummary
         ? { linkedDiscussion: { id: opts.action.discussionId, summary: opts.discussionSummary } }
         : {}),

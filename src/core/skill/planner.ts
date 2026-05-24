@@ -65,6 +65,12 @@ export async function runPlanner(opts: RunPlannerOptions): Promise<RunPlannerRes
     null,
     2,
   );
+  // The board provenance gets its OWN top-level prompt block (not buried in the
+  // action JSON) so the Planner always sees the suggesting advisor's real
+  // reasoning + the original question — the "why/how" it designs against.
+  const sourceContextText = opts.action.sourceContext
+    ? buildSourceContextString(opts.action.sourceContext)
+    : '';
   const discussionSummaryText = opts.discussionSummary
     ? buildDiscussionSummaryString(opts.discussionSummary)
     : '';
@@ -79,6 +85,7 @@ export async function runPlanner(opts: RunPlannerOptions): Promise<RunPlannerRes
     attempts++;
     const prompt = renderSkillPlannerPrompt({
       actionItemJson,
+      sourceContext: sourceContextText,
       discussionSummary: discussionSummaryText,
       reconResultJson,
       wikiContextJson: JSON.stringify(opts.recon.wiki, null, 2),
@@ -210,6 +217,37 @@ function buildDiscussionSummaryString(summary: ConversationSummary): string {
   if (summary.disagreements?.length) parts.push(`disagreements: ${summary.disagreements.slice(0, 3).join(' | ')}`);
   if (summary.actionableInsights?.length) parts.push(`insights: ${summary.actionableInsights.slice(0, 4).join(' | ')}`);
   return parts.join('\n').slice(0, 4000);
+}
+
+/**
+ * Render the action's discussion provenance as a self-describing block. This is
+ * the single richest signal the Planner has about INTENT — the advisor's actual
+ * reasoning behind the one-line action title. Kept human-readable (not JSON) so
+ * the reasoning model treats it as context to honour, not a struct to echo.
+ */
+function buildSourceContextString(sc: ActionItem['sourceContext']): string {
+  if (!sc) return '';
+  const lines: string[] = [];
+  const who = [sc.memberName, sc.memberTitle].filter(Boolean).join(', ');
+  if (who || typeof sc.roundNumber === 'number') {
+    const round = typeof sc.roundNumber === 'number' ? ` (advisory round ${sc.roundNumber})` : '';
+    lines.push(`This action was proposed by ${who || 'an advisory board member'}${round}.`);
+  }
+  if (sc.discussionQuestion?.trim()) {
+    lines.push(`The board was convened on this question: "${sc.discussionQuestion.trim()}"`);
+  }
+  if (sc.memberReasoning?.trim()) {
+    lines.push(`The advisor's reasoning behind this action:\n${sc.memberReasoning.trim()}`);
+  }
+  if (sc.relatedKeyPoints?.length) {
+    lines.push(
+      `The advisor's related key points:\n${sc.relatedKeyPoints
+        .slice(0, 6)
+        .map((p) => `- ${p}`)
+        .join('\n')}`,
+    );
+  }
+  return lines.join('\n\n').slice(0, 6000);
 }
 
 /**

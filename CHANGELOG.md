@@ -1,5 +1,17 @@
 # CHANGELOG — AI Advisory Board CLI
 
+## 0.4.0
+
+### Minor Changes
+
+- 81661f9: Action items now capture the discussion context they were born from. When you add an action step to the board (UI, the extract route, or `aab actions add --discussion`), the server snapshots a `sourceContext` onto the item: the original board question, the suggesting member's name + title/expertise, their actual reasoning behind the step, their related key points, and the round number. Previously an action carried only its one-line title plus "Suggested by <member>".
+
+  The Skill Planner now receives this as a dedicated, self-describing `<source_context>` prompt block (authoritative statement of intent — it designs the skill for what the advisor _meant_, not just the literal title), and the skill-creator brief carries it through as `action.sourceContext`. In the web UI, action cards show a "↩ From discussion" link and the edit modal gains a read-only **Source** section (question, member, reasoning, key points) that deep-links back to the originating discussion.
+
+### Patch Changes
+
+- ad82fa0: fix(ui): live discussion view no longer shows false "No response" after a streaming glitch. When a live `member_response` event failed to match its typing bubble, the view left a perpetual-"No response" orphan in place and appended a misplaced duplicate of the real answer further down. `finalizeChat` now rebuilds the chat stream from the authoritative discussion record the server sends with `discussion_completed` / `discussion_gated`, so the live view matches exactly what a page reload renders.
+
 ## 0.3.0
 
 ### Minor Changes

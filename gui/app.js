@@ -1056,28 +1056,41 @@ function addOrchestratorDecision(decision, roundNumber) {
   scrollChat();
 }
 
+function noResponseBubble(name) {
+  return h('div', { class: 'message' }, [
+    h('div', { class: 'avatar', 'data-color': 'red' }, '✗'),
+    h('div', { class: 'message-body' }, [
+      h('div', { class: 'message-name' }, name),
+      h('div', { class: 'system-bubble' }, 'No response — this member failed or timed out.'),
+    ]),
+  ]);
+}
+
 function finalizeChat(msg, opts = {}) {
-  // Any typing bubbles that never got a matching member_response (e.g., a
-  // member failed silently) become orphans — clear them so the user isn't
-  // staring at perpetually-thinking dots.
-  state.pendingTyping.forEach((bubble, name) => {
-    bubble.replaceWith(
-      h('div', { class: 'message' }, [
-        h('div', { class: 'avatar', 'data-color': 'red' }, '✗'),
-        h('div', { class: 'message-body' }, [
-          h('div', { class: 'message-name' }, name),
-          h('div', { class: 'system-bubble' }, 'No response — this member failed or timed out.'),
-        ]),
-      ]),
-    );
-  });
-  state.pendingTyping.clear();
+  const stream = $('#chat-stream');
+
+  // When the server hands us the authoritative discussion record (both
+  // discussion_completed and discussion_gated carry it), rebuild the stream
+  // from saved state so the live view is exactly what a page reload renders.
+  // This fixes the class of bugs where a live `member_response` failed to
+  // match its typing bubble — which left a false "No response" orphan in
+  // place AND appended a misplaced duplicate of the real answer further down.
+  if (stream && msg.discussion) {
+    state.pendingTyping.clear();
+    stream.innerHTML = '';
+    for (const node of discussionTimeline(msg.discussion)) stream.appendChild(node);
+  } else if (stream) {
+    // Fallback (no authoritative payload): convert any leftover typing
+    // bubbles so the user isn't staring at perpetually-thinking dots.
+    state.pendingTyping.forEach((bubble, name) => bubble.replaceWith(noResponseBubble(name)));
+    state.pendingTyping.clear();
+  }
 
   // Re-fetch the bootstrap state so the discussion list refreshes
   fetchJSON('/api/state').then((data) => {
     state.discussions = data.discussions;
   });
-  const stream = $('#chat-stream');
+
   if (stream && !opts.gated) {
     const cost = msg.costUsd != null ? `$${Number(msg.costUsd).toFixed(4)}` : '$0.00';
     const dur = msg.durationMs ? formatDuration(msg.durationMs) : '';
@@ -1091,17 +1104,16 @@ function finalizeChat(msg, opts = {}) {
         ],
       ),
     );
-    scrollChat();
   }
   if (msg.discussion?.pendingUserRequest && stream) {
     stream.appendChild(pendingRequestBubble(msg.discussion.pendingUserRequest));
-    scrollChat();
   }
   // Refresh the action footer so Continue / Respond / concluded state matches
   // the current discussion — the engine may have just changed any of them.
   if (msg.discussion) {
     refreshChatFooter(msg.discussion);
   }
+  scrollChat();
   setActionButtonsBusy(false);
 }
 

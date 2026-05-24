@@ -88,6 +88,15 @@ export interface WebReconOptions {
   perAppMaxTurns?: number;
   /** Workspace cwd (so Read/Glob aren't accidentally invoked outside it). */
   cwd?: string;
+  /** Max concurrent `claude -p` web-research processes. Default 4 — balances
+   *  wall-clock against subscription rate limits (parallel sessions share the
+   *  same quota; too many → 429s). */
+  concurrency?: number;
+  /** Heartbeat callback — fires as each pass starts/finishes so the UI has a
+   *  live signal during the (otherwise opaque) web phase. */
+  onProgress?: (detail: string) => void;
+  /** Cancellation — kills all in-flight `claude` children when aborted. */
+  signal?: AbortSignal;
 }
 
 const GENERAL_PROMPT = `<role>
@@ -165,71 +174,123 @@ export async function runWebRecon(opts: WebReconOptions): Promise<WebResearchCon
   const generalMaxTurns = opts.generalMaxTurns ?? 12;
   const perAppMaxTurns = opts.perAppMaxTurns ?? 6;
   const topAppCount = opts.topAppCount ?? 5;
+  const concurrency = Math.max(1, opts.concurrency ?? 4);
 
   let costUsd = 0;
   let warning: string | undefined;
-
-  // ----- Pass 1 — general task research -----
-  let general: Omit<WebResearchContext,
-    'appIntegrationSurfaces' | 'webPassesCompleted' | 'costUsd' | 'warning'> | null = null;
-  try {
-    const prompt = GENERAL_PROMPT
-      .replace('{{ACTION_TITLE}}', escapeForPrompt(opts.actionTitle))
-      .replace('{{ACTION_DESCRIPTION}}', escapeForPrompt(opts.actionDescription ?? ''));
-    const result = await runClaude({
-      prompt,
-      model,
-      allowedTools: ['WebSearch', 'WebFetch'],
-      maxTurns: generalMaxTurns,
-      cwd: opts.cwd,
-      maxBudgetUsd: opts.settings.perCallBudgetUsd,
-      timeoutMs: 5 * 60_000,
-    });
-    costUsd += result.json?.cost_usd ?? 0;
-    general = parseGeneral(extractText(result));
-  } catch (err) {
-    logger.debug('[web-recon] pass1 failed', { error: err instanceof Error ? err.message : String(err) });
-    warning = `general web research failed: ${err instanceof Error ? err.message.slice(0, 160) : 'unknown'}`;
-  }
-
-  // ----- Pass 2 — per-app integration-surface research -----
-  const topApps = pickTopAppsForResearch(opts.apps, opts.actionTitle, opts.actionDescription, topAppCount);
+  // `general` is mutated inside the pooled task below; held on an object so TS
+  // doesn't narrow it to `null` (assignments in a closure don't widen a bare
+  // `let` back to its declared union for later reads).
+  const out: {
+    general: Omit<WebResearchContext, 'appIntegrationSurfaces' | 'webPassesCompleted' | 'costUsd' | 'warning'> | null;
+  } = { general: null };
   const surfaces: WebAppIntegrationSurface[] = [];
-  for (const app of topApps) {
+
+  // The general pass + each per-app pass are independent `claude -p` calls.
+  // Per the subagent research (subagents run sequentially + return lossy
+  // summaries; agent teams are experimental/interactive), the right model here
+  // is N parallel OS processes with a concurrency cap — each yields its own
+  // structured JSON, its own timeout, its own cost. We run them through a
+  // simple pool so they overlap instead of summing wall-clock.
+  const topApps = pickTopAppsForResearch(opts.apps, opts.actionTitle, opts.actionDescription, topAppCount);
+  const total = 1 + topApps.length;
+  let completed = 0;
+  const tick = (label: string) => {
+    completed++;
+    opts.onProgress?.(`${label} (${completed}/${total} passes done)`);
+  };
+  opts.onProgress?.(`researching ${topApps.length} app(s) + general best-practices — ${Math.min(concurrency, total)} in parallel`);
+
+  const tasks: Array<() => Promise<void>> = [];
+
+  // General task-research pass.
+  tasks.push(async () => {
     try {
-      const prompt = PER_APP_PROMPT
+      const prompt = GENERAL_PROMPT
         .replace('{{ACTION_TITLE}}', escapeForPrompt(opts.actionTitle))
-        .replace('{{ACTION_DESCRIPTION}}', escapeForPrompt(opts.actionDescription ?? ''))
-        .replace(/{{APP_NAME}}/g, escapeForPrompt(app.name))
-        .replace('{{APP_VERSION_OR_NONE}}', app.version ?? '');
+        .replace('{{ACTION_DESCRIPTION}}', escapeForPrompt(opts.actionDescription ?? ''));
       const result = await runClaude({
         prompt,
         model,
         allowedTools: ['WebSearch', 'WebFetch'],
-        maxTurns: perAppMaxTurns,
+        maxTurns: generalMaxTurns,
         cwd: opts.cwd,
         maxBudgetUsd: opts.settings.perCallBudgetUsd,
-        timeoutMs: 3 * 60_000,
+        timeoutMs: 5 * 60_000,
+        strictMcpConfig: true,
+        signal: opts.signal,
       });
       costUsd += result.json?.cost_usd ?? 0;
-      const surface = parseAppSurface(extractText(result), app.name);
-      if (surface) surfaces.push(surface);
+      out.general = parseGeneral(extractText(result));
     } catch (err) {
-      logger.debug('[web-recon] per-app pass failed', { app: app.name, error: err instanceof Error ? err.message : String(err) });
+      logger.debug('[web-recon] pass1 failed', { error: err instanceof Error ? err.message : String(err) });
+      warning = `general web research failed: ${err instanceof Error ? err.message.slice(0, 160) : 'unknown'}`;
+    } finally {
+      tick('general best-practices');
     }
+  });
+
+  // Per-app integration-surface passes.
+  for (const app of topApps) {
+    tasks.push(async () => {
+      try {
+        const prompt = PER_APP_PROMPT
+          .replace('{{ACTION_TITLE}}', escapeForPrompt(opts.actionTitle))
+          .replace('{{ACTION_DESCRIPTION}}', escapeForPrompt(opts.actionDescription ?? ''))
+          .replace(/{{APP_NAME}}/g, escapeForPrompt(app.name))
+          .replace('{{APP_VERSION_OR_NONE}}', app.version ?? '');
+        const result = await runClaude({
+          prompt,
+          model,
+          allowedTools: ['WebSearch', 'WebFetch'],
+          maxTurns: perAppMaxTurns,
+          cwd: opts.cwd,
+          maxBudgetUsd: opts.settings.perCallBudgetUsd,
+          timeoutMs: 3 * 60_000,
+          strictMcpConfig: true,
+          signal: opts.signal,
+        });
+        costUsd += result.json?.cost_usd ?? 0;
+        const surface = parseAppSurface(extractText(result), app.name);
+        if (surface) surfaces.push(surface);
+      } catch (err) {
+        logger.debug('[web-recon] per-app pass failed', { app: app.name, error: err instanceof Error ? err.message : String(err) });
+      } finally {
+        tick(app.name);
+      }
+    });
   }
 
+  await runWithConcurrency(tasks, concurrency);
+
   return {
-    taskDomain: general?.taskDomain ?? opts.actionTitle.slice(0, 60),
-    bestPracticePatterns: general?.bestPracticePatterns ?? [],
-    recommendedTools: general?.recommendedTools ?? [],
-    recentInnovations: general?.recentInnovations ?? [],
-    warningsAndPitfalls: general?.warningsAndPitfalls ?? [],
+    taskDomain: out.general?.taskDomain ?? opts.actionTitle.slice(0, 60),
+    bestPracticePatterns: out.general?.bestPracticePatterns ?? [],
+    recommendedTools: out.general?.recommendedTools ?? [],
+    recentInnovations: out.general?.recentInnovations ?? [],
+    warningsAndPitfalls: out.general?.warningsAndPitfalls ?? [],
     appIntegrationSurfaces: surfaces,
-    webPassesCompleted: { general: general !== null, perAppCount: surfaces.length },
+    webPassesCompleted: { general: out.general !== null, perAppCount: surfaces.length },
     costUsd,
     warning,
   };
+}
+
+/**
+ * Run `tasks` with at most `limit` in flight at once. Each task owns its
+ * try/catch (failures are logged inside, never rejected), so the pool always
+ * drains — one wedged web pass can't sink the others.
+ */
+async function runWithConcurrency(tasks: Array<() => Promise<void>>, limit: number): Promise<void> {
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < tasks.length) {
+      const idx = next++;
+      await tasks[idx]!();
+    }
+  };
+  const workers = Array.from({ length: Math.min(limit, tasks.length) }, () => worker());
+  await Promise.all(workers);
 }
 
 function emptyContext(actionTitle: string, warning: string): WebResearchContext {

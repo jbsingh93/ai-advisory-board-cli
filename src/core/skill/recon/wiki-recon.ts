@@ -114,6 +114,8 @@ export interface WikiReconOptions {
   maxTurns?: number;
   /** Bypass — return empty context with a note. */
   skip?: boolean;
+  /** Cancellation — kills the in-flight `claude` child when aborted. */
+  signal?: AbortSignal;
 }
 
 const PROMPT_TEMPLATE = `<role>
@@ -261,6 +263,8 @@ export async function runWikiRecon(opts: WikiReconOptions): Promise<WikiContext>
       cwd: opts.workspace.root,
       maxBudgetUsd: opts.settings.perCallBudgetUsd,
       timeoutMs: 3 * 60_000,
+      strictMcpConfig: true,
+      signal: opts.signal,
     });
     const costUsd = result.json?.cost_usd ?? 0;
     const text = extractText(result);

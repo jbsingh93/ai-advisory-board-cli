@@ -33,6 +33,8 @@ export interface RunPlannerOptions {
   userReplanFeedback?: string;
   /** Override default model — useful for tests + cheap dry-runs. */
   modelOverride?: string;
+  /** Cancellation — kills the in-flight Opus `claude` child when aborted. */
+  signal?: AbortSignal;
   /** Streaming event sink (planner_reasoning_*). */
   onEvent?: (event: { type: 'tokens'; tokensIn?: number; tokensOut?: number; elapsedMs?: number }) => void;
 }
@@ -107,6 +109,8 @@ export async function runPlanner(opts: RunPlannerOptions): Promise<RunPlannerRes
         cwd: opts.workspace.root,
         maxBudgetUsd: budgetCap,
         timeoutMs: 10 * 60_000,
+        strictMcpConfig: true,
+        signal: opts.signal,
         onEvent: opts.onEvent
           ? (evt) => {
               opts.onEvent?.({

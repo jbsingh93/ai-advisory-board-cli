@@ -4211,6 +4211,8 @@ const plannerState = {
   action: null,
   proposal: null, // SkillDesignProposal
   phases: { 'pc-scan': 'queued', 'wiki': 'queued', 'web': 'queued', 'reasoning': 'queued' },
+  phaseStartedAt: {}, // phase key → epoch ms when it first went 'running' (for elapsed timer)
+  tick: null, // setInterval handle that repaints the elapsed timer each second
   stream: [],
 };
 
@@ -4240,6 +4242,8 @@ function resetPlannerState(action) {
   plannerState.action = action;
   plannerState.proposal = null;
   plannerState.phases = { 'pc-scan': 'queued', 'wiki': 'queued', 'web': 'queued', 'reasoning': 'queued' };
+  plannerState.phaseStartedAt = {};
+  if (plannerState.tick) { clearInterval(plannerState.tick); plannerState.tick = null; }
   plannerState.stream = [];
 }
 
@@ -4251,11 +4255,37 @@ function showPlannerProgress() {
   // Clear any stale error banner from a prior run.
   const banner = document.getElementById('planner-error-banner');
   if (banner) banner.remove();
+  // Reset the cancel button (a prior run may have left it disabled).
+  const cb = document.getElementById('planner-cancel-btn');
+  if (cb) { cb.disabled = false; cb.textContent = 'Cancel plan'; }
+  // Tick once a second so the elapsed timer on a running phase advances even
+  // when no new WS event arrives (web/reasoning can run for minutes silently).
+  if (plannerState.tick) clearInterval(plannerState.tick);
+  plannerState.tick = setInterval(paintPlannerPhases, 1000);
   paintPlannerPhases();
 }
 
 function hidePlannerProgress() {
   document.getElementById('planner-progress-modal').hidden = true;
+  if (plannerState.tick) { clearInterval(plannerState.tick); plannerState.tick = null; }
+}
+
+// Abort an in-flight plan run. Tells the server to kill the recon/planner
+// `claude` children (stops the token burn); the modal closes when the
+// resulting `planner_cancelled` WS event arrives.
+function cancelPlannerRun() {
+  const pid = plannerState.planId;
+  const btn = document.getElementById('planner-cancel-btn');
+  // No planId yet means the POST /plan response hasn't returned — nothing is
+  // running server-side we can cancel, so just close the pane.
+  if (!pid) { hidePlannerProgress(); return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Cancelling…'; }
+  fetchJSON(`/api/plans/${pid}/cancel`, { method: 'POST' })
+    .catch((err) => {
+      // 404 = already finished; treat as a no-op close rather than an error.
+      toast('Cancel: ' + err.message, 'err');
+      if (btn) { btn.disabled = false; btn.textContent = 'Cancel plan'; }
+    });
 }
 
 function paintPlannerPhases() {
@@ -4266,7 +4296,17 @@ function paintPlannerPhases() {
     const status = plannerState.phases[key] ?? 'queued';
     node.dataset.status = status;
     const statusNode = node.querySelector('.planner-phase-status');
-    if (statusNode) statusNode.textContent = status;
+    if (statusNode) {
+      let label = status;
+      if (status === 'running') {
+        // Lazily stamp the start so any phase that goes 'running' (incl.
+        // reasoning) gets an elapsed counter without per-phase bookkeeping.
+        if (!plannerState.phaseStartedAt[key]) plannerState.phaseStartedAt[key] = Date.now();
+        const secs = Math.floor((Date.now() - plannerState.phaseStartedAt[key]) / 1000);
+        label = secs >= 60 ? `running ${Math.floor(secs / 60)}m ${secs % 60}s` : `running ${secs}s`;
+      }
+      statusNode.textContent = label;
+    }
   });
   const stream = document.getElementById('planner-stream');
   if (stream) {
@@ -4408,6 +4448,8 @@ function escapeHtml(s) {
 window.addEventListener('DOMContentLoaded', () => {
   const close = document.getElementById('planner-progress-close');
   if (close) close.addEventListener('click', hidePlannerProgress);
+  const pcancel = document.getElementById('planner-cancel-btn');
+  if (pcancel) pcancel.addEventListener('click', cancelPlannerRun);
   const pclose = document.getElementById('planner-proposal-close');
   if (pclose) pclose.addEventListener('click', hideProposalModal);
   const reject = document.getElementById('proposal-reject-btn');
@@ -4484,9 +4526,16 @@ window.addEventListener('aab-planner-event', (ev) => {
   const d = ev.detail;
   if (d.type === 'planner_recon_progress') {
     const phase = d.phase ?? d.payload?.phase;
-    if (phase === 'pc-scan') plannerState.phases['pc-scan'] = 'done';
-    if (phase === 'wiki-recon') plannerState.phases['wiki'] = 'done';
-    if (phase === 'web-research') plannerState.phases['web'] = 'done';
+    // Back-compat: pre-0.5 events carried no status — infer from summary presence.
+    const status = d.status ?? d.payload?.status ?? (d.summary ? 'done' : 'running');
+    const key = phase === 'pc-scan' ? 'pc-scan' : phase === 'wiki-recon' ? 'wiki' : phase === 'web-research' ? 'web' : null;
+    if (key) {
+      // Don't let a late sub-progress 'running' clobber a phase already 'done'.
+      if (status === 'done') plannerState.phases[key] = 'done';
+      else if (plannerState.phases[key] !== 'done') plannerState.phases[key] = 'running';
+    }
+    const detail = d.detail ?? d.payload?.detail;
+    if (detail) plannerState.stream.push(`${phase}: ${detail}`);
     if (d.summary) plannerState.stream.push(`${phase}: ${d.summary}`);
     paintPlannerPhases();
   } else if (d.type === 'planner_recon_done') {
@@ -4509,11 +4558,22 @@ window.addEventListener('aab-planner-event', (ev) => {
       // open so the user sees the failure (and not just a vanished modal).
       showPlannerError('Planner emitted an empty proposal (server bug). Re-run or contact support.');
     }
+  } else if (d.type === 'planner_cancelled') {
+    // User aborted the run — close the pane and stop the elapsed ticker.
+    // Two planner_cancelled events arrive (the cancel route fires one
+    // immediately for snappy UX; runSolve's unwind fires another). Idempotent:
+    // if the pane is already closed we've handled it, so skip the dup toast.
+    const m = document.getElementById('planner-progress-modal');
+    if (m && m.hidden) return;
+    if (plannerState.tick) { clearInterval(plannerState.tick); plannerState.tick = null; }
+    hidePlannerProgress();
+    toast('Plan cancelled', 'ok');
   } else if (d.type === 'planner_failed') {
     // Persistent failure banner inside the still-open progress pane — toast
     // alone disappears in 4.5s and after a 10min Opus run the user has no
     // proof anything happened. Caught via the 2026-05-21 live MCP smoke.
     plannerState.phases['reasoning'] = 'failed';
+    if (plannerState.tick) { clearInterval(plannerState.tick); plannerState.tick = null; }
     paintPlannerPhases();
     showPlannerError(d.errorMessage ?? d.reason ?? 'Planner failed (no detail)');
     toast('Planner failed: ' + (d.errorMessage ?? 'unknown'), 'err');

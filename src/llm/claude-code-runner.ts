@@ -46,6 +46,14 @@ export interface RunOptions {
   addDirs?: string[];
   /** External AbortSignal — kills the spawned process when triggered. */
   signal?: AbortSignal;
+  /**
+   * Pass `--strict-mcp-config` so the session loads ONLY MCP servers from an
+   * explicit `--mcp-config` (we pass none) — i.e. zero MCP servers. Used by
+   * recon + planner calls, which only need WebSearch/WebFetch/Read/Grep/Glob:
+   * it skips the (sometimes slow / OAuth-stalling) startup of the user's
+   * configured servers (Gmail, Slack, …). Default false.
+   */
+  strictMcpConfig?: boolean;
   /** Wall-clock timeout in ms (default 5 min). */
   timeoutMs?: number;
   /** Extra environment variables to set on the child process. */
@@ -240,6 +248,10 @@ export async function runClaude(opts: RunOptions): Promise<RunResult> {
 
   // budget cap
   if (opts.maxBudgetUsd) args.push('--max-budget-usd', String(opts.maxBudgetUsd));
+
+  // skip loading the user's MCP servers (recon/planner don't need them — this
+  // avoids the per-spawn startup tax of Gmail/Slack/etc.)
+  if (opts.strictMcpConfig) args.push('--strict-mcp-config');
 
   // bypass trust + permission prompts (default true; the agent file's
   // tools allowlist already prevents the sub-agent from writing/editing/etc.)

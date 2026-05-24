@@ -41,9 +41,18 @@ export interface ReconOptions {
   skipPcScan?: boolean;
   skipWiki?: boolean;
   skipWeb?: boolean;
+  /** Cancellation — propagated to the wiki + web `claude` children. */
+  signal?: AbortSignal;
   /** Default 5. */
   topAppCount?: number;
-  /** Streaming progress callback — fires when each phase completes. */
+  /** Fires when a phase BEGINS — lets the UI show 'running' instead of leaving
+   *  wiki/web on 'queued' for the whole (slow) parallel block. */
+  onPhaseStart?: (phase: 'pc-scan' | 'wiki-recon' | 'web-research') => void;
+  /** Fires for sub-steps within a phase (e.g. web 'app 2/5: Photoshop') so the
+   *  UI has a live heartbeat during the long web pass. */
+  onPhaseProgress?: (phase: 'pc-scan' | 'wiki-recon' | 'web-research', detail: string) => void;
+  /** Streaming progress callback — fires when each phase completes. Each phase
+   *  reports independently the moment IT settles (not after the slower one). */
   onPhaseDone?: (phase: 'pc-scan' | 'wiki-recon' | 'web-research', summary: string) => void;
 }
 
@@ -53,6 +62,7 @@ export async function runRecon(opts: ReconOptions): Promise<ReconTriple> {
 
   // PC scan is sync + fast; run it inline so wiki + web have its output available
   // if we ever start cross-referencing (T1.3 already wires apps → per-app web pass).
+  opts.onPhaseStart?.('pc-scan');
   let pc: ReconResult;
   if (opts.skipPcScan) {
     pc = emptyPc('skipped via --planner-no-pc-scan');
@@ -69,7 +79,11 @@ export async function runRecon(opts: ReconOptions): Promise<ReconTriple> {
     `${pc.apps.length} apps, ${pc.cliTools.length} CLI tools, ${pc.mcpServers.length} MCP, ${pc.envVars.length} env`,
   );
 
-  // Wiki + web run in parallel.
+  // Wiki + web run in parallel. Mark both 'running' up front so the UI doesn't
+  // leave them on 'queued' for the (potentially many-minute) duration.
+  opts.onPhaseStart?.('wiki-recon');
+  opts.onPhaseStart?.('web-research');
+
   const wikiPromise = runWikiRecon({
     workspace: opts.workspace,
     settings: opts.settings,
@@ -77,6 +91,7 @@ export async function runRecon(opts: ReconOptions): Promise<ReconTriple> {
     actionDescription: opts.actionDescription,
     discussionSummary: opts.discussionSummary,
     skip: opts.skipWiki,
+    signal: opts.signal,
   });
   const webPromise = runWebRecon({
     settings: opts.settings,
@@ -86,48 +101,65 @@ export async function runRecon(opts: ReconOptions): Promise<ReconTriple> {
     skip: opts.skipWeb,
     topAppCount: opts.topAppCount,
     cwd: opts.workspace.root,
+    onProgress: (detail) => opts.onPhaseProgress?.('web-research', detail),
+    signal: opts.signal,
   });
 
-  const [wikiSettled, webSettled] = await Promise.allSettled([wikiPromise, webPromise]);
-  const wiki: WikiContext = wikiSettled.status === 'fulfilled'
-    ? wikiSettled.value
-    : {
-        playbooks: [], templates: [], domainKnowledge: [], pastLessons: [],
-        stakeholders: [], endorsedDirections: [], vetoes: [], pastDecisions: [],
-        relevantPages: [],
-        costUsd: 0,
-        warning: wikiSettled.reason instanceof Error ? wikiSettled.reason.message : 'wiki recon failed',
-      };
-  if (wiki.warning) warnings.push({ phase: 'wiki-recon', severity: 'warn', message: wiki.warning });
-  opts.onPhaseDone?.(
-    'wiki-recon',
-    `${wiki.playbooks.length} playbooks, ${wiki.templates.length} templates, ${wiki.domainKnowledge.length} knowledge, ${wiki.stakeholders.length} stakeholders, ${wiki.vetoes.length} vetoes`,
-  );
-
-  const web: WebResearchContext = webSettled.status === 'fulfilled'
-    ? webSettled.value
-    : {
-        taskDomain: opts.actionTitle.slice(0, 60),
-        bestPracticePatterns: [],
-        recommendedTools: [],
-        recentInnovations: [],
-        warningsAndPitfalls: [],
-        appIntegrationSurfaces: [],
-        webPassesCompleted: { general: false, perAppCount: 0 },
-        costUsd: 0,
-        warning: webSettled.reason instanceof Error ? webSettled.reason.message : 'web recon failed',
-      };
-  if (!web.webPassesCompleted.general) {
-    warnings.push({
-      phase: 'web-research-general',
-      severity: 'warn',
-      message: web.warning ?? 'general web pass returned no parseable output',
-    });
-  }
-  opts.onPhaseDone?.(
-    'web-research',
-    `${web.bestPracticePatterns.length} patterns, ${web.recommendedTools.length} tools, ${web.appIntegrationSurfaces.length} app surfaces`,
-  );
+  // Track each phase independently so its 'done' fires the moment IT settles —
+  // a fast wiki pass no longer waits behind a slow web pass before the UI
+  // updates. Both run to completion either way (warnings aggregated below).
+  const [wiki, web] = await Promise.all([
+    (async (): Promise<WikiContext> => {
+      let w: WikiContext;
+      try {
+        w = await wikiPromise;
+      } catch (err) {
+        w = {
+          playbooks: [], templates: [], domainKnowledge: [], pastLessons: [],
+          stakeholders: [], endorsedDirections: [], vetoes: [], pastDecisions: [],
+          relevantPages: [],
+          costUsd: 0,
+          warning: err instanceof Error ? err.message : 'wiki recon failed',
+        };
+      }
+      if (w.warning) warnings.push({ phase: 'wiki-recon', severity: 'warn', message: w.warning });
+      opts.onPhaseDone?.(
+        'wiki-recon',
+        `${w.playbooks.length} playbooks, ${w.templates.length} templates, ${w.domainKnowledge.length} knowledge, ${w.stakeholders.length} stakeholders, ${w.vetoes.length} vetoes`,
+      );
+      return w;
+    })(),
+    (async (): Promise<WebResearchContext> => {
+      let v: WebResearchContext;
+      try {
+        v = await webPromise;
+      } catch (err) {
+        v = {
+          taskDomain: opts.actionTitle.slice(0, 60),
+          bestPracticePatterns: [],
+          recommendedTools: [],
+          recentInnovations: [],
+          warningsAndPitfalls: [],
+          appIntegrationSurfaces: [],
+          webPassesCompleted: { general: false, perAppCount: 0 },
+          costUsd: 0,
+          warning: err instanceof Error ? err.message : 'web recon failed',
+        };
+      }
+      if (!v.webPassesCompleted.general) {
+        warnings.push({
+          phase: 'web-research-general',
+          severity: 'warn',
+          message: v.warning ?? 'general web pass returned no parseable output',
+        });
+      }
+      opts.onPhaseDone?.(
+        'web-research',
+        `${v.bestPracticePatterns.length} patterns, ${v.recommendedTools.length} tools, ${v.appIntegrationSurfaces.length} app surfaces`,
+      );
+      return v;
+    })(),
+  ]);
 
   return {
     pc,

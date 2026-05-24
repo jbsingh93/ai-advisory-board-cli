@@ -2080,6 +2080,10 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
   // launched with the proposal pre-accepted.
   const planCache = new Map<string, ResolvedSkillCapabilityProfile>();
 
+  // Running plan/solve runs keyed by planId, so POST /api/plans/:id/cancel can
+  // abort the in-flight recon/planner `claude` children (stops the token burn).
+  const runningPlans = new Map<string, AbortController>();
+
   // POST /api/actions/:id/plan — Planner-only, returns proposal + planId
   app.post('/api/actions/:id/plan', async (req, res) => {
     try {
@@ -2098,6 +2102,8 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
       };
       const discussion = action.discussionId ? await opts.storage.loadDiscussionById(action.discussionId) : null;
       const planId = generateUUID();
+      const controller = new AbortController();
+      runningPlans.set(planId, controller);
       broadcast({ type: 'planner_started', planId, actionItemId: action.id });
 
       // Run asynchronously — return planId immediately, push events via WS.
@@ -2117,12 +2123,19 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
             yes: true,
             projectRoot: process.cwd(),
             runId: planId,
+            signal: controller.signal,
             onEvent: (evt) => broadcast(coerceSolveEventForWs(evt, planId)),
           });
           planCache.set(planId, result.capabilityProfile);
           broadcast({ type: 'planner_proposal_ready', planId, proposal: result.proposal });
         } catch (err) {
-          broadcast({ type: 'planner_failed', planId, reason: 'error', errorMessage: err instanceof Error ? err.message : String(err) });
+          if (controller.signal.aborted) {
+            broadcast({ type: 'planner_cancelled', planId });
+          } else {
+            broadcast({ type: 'planner_failed', planId, reason: 'error', errorMessage: err instanceof Error ? err.message : String(err) });
+          }
+        } finally {
+          runningPlans.delete(planId);
         }
       })();
 
@@ -2144,6 +2157,19 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
       return;
     }
     res.json({ planId: req.params.planId, profile });
+  });
+
+  // POST /api/plans/:planId/cancel — abort a running plan/solve. Kills the
+  // in-flight recon/planner `claude` children so the token burn stops.
+  app.post('/api/plans/:planId/cancel', (req, res) => {
+    const controller = runningPlans.get(req.params.planId);
+    if (!controller) {
+      res.status(404).json({ error: 'No running plan with that id (already finished or never started).' });
+      return;
+    }
+    controller.abort();
+    broadcast({ type: 'planner_cancelled', planId: req.params.planId });
+    res.json({ cancelled: true });
   });
 
   // POST /api/plans/:planId/replan — re-plan with user feedback (re-uses recon)

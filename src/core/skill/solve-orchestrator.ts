@@ -27,7 +27,7 @@ import type { ResolvedWorkspace } from '../../storage/paths.js';
 import { paths } from '../../storage/paths.js';
 import { generateUUID, nowIso } from '../utils.js';
 import { logger } from '../logger.js';
-import { UserError, BudgetError } from '../errors.js';
+import { UserError, BudgetError, CancelledError } from '../errors.js';
 import { resolveSkillCreator } from './resolve-skill-creator.js';
 import { runRecon, type ReconTriple } from './recon/orchestrator.js';
 import { runPlanner } from './planner.js';
@@ -89,6 +89,9 @@ export interface SolveOptions {
   preAcceptedProfile?: ResolvedSkillCapabilityProfile;
   /** Custom run id (otherwise generated). */
   runId?: string;
+  /** Cancellation — aborts recon/planner `claude` children and stops the
+   *  pipeline at the next phase boundary (throws CancelledError). */
+  signal?: AbortSignal;
 }
 
 export interface SolveResult {
@@ -126,6 +129,17 @@ export async function runSolve(opts: SolveOptions): Promise<SolveResult> {
   // wiki + web phases to PC-only when a profile was pre-accepted (used by
   // the GUI when the proposal was generated separately).
   opts.onEvent?.({ type: 'planner_started', payload: { runId } });
+  // Recon progress → WS. Emits 'running' when a phase starts, 'running' + detail
+  // for sub-steps (web 'app 2/5'), and 'done' the moment each phase settles — so
+  // the UI never leaves wiki/web on 'queued' for the whole parallel block.
+  const reconCallbacks = {
+    onPhaseStart: (phase: 'pc-scan' | 'wiki-recon' | 'web-research') =>
+      opts.onEvent?.({ type: 'planner_recon_progress', payload: { runId, phase, status: 'running' } }),
+    onPhaseProgress: (phase: 'pc-scan' | 'wiki-recon' | 'web-research', detail: string) =>
+      opts.onEvent?.({ type: 'planner_recon_progress', payload: { runId, phase, status: 'running', detail } }),
+    onPhaseDone: (phase: 'pc-scan' | 'wiki-recon' | 'web-research', summary: string) =>
+      opts.onEvent?.({ type: 'planner_recon_progress', payload: { runId, phase, status: 'done', summary } }),
+  };
   const reconNeeded = !opts.preAcceptedProfile && !opts.noPlanner;
   let recon: ReconTriple;
   if (!reconNeeded && opts.preAcceptedProfile) {
@@ -140,9 +154,8 @@ export async function runSolve(opts: SolveOptions): Promise<SolveResult> {
       skipPcScan: opts.skipPcScan,
       skipWiki: true,
       skipWeb: true,
-      onPhaseDone: (phase, summary) => {
-        opts.onEvent?.({ type: 'planner_recon_progress', payload: { runId, phase, summary } });
-      },
+      signal: opts.signal,
+      ...reconCallbacks,
     });
   } else {
     recon = await runRecon({
@@ -156,11 +169,13 @@ export async function runSolve(opts: SolveOptions): Promise<SolveResult> {
       skipPcScan: opts.skipPcScan,
       skipWiki: opts.skipWiki,
       skipWeb: opts.skipWeb,
-      onPhaseDone: (phase, summary) => {
-        opts.onEvent?.({ type: 'planner_recon_progress', payload: { runId, phase, summary } });
-      },
+      signal: opts.signal,
+      ...reconCallbacks,
     });
   }
+  // Cancellation checkpoint — recon phases swallow an aborted claude into a
+  // degraded result, so stop here before burning an Opus reasoning call.
+  if (opts.signal?.aborted) throw new CancelledError('Plan cancelled by user.');
   opts.onEvent?.({ type: 'planner_recon_done', payload: { runId, recon: summarizeReconForEvent(recon) } });
 
   // 2. planner
@@ -177,6 +192,7 @@ export async function runSolve(opts: SolveOptions): Promise<SolveResult> {
     const MAX_REPLANS = 3;
     while (attempts <= MAX_REPLANS) {
       attempts++;
+      if (opts.signal?.aborted) throw new CancelledError('Plan cancelled by user.');
       let plannerResult;
       try {
         plannerResult = await runPlanner({
@@ -187,8 +203,13 @@ export async function runSolve(opts: SolveOptions): Promise<SolveResult> {
           recon,
           maxTier: opts.plannerTierCap ?? 'maximalist',
           userReplanFeedback: replanFeedback,
+          signal: opts.signal,
         });
       } catch (err) {
+        // A cancelled run kills the Opus child mid-call → surfaces as an error.
+        // Don't fire planner_failed for that; let the CancelledError propagate
+        // so the caller reports a clean cancellation.
+        if (opts.signal?.aborted) throw new CancelledError('Plan cancelled by user.');
         opts.onEvent?.({ type: 'planner_failed', payload: { runId, error: err instanceof Error ? err.message : String(err) } });
         throw err;
       }

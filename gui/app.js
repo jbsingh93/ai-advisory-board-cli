@@ -158,6 +158,10 @@ function handleWsMessage(msg) {
     msg.type === 'member_enhance_progress' ||
     msg.type === 'member_enhance_done' ||
     msg.type === 'member_enhance_failed' ||
+    msg.type === 'member_preview_started' ||
+    msg.type === 'member_preview_progress' ||
+    msg.type === 'member_preview_done' ||
+    msg.type === 'member_preview_failed' ||
     msg.type === 'member_voice_started' ||
     msg.type === 'member_voice_done' ||
     msg.type === 'member_voice_preview' ||
@@ -1294,7 +1298,7 @@ function renderMembersView(main) {
     }
   });
   const addBtn = h('button', { class: 'btn-primary', 'data-testid': 'members-add-btn' }, '+ Add member');
-  addBtn.addEventListener('click', () => openMemberEditModal(null));
+  addBtn.addEventListener('click', () => openMemberAddWizard());
   headerActions.appendChild(syncBtn);
   headerActions.appendChild(addBtn);
   header.appendChild(headerActions);
@@ -1308,7 +1312,7 @@ function renderMembersView(main) {
       `Add one now, or run \`aab init\` to seed Elon, Julian, and Alexandra.`,
     );
     const seedBtn = h('button', { class: 'btn-primary', style: 'margin-top:12px' }, '+ Add a member');
-    seedBtn.addEventListener('click', () => openMemberEditModal(null));
+    seedBtn.addEventListener('click', () => openMemberAddWizard());
     empty.appendChild(seedBtn);
     body.appendChild(empty);
   } else {
@@ -2267,6 +2271,255 @@ function closeEditModal() {
   editModalOnSave = null;
   editModalOnDelete = null;
   $('#edit-modal-delete').hidden = true;
+  // The add-member wizard hides Save on its archetype-selection step; restore it
+  // so the next consumer of this shared modal (e.g. Edit) shows Save normally.
+  $('#edit-modal-save').hidden = false;
+}
+
+// ------------------------------------------------------------------
+// Add-member wizard (type-first). Adding goes through this; editing an
+// existing member still uses openMemberEditModal (the flat all-fields form).
+// ------------------------------------------------------------------
+
+const MEMBER_ARCHETYPES = [
+  {
+    id: 'famous',
+    enhanceType: 'famous',
+    icon: '🌟',
+    label: 'Inspired by a well-known person',
+    desc: 'A real public figure — keeps their real name; AI researches their expertise.',
+  },
+  {
+    id: 'expert',
+    enhanceType: 'expert',
+    icon: '🎓',
+    label: 'Top 1% expert',
+    desc: 'An archetypal authority in a field or domain you name.',
+  },
+  {
+    id: 'practitioner',
+    enhanceType: 'non-famous',
+    icon: '🧑‍💼',
+    label: 'Practitioner',
+    desc: 'A seasoned hands-on professional in a role + industry.',
+  },
+];
+
+function openMemberAddWizard() {
+  $('#edit-modal-title').textContent = 'Add board member';
+  $('#edit-modal-delete').hidden = true;
+  editModalOnDelete = null;
+  editModalOnSave = null;
+  renderArchetypeStep();
+  $('#edit-modal').hidden = false;
+}
+
+function renderArchetypeStep() {
+  const body = $('#edit-modal-body');
+  body.innerHTML = '';
+  $('#edit-modal-save').hidden = true; // nothing to save on the selection step
+  editModalOnSave = null;
+  body.appendChild(h('p', { class: 'field-help', style: 'margin-top:0' }, 'What kind of board member do you want to add?'));
+  const grid = h('div', { class: 'archetype-grid', 'data-testid': 'archetype-grid' });
+  for (const a of MEMBER_ARCHETYPES) {
+    const card = h('button', { class: 'archetype-card', type: 'button', 'data-testid': 'archetype-' + a.id }, [
+      h('span', { class: 'archetype-icon' }, a.icon),
+      h('span', { class: 'archetype-label' }, a.label),
+      h('span', { class: 'archetype-desc' }, a.desc),
+    ]);
+    card.addEventListener('click', () => renderMemberFormStep(a));
+    grid.appendChild(card);
+  }
+  body.appendChild(grid);
+}
+
+function renderMemberFormStep(archetype) {
+  const body = $('#edit-modal-body');
+  body.innerHTML = '';
+  $('#edit-modal-save').hidden = false;
+
+  const back = h('button', { class: 'wizard-back', type: 'button', 'data-testid': 'wizard-back' }, '← Choose a different type');
+  back.addEventListener('click', renderArchetypeStep);
+  body.appendChild(back);
+  body.appendChild(h('div', { class: 'wizard-archetype-title' }, archetype.icon + '  ' + archetype.label));
+
+  // --- type-specific inputs ---
+  const typeFields = {};
+  if (archetype.id === 'famous') {
+    typeFields.name = input('Name', '', 'e.g. Sam Altman');
+    typeFields.title = input('Title', '', 'e.g. CEO, OpenAI');
+    body.appendChild(typeFields.name.wrap);
+    body.appendChild(typeFields.title.wrap);
+  } else if (archetype.id === 'expert') {
+    typeFields.field = input('Field / Domain', '', 'e.g. Quantum cryptography');
+    body.appendChild(typeFields.field.wrap);
+  } else {
+    typeFields.role = input('Role / Title', '', 'e.g. Senior DevOps Engineer');
+    typeFields.domain = input('Industry / Domain', '', 'e.g. fintech SaaS');
+    body.appendChild(typeFields.role.wrap);
+    body.appendChild(typeFields.domain.wrap);
+  }
+
+  // --- fill-mode toggle (AI default) ---
+  let mode = 'ai';
+  let preview = null;
+  const toggleWrap = h('div', { class: 'form-field' });
+  toggleWrap.appendChild(h('label', { class: 'field-label' }, 'How should we fill in the details?'));
+  const seg = h('div', { class: 'wizard-toggle', 'data-testid': 'wizard-fill-toggle' });
+  const aiBtn = h('button', { class: 'wizard-toggle-btn active', type: 'button', 'data-testid': 'fill-ai' }, '✨ Fill with AI');
+  const manualBtn = h('button', { class: 'wizard-toggle-btn', type: 'button', 'data-testid': 'fill-manual' }, '✍️ Enter manually');
+  seg.appendChild(aiBtn);
+  seg.appendChild(manualBtn);
+  toggleWrap.appendChild(seg);
+  body.appendChild(toggleWrap);
+
+  // --- AI generate row ---
+  const aiRow = h('div', { class: 'form-field', 'data-testid': 'wizard-ai-row' });
+  aiRow.appendChild(h('div', { class: 'field-help' }, 'AI researches expertise, then drafts the persona + voice. You can edit everything before saving.'));
+  const genWrap = h('div', { class: 'enhance-row' });
+  const genBtn = h('button', { class: 'btn-secondary', type: 'button', 'data-testid': 'wizard-generate-btn' }, '✨ Generate with AI');
+  const genStatus = h('span', { class: 'field-help' }, '');
+  genWrap.appendChild(genBtn);
+  genWrap.appendChild(genStatus);
+  aiRow.appendChild(genWrap);
+  body.appendChild(aiRow);
+
+  // --- content fields (single source of truth for save, in both modes) ---
+  const content = h('div', { 'data-testid': 'wizard-content-fields' });
+  const expertiseF = input('Expertise (comma-separated)', '', 'e.g. AI strategy, scaling, product');
+  const personaF = textarea('Persona (1-2 paragraphs)', '', "How they think, what they're known for. Used in the agent's system prompt.", 6);
+  const voiceF = textarea('Voice guide (optional)', '', 'Style, vocabulary, characteristic phrases. Helps the LLM sound like them.', 3);
+  content.appendChild(expertiseF.wrap);
+  content.appendChild(personaF.wrap);
+  content.appendChild(voiceF.wrap);
+  body.appendChild(content);
+
+  // --- tools allowlist (shared, identical for all types) ---
+  const toolsRow = h('div', { class: 'form-field' });
+  toolsRow.appendChild(h('label', { class: 'field-label' }, 'Allowed tools (per-member override)'));
+  toolsRow.appendChild(h('div', { class: 'field-help' }, 'Leave all unchecked to use the workspace default (WebSearch, WebFetch, Read, Grep, Glob).'));
+  const toolsBox = h('div', { class: 'tools-chips', 'data-testid': 'member-tools-allowlist' });
+  const toolInputs = {};
+  for (const tool of ['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob']) {
+    const lbl = h('label', { class: 'tool-chip' });
+    const cb = h('input', { type: 'checkbox', 'data-tool': tool });
+    lbl.appendChild(cb);
+    lbl.appendChild(h('span', {}, tool));
+    toolsBox.appendChild(lbl);
+    toolInputs[tool] = cb;
+  }
+  toolsRow.appendChild(toolsBox);
+  body.appendChild(toolsRow);
+
+  function applyMode() {
+    aiBtn.classList.toggle('active', mode === 'ai');
+    manualBtn.classList.toggle('active', mode === 'manual');
+    aiRow.hidden = mode !== 'ai';
+    // In AI mode, keep the content fields hidden until a draft exists.
+    content.hidden = mode === 'ai' && !preview;
+  }
+  aiBtn.addEventListener('click', () => { mode = 'ai'; applyMode(); });
+  manualBtn.addEventListener('click', () => { mode = 'manual'; applyMode(); });
+  applyMode();
+
+  function deriveNameTitle() {
+    if (archetype.id === 'famous') {
+      return { name: typeFields.name.input.value.trim(), title: typeFields.title.input.value.trim() || 'Advisor' };
+    }
+    if (archetype.id === 'expert') {
+      const field = typeFields.field.input.value.trim();
+      return { name: field ? `${field} Expert` : '', title: 'Top 1% Expert' };
+    }
+    const role = typeFields.role.input.value.trim();
+    const domain = typeFields.domain.input.value.trim();
+    return { name: role, title: domain ? `${domain} practitioner` : 'Practitioner' };
+  }
+  const primaryLabel = archetype.id === 'famous' ? 'a name' : archetype.id === 'expert' ? 'a field/domain' : 'a role';
+
+  genBtn.addEventListener('click', async () => {
+    const dt = deriveNameTitle();
+    if (!dt.name) { toast('Enter ' + primaryLabel + ' first.', 'err'); return; }
+    genBtn.disabled = true;
+    genBtn.textContent = 'Generating…';
+    genStatus.textContent = 'Starting…';
+    const reqBody = { type: archetype.enhanceType };
+    if (archetype.id === 'famous') {
+      reqBody.name = typeFields.name.input.value.trim();
+      reqBody.title = typeFields.title.input.value.trim();
+    } else if (archetype.id === 'expert') {
+      reqBody.field = typeFields.field.input.value.trim();
+    } else {
+      reqBody.role = typeFields.role.input.value.trim();
+      reqBody.domain = typeFields.domain.input.value.trim();
+    }
+    try {
+      const res = await fetchJSON('/api/members/enhance-preview', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(reqBody),
+      });
+      const previewId = res.previewId;
+      const onEvent = (ev) => {
+        const d = ev.detail || {};
+        if (d.previewId !== previewId) return;
+        if (d.type === 'member_preview_progress') {
+          genStatus.textContent = d.stage === 'research' ? 'Researching expertise…' : 'Drafting persona + voice…';
+        } else if (d.type === 'member_preview_done') {
+          preview = d.result || {};
+          expertiseF.input.value = (preview.expertise || []).join(', ');
+          personaF.input.value = preview.persona || '';
+          voiceF.input.value = preview.voiceGuide || '';
+          content.hidden = false;
+          genBtn.disabled = false;
+          genBtn.textContent = '✨ Regenerate';
+          genStatus.textContent = 'Done — review and save.';
+          window.removeEventListener('aab-member-event', onEvent);
+          toast('AI draft ready — review and save.', 'ok');
+        } else if (d.type === 'member_preview_failed') {
+          genBtn.disabled = false;
+          genBtn.textContent = '✨ Generate with AI';
+          genStatus.textContent = 'Failed: ' + (d.message || 'unknown');
+          window.removeEventListener('aab-member-event', onEvent);
+          toast('AI fill failed: ' + (d.message || 'unknown'), 'err');
+        }
+      };
+      window.addEventListener('aab-member-event', onEvent);
+    } catch (e) {
+      genBtn.disabled = false;
+      genBtn.textContent = '✨ Generate with AI';
+      genStatus.textContent = '';
+      toast('AI fill failed: ' + e.message, 'err');
+    }
+  });
+
+  editModalOnSave = async () => {
+    const dt = deriveNameTitle();
+    if (!dt.name) {
+      toast('Enter ' + primaryLabel + ' first.', 'err');
+      throw new Error('missing primary input');
+    }
+    const payload = {
+      name: dt.name,
+      title: dt.title,
+      expertise: expertiseF.input.value.split(',').map((s) => s.trim()).filter(Boolean),
+      persona: personaF.input.value.trim(),
+      voiceGuide: voiceF.input.value.trim() || undefined,
+    };
+    const pickedTools = Object.entries(toolInputs).filter(([, cb]) => cb.checked).map(([t]) => t);
+    if (pickedTools.length > 0) payload.allowedTools = pickedTools;
+    await fetchJSON('/api/members', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    toast(`${dt.name} added.`, 'ok');
+    await refreshState({ silent: true });
+    renderWorkspaceCard();
+    if (state.route === 'members') navigate('members');
+  };
+
+  const firstInput = body.querySelector('input, textarea');
+  if (firstInput) firstInput.focus();
 }
 
 function openMemberEditModal(member) {
@@ -4320,6 +4573,97 @@ function paintPlannerPhases() {
   }
 }
 
+// ------------------------------------------------------------------
+// Skill creation (solve) progress — a dedicated pane that stays open from
+// "Accept" until install/fail, so the kanban view isn't silent during the
+// (often multi-minute) skill-creator run. Mirrors the planner-progress pane
+// but with its own elapsed ticker so the two never clobber each other.
+// ------------------------------------------------------------------
+const skillRunState = {
+  skillName: null,
+  startedAt: 0,
+  status: 'queued', // queued | running | installing | done | failed
+  stream: [],
+  tick: null, // setInterval handle for the elapsed counter
+};
+
+function showSkillRunProgress(skillName) {
+  if (skillName) skillRunState.skillName = skillName;
+  // Only (re)initialise on a fresh open. The accept handler opens the pane
+  // optimistically; the subsequent `skill_run_started` WS event must not reset
+  // the timer or wipe accumulated tool lines — guard on the live ticker.
+  if (!skillRunState.tick) {
+    skillRunState.startedAt = Date.now();
+    skillRunState.stream = [];
+    skillRunState.status = 'running';
+    const banner = document.getElementById('skill-run-error-banner');
+    if (banner) banner.remove();
+    skillRunState.tick = setInterval(paintSkillRun, 1000);
+  }
+  const m = document.getElementById('skill-run-progress-modal');
+  if (m) m.hidden = false;
+  const title = document.getElementById('skill-run-progress-title');
+  if (title) title.textContent = 'Creating skill: ' + (skillRunState.skillName ?? 'skill');
+  paintSkillRun();
+}
+
+function hideSkillRunProgress() {
+  const m = document.getElementById('skill-run-progress-modal');
+  if (m) m.hidden = true;
+  if (skillRunState.tick) { clearInterval(skillRunState.tick); skillRunState.tick = null; }
+}
+
+function paintSkillRun() {
+  const map = {
+    running: { label: 'skill-creator authoring…', data: 'running' },
+    installing: { label: 'validating & installing…', data: 'running' },
+    done: { label: 'skill installed', data: 'done' },
+    failed: { label: 'skill-creator failed', data: 'failed' },
+  };
+  const m = map[skillRunState.status] ?? map.running;
+  const phase = document.querySelector('#skill-run-progress-body .planner-phase');
+  if (phase) phase.dataset.status = m.data;
+  const labelNode = document.getElementById('skill-run-status-label');
+  if (labelNode) labelNode.textContent = m.label;
+  const statusNode = document.getElementById('skill-run-status');
+  if (statusNode) {
+    if (skillRunState.status === 'running' || skillRunState.status === 'installing') {
+      const secs = Math.floor((Date.now() - skillRunState.startedAt) / 1000);
+      statusNode.textContent = secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`;
+    } else {
+      statusNode.textContent = skillRunState.status;
+    }
+  }
+  const stream = document.getElementById('skill-run-stream');
+  if (stream) {
+    stream.innerHTML = '';
+    for (const line of skillRunState.stream.slice(-20)) {
+      const row = document.createElement('div');
+      row.className = 'planner-stream-row';
+      row.textContent = line;
+      stream.appendChild(row);
+    }
+  }
+}
+
+function showSkillRunError(message) {
+  // Sticky red banner inside the still-open pane — a toast vanishes in 4.5s and
+  // after a long run the user needs proof of what failed.
+  const m = document.getElementById('skill-run-progress-modal');
+  if (m) m.hidden = false;
+  const body = document.getElementById('skill-run-progress-body');
+  if (!body) return;
+  let banner = document.getElementById('skill-run-error-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'skill-run-error-banner';
+    banner.className = 'planner-error-banner';
+    banner.dataset.testid = 'skill-run-error-banner';
+    body.appendChild(banner);
+  }
+  banner.textContent = '✗ ' + message;
+}
+
 function showProposalModal(proposal) {
   plannerState.proposal = proposal;
   const m = document.getElementById('planner-proposal-modal');
@@ -4476,12 +4820,22 @@ window.addEventListener('DOMContentLoaded', () => {
   if (runDetailClose) runDetailClose.addEventListener('click', () => {
     document.getElementById('run-detail-modal').hidden = true;
   });
+  // Skill-run progress pane: both the × and "Run in background" only hide the
+  // pane — the solve continues server-side (no solve-cancel endpoint exists),
+  // and the install/fail toast still fires when it lands.
+  const skillRunClose = document.getElementById('skill-run-progress-close');
+  if (skillRunClose) skillRunClose.addEventListener('click', hideSkillRunProgress);
+  const skillRunHide = document.getElementById('skill-run-hide-btn');
+  if (skillRunHide) skillRunHide.addEventListener('click', hideSkillRunProgress);
 });
 
 function acceptProposalAndSolve() {
   if (!plannerState.action || !plannerState.planId || !plannerState.proposal) return;
   hideProposalModal();
   toast('Starting skill-creator…', 'ok');
+  // Open the progress pane immediately so there's no silent gap between accept
+  // and the first `skill_run_*` WS event arriving.
+  showSkillRunProgress(plannerState.proposal.skillName);
   fetchJSON(`/api/actions/${plannerState.action.id}/solve`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -4489,6 +4843,7 @@ function acceptProposalAndSolve() {
   }).then((res) => {
     plannerState.runId = res.runId;
   }).catch((err) => {
+    hideSkillRunProgress();
     toast('Solve failed: ' + err.message, 'err');
   });
 }
@@ -4578,16 +4933,35 @@ window.addEventListener('aab-planner-event', (ev) => {
     showPlannerError(d.errorMessage ?? d.reason ?? 'Planner failed (no detail)');
     toast('Planner failed: ' + (d.errorMessage ?? 'unknown'), 'err');
   } else if (d.type === 'skill_run_started') {
-    toast('skill-creator authoring…', 'ok');
+    // Ensure the pane is visible (the accept handler usually opened it already).
+    showSkillRunProgress(d.skillName);
   } else if (d.type === 'skill_run_tool_call') {
-    plannerState.stream.push(`tool: ${d.tool ?? '?'}`);
-    paintPlannerPhases();
+    skillRunState.stream.push(`tool: ${d.tool ?? '?'}`);
+    paintSkillRun();
+  } else if (d.type === 'skill_run_adapter_diff') {
+    skillRunState.status = 'installing';
+    skillRunState.stream.push('validating & adapting skill package…');
+    paintSkillRun();
   } else if (d.type === 'skill_run_installed') {
+    skillRunState.status = 'done';
+    paintSkillRun();
+    if (skillRunState.tick) { clearInterval(skillRunState.tick); skillRunState.tick = null; }
     toast('Skill installed at ' + (d.installPath ?? '?'), 'ok');
+    // Leave the success state up briefly, then close.
+    setTimeout(hideSkillRunProgress, 1500);
     refreshState({ silent: true }).then(() => { if (state.route === 'actions') navigate('actions'); });
   } else if (d.type === 'skill_run_failed') {
-    showPlannerError('skill-creator failed: ' + (d.errorMessage ?? 'unknown'));
-    toast('skill-creator failed: ' + (d.errorMessage ?? 'unknown'), 'err');
+    skillRunState.status = 'failed';
+    if (skillRunState.tick) { clearInterval(skillRunState.tick); skillRunState.tick = null; }
+    paintSkillRun();
+    // The server's catch wrapper sends `errorMessage`; the orchestrator's own
+    // events carry `error`/`reason`. Tolerate all three.
+    const msg = d.errorMessage ?? d.error ?? d.reason ?? 'unknown';
+    showSkillRunError('skill-creator failed: ' + msg);
+    toast('skill-creator failed: ' + msg, 'err');
+  } else if (d.type === 'skill_run_cancelled') {
+    hideSkillRunProgress();
+    toast('Skill creation cancelled', 'ok');
   }
 });
 

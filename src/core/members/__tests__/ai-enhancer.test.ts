@@ -12,18 +12,21 @@ describe('buildPrompt', () => {
     expect(out).toContain('cognitiveProcess');
   });
 
-  it('emits the TOP-EXPERT template when type=expert', () => {
-    const out = buildPrompt('expert', 'Alexandra Chen, CFA', 'CFO', 'capital allocation');
+  it('emits the TOP-EXPERT template when type=expert (field-framed, with BFI-2)', () => {
+    const out = buildPrompt('expert', 'Capital Allocation Expert', 'Top 1% Expert', 'capital allocation');
     expect(out).toContain('TOP 1% EXPERT');
-    expect(out).toContain('among the very best in capital allocation');
-    // Famous-only psychometricProfile section should NOT be in expert prompt.
-    expect(out).not.toContain('psychometricProfile');
+    expect(out).toContain('top 1% expert in capital allocation');
+    // BFI-2 + cognitive architecture now apply to all three archetypes.
+    expect(out).toContain('psychometricProfile');
+    expect(out).toContain('cognitiveProcess');
   });
 
-  it('emits the NON-FAMOUS template and threads in currentPersona', () => {
-    const out = buildPrompt('non-famous', 'Jane Doe', 'CTO', 'cloud infra', 'existing persona text');
-    expect(out).toContain('NON-FAMOUS professional');
+  it('emits the NON-FAMOUS template (with BFI-2) and threads in currentPersona', () => {
+    const out = buildPrompt('non-famous', 'Senior DevOps Engineer', 'fintech SaaS practitioner', 'cloud infra', 'existing persona text');
+    expect(out).toContain('PRACTITIONER');
     expect(out).toContain('CURRENT PERSONA: existing persona text');
+    expect(out).toContain('psychometricProfile');
+    expect(out).toContain('cognitiveProcess');
   });
 });
 

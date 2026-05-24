@@ -209,6 +209,28 @@
       </div>
     </div>
 
+    <!-- Phase 5 — Skill creation (solve) progress pane. Shown after the user
+         accepts a proposal; streams skill-creator tool activity + elapsed so the
+         kanban view isn't a silent black box during a multi-minute Opus run. -->
+    <div class="modal-backdrop" id="skill-run-progress-modal" hidden>
+      <div class="modal modal-wide" data-testid="skill-run-progress-pane">
+        <div class="modal-header">
+          <h2 id="skill-run-progress-title">Creating skill</h2>
+          <button class="icon-btn" id="skill-run-progress-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body" id="skill-run-progress-body">
+          <div class="planner-phase" data-testid="skill-run-phase">
+            <span class="planner-phase-label" id="skill-run-status-label">skill-creator authoring…</span>
+            <span class="planner-phase-status" id="skill-run-status">starting</span>
+          </div>
+          <div class="planner-stream" id="skill-run-stream"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="skill-run-hide-btn" data-testid="skill-run-hide-btn">Run in background</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Phase 5 — Planner proposal modal -->
     <div class="modal-backdrop" id="planner-proposal-modal" hidden>
       <div class="modal modal-wide" data-testid="planner-proposal-modal">

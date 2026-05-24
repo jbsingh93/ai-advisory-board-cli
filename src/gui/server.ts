@@ -76,7 +76,7 @@ import {
   type ExtractedActionItem,
 } from '../core/actions/conversation-analyzer.js';
 import { buildSourceContext } from '../core/actions/source-context.js';
-import { enhancePersona, type EnhancementType } from '../core/members/ai-enhancer.js';
+import { enhancePersona, researchExpertise, type EnhancementType } from '../core/members/ai-enhancer.js';
 import { generateVoiceGuide } from '../core/members/voice-guide.js';
 import { coachReply, newDecisionSession } from '../core/coach/decision-coach.js';
 import {
@@ -697,6 +697,107 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
     } catch (error) {
       sendError(res, 500, error);
     }
+  });
+
+  // POST /api/members/enhance-preview — stateless AI fill for the Add-Member
+  // wizard. Derives name/title from the chosen archetype, runs an expertise
+  // web-research call + the persona enhancer, and streams the result over WS
+  // WITHOUT persisting anything. The wizard populates its editable fields from
+  // the `member_preview_done` payload, then the user saves via POST /api/members.
+  app.post('/api/members/enhance-preview', async (req, res) => {
+    let type: EnhancementType;
+    try {
+      type = normalizeEnhanceTypeOrThrow((req.body ?? {}).type);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    const body = (req.body ?? {}) as {
+      name?: string;
+      title?: string;
+      field?: string;
+      role?: string;
+      domain?: string;
+    };
+
+    // Resolve archetype → { name, title, subject, context } per the chosen type.
+    let name: string;
+    let title: string;
+    let subject: string;
+    let context: string | undefined;
+    if (type === 'famous') {
+      name = (body.name ?? '').trim();
+      title = (body.title ?? '').trim() || 'Advisor';
+      if (!name) {
+        res.status(400).json({ error: 'name is required for a well-known person' });
+        return;
+      }
+      subject = name;
+      context = title;
+    } else if (type === 'expert') {
+      const field = (body.field ?? '').trim();
+      if (!field) {
+        res.status(400).json({ error: 'field is required for a top 1% expert' });
+        return;
+      }
+      name = `${field} Expert`;
+      title = 'Top 1% Expert';
+      subject = field;
+      context = undefined;
+    } else {
+      // non-famous / practitioner
+      const role = (body.role ?? '').trim();
+      const domain = (body.domain ?? '').trim();
+      if (!role) {
+        res.status(400).json({ error: 'role is required for a practitioner' });
+        return;
+      }
+      name = role;
+      title = domain ? `${domain} practitioner` : 'Practitioner';
+      subject = role;
+      context = domain || undefined;
+    }
+
+    const previewId = generateUUID();
+    res.status(202).json({ accepted: true, previewId, name, title, type });
+    broadcast({ type: 'member_preview_started', previewId, name, enhanceType: type });
+
+    (async () => {
+      try {
+        const settings = await opts.storage.loadSettings();
+        broadcast({ type: 'member_preview_progress', previewId, stage: 'research' });
+        const expertise = await researchExpertise({ subject, context, type }, settings);
+        broadcast({ type: 'member_preview_progress', previewId, stage: 'persona' });
+        const result = await enhancePersona(
+          { name, title, expertise, type },
+          settings,
+          {
+            onEvent: (event) => {
+              if (event.type === 'assistant' || event.type === 'tool_use') {
+                broadcast({ type: 'member_preview_progress', previewId, stage: 'persona', event: { type: event.type, subtype: event.subtype } });
+              }
+            },
+          },
+        );
+        broadcast({
+          type: 'member_preview_done',
+          previewId,
+          result: {
+            name,
+            title,
+            expertise,
+            persona: result.persona,
+            voiceGuide: result.voiceGuide,
+          },
+        });
+      } catch (error) {
+        broadcast({
+          type: 'member_preview_failed',
+          previewId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
   });
 
   app.post('/api/members/:id/regenerate-voice', async (req, res) => {

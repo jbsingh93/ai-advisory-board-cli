@@ -1655,6 +1655,71 @@ textarea, input, button { color: inherit; }
 }
 .tool-chip input { margin: 0; }
 
+/* Add-member wizard — archetype picker + fill-mode toggle */
+.archetype-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+.archetype-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.archetype-card:hover {
+  border-color: var(--brand);
+  background: var(--bg-elev-2);
+}
+.archetype-icon { font-size: 22px; }
+.archetype-label { font-size: 14px; font-weight: 600; }
+.archetype-desc { font-size: 12px; color: var(--text-dim); }
+.wizard-back {
+  background: none;
+  border: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  margin-bottom: 4px;
+}
+.wizard-back:hover { color: var(--text); }
+.wizard-archetype-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+.wizard-toggle {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+}
+.wizard-toggle-btn {
+  background: none;
+  border: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.wizard-toggle-btn.active {
+  background: var(--brand);
+  color: #fff;
+}
+
 /* Principle Explorer wizard */
 .explorer-wrap { display: flex; flex-direction: column; gap: 12px; min-height: 400px; }
 .explorer-steps { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }

@@ -10,6 +10,7 @@
  * user's Claude Max/Pro subscription). Ported from
  * `sage-council/src/lib/ai-enhancer.ts` with the Gemini path replaced.
  */
+import { z } from 'zod';
 import { runClaude, extractText, type ClaudeStreamEvent } from '../../llm/claude-code-runner.js';
 import { safeParseJSONWithSchema } from '../parsing/safe-json.js';
 import { enhancementPayloadSchema, type EnhancementPayload } from '../parsing/persona-schemas.js';
@@ -82,6 +83,65 @@ export async function enhancePersona(
   return extractEnhancement(raw, args.name);
 }
 
+/**
+ * Research a member's areas of expertise via one web-grounded `claude` call.
+ * Returns 3-6 short expertise tags. Used to auto-fill `expertise[]` when a user
+ * lets AI fill out a new board member (the "extra call" in the add-member flow).
+ *
+ * `subject` is what we're researching expertise *for*:
+ *   - famous:     the person's name (+ `context` = their title)
+ *   - expert:     the field / domain itself
+ *   - non-famous: the practitioner's role (+ `context` = their domain)
+ *
+ * Best-effort: on spawn / parse failure it returns `[]` rather than throwing,
+ * so the caller can still proceed (expertise is non-critical and user-editable).
+ */
+export async function researchExpertise(
+  args: { subject: string; context?: string; type: EnhancementType },
+  settings: AppSettings,
+  opts: EnhanceOptions = {},
+): Promise<string[]> {
+  const subject = args.subject.trim();
+  if (!subject) return [];
+  const ctx = args.context?.trim() ? ` (${args.context.trim()})` : '';
+  const framing =
+    args.type === 'famous'
+      ? `the well-known person "${subject}"${ctx}`
+      : args.type === 'expert'
+        ? `a top 1% expert in the field of "${subject}"`
+        : `an experienced practitioner working as "${subject}"${ctx}`;
+  const prompt = `Identify the 3-6 most important, specific areas of expertise for ${framing}.
+Use web search to ground this in reality where helpful.
+Return ONLY a raw JSON array of short strings (2-4 words each), no commentary, no markdown, no fences. Start with \`[\` and end with \`]\`.
+Example: ["AI strategy", "scaling startups", "product vision"]`;
+
+  const model = opts.model ?? settings.researchModel ?? 'sonnet';
+  try {
+    const result = await runClaude({
+      prompt,
+      model,
+      allowedTools: ['WebSearch', 'WebFetch'],
+      maxTurns: 3,
+      timeoutMs: opts.timeoutMs ?? 3 * 60_000,
+      signal: opts.signal,
+      onEvent: opts.onEvent,
+      maxBudgetUsd: settings.perCallBudgetUsd,
+    });
+    const parsed = safeParseJSONWithSchema(extractText(result), z.array(z.string()));
+    if (parsed.success) {
+      return parsed.data
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+        .slice(0, 6);
+    }
+    return [];
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') throw error;
+    logger.warn('[ai-enhancer] expertise research failed (non-fatal):', error);
+    return [];
+  }
+}
+
 function buildPrompt(
   type: EnhancementType,
   name: string,
@@ -122,6 +182,8 @@ Generate a comprehensive advisory board persona that includes:
 3. **Leadership Philosophy**: Their known approach to leadership and decision-making
 4. **Strategic Approach**: Their methodology for tackling complex business challenges
 5. **Board Dynamics**: How they typically interact in high-level strategic discussions
+6. **Psychometric Profile (BFI-2 Expanded)**: Generate 5-7 first-person 'I-statements' that define their personality traits according to the Big Five framework (e.g., 'I am a person who is...'). This must replace generic adjectives to ensure precise behavioral simulation.
+7. **Cognitive Architecture**: Define a strictly step-by-step internal reasoning process this person uses. For example: 'First, look for the downside (Inversion). Second, check the math. Third, simplify the message.' This creates the 'Reflective Meta-Prompting' layer
 
 ## TASK 2: VOICE & BEHAVIOR GUIDE
 Create a concise voice guide that captures:
@@ -133,53 +195,62 @@ Create a concise voice guide that captures:
 Return ONLY a raw JSON object with this exact structure. No markdown, no fences, no commentary. Start with \`{\` and end with \`}\`.
 {
   "persona": "A comprehensive 4-6 paragraph advisory board persona for ${name}, written in a professional manner that demonstrates intimate knowledge of their professional approach and advisory capabilities.",
-  "voiceGuide": "A concise but comprehensive voice and behavior guide that captures ${name}'s distinctive communication patterns, decision-making approach, and interaction style for AI persona simulation.",
-  "psychometricProfile": ["BFI-2 style first-person statement 1", "statement 2", "statement 3", "statement 4", "statement 5"],
-  "cognitiveProcess": "Step 1: ... -> Step 2: ... -> Step 3: ... -> Step 4: ..."
+  "psychometricProfile": [
+    "I am a person who is [Specific BFI-2 Trait for Openness]...",
+    "I am a person who is [Specific BFI-2 Trait for Conscientiousness]..."
+  ],
+  "cognitiveProcess": "Step 1: [Analysis Style] -> Step 2: [Self-Critique/Reflection] -> Step 3: [Decision]",
+  "voiceGuide": "A concise but comprehensive voice and behavior guide that captures ${name}'s distinctive communication patterns, decision-making approach, and interaction style for AI persona simulation."
 }
 
 Remember: This is specifically for ${name} and must reflect their known characteristics accurately.`;
 }
 
 function buildTopExpertPrompt(name: string, title: string, expertiseText: string): string {
-  return `# IDENTITY LOCK: ${name}
-You are creating both a detailed advisory board persona AND a voice guide specifically for ${name}, who is ${title}.
+  return `# PERSONA LOCK: A top 1% expert in ${expertiseText}
+You are creating both a detailed advisory board persona AND a voice guide for a TOP 1% EXPERT in ${expertiseText} — an archetypal authority representing the absolute pinnacle of capability in this field. This is a composite of the very best practitioners and thinkers in ${expertiseText}, not a specific named celebrity.
 
 ## CRITICAL REQUIREMENTS:
-- This is ONLY for ${name} - do not create content for anyone else
-- This is for a TOP 1% EXPERT who represents the absolute pinnacle of expertise
-- Focus on their exceptional expertise and world-class capabilities
+- Embody the deepest, most current expertise in ${expertiseText}
+- Ground every trait in how genuine top-tier experts in this field actually reason and behave
+- Focus on world-class capability and methodology, not fame or credentials
 
 ## MEMBER CONTEXT:
-- Name: ${name}
-- Title: ${title}
-- Expertise: ${expertiseText}
-- Type: TOP 1% EXPERT in their field
+- Persona: ${name}
+- Role: ${title}
+- Field / Domain: ${expertiseText}
+- Type: TOP 1% EXPERT (archetypal authority in their field)
 
 ## TASK 1: ADVISORY BOARD PERSONA
 Generate a comprehensive advisory board persona that includes:
 
-1. **Technical Mastery**: Their deep, nuanced understanding and specialized knowledge
-2. **Innovation Leadership**: How they've shaped or advanced their field
-3. **Problem-Solving Approach**: Their unique methodology for tackling complex challenges
-4. **Industry Standing**: Their reputation and influence among peers
-5. **Advisory Excellence**: What makes their guidance invaluable to boards
-6. **Strategic Insights**: How they identify opportunities others miss
+1. **Technical Mastery**: The deep, nuanced understanding and specialized knowledge that defines the top 1% in ${expertiseText}
+2. **Innovation Leadership**: How the best in this field advance the state of the art
+3. **Problem-Solving Approach**: The methodology a world-class ${expertiseText} expert uses on the hardest problems
+4. **Industry Standing**: The reputation and influence such an expert commands among peers
+5. **Advisory Excellence**: What makes their guidance invaluable in board-level discussions
+6. **Psychometric Profile (BFI-2 Expanded)**: Generate 5-7 first-person 'I-statements' that define this expert's personality traits according to the Big Five framework (e.g., 'I am a person who is...'). This must replace generic adjectives to ensure precise behavioral simulation.
+7. **Cognitive Architecture**: Define a strictly step-by-step internal reasoning process this expert uses. For example: 'First, decompose the problem to first principles. Second, stress-test against edge cases. Third, quantify the trade-offs.' This creates the 'Reflective Meta-Prompting' layer
 
 ## TASK 2: VOICE & BEHAVIOR GUIDE
 Create a concise voice guide that captures:
 - Their expert-level communication patterns and analytical approach
-- How they leverage their deep expertise in discussions
+- How they leverage deep expertise in discussions
 - Their characteristic way of breaking down complex problems
 
 ## OUTPUT FORMAT (CRITICAL):
 Return ONLY a raw JSON object with this exact structure. No markdown, no fences, no commentary. Start with \`{\` and end with \`}\`.
 {
-  "persona": "A comprehensive 4-6 paragraph advisory board persona for ${name}, demonstrating why they're considered among the very best in ${expertiseText} and how their world-class expertise translates to exceptional board-level value.",
-  "voiceGuide": "A concise but comprehensive voice and behavior guide that captures ${name}'s expert-level communication patterns, analytical approach, and how they leverage their specialized knowledge in strategic discussions."
+  "persona": "A comprehensive 4-6 paragraph advisory board persona for a top 1% expert in ${expertiseText}, demonstrating world-class command of the field and how that expertise translates to exceptional board-level value.",
+  "psychometricProfile": [
+    "I am a person who is [Specific BFI-2 Trait for Openness]...",
+    "I am a person who is [Specific BFI-2 Trait for Conscientiousness]..."
+  ],
+  "cognitiveProcess": "Step 1: [Analysis Style] -> Step 2: [Self-Critique/Reflection] -> Step 3: [Decision]",
+  "voiceGuide": "A concise but comprehensive voice and behavior guide that captures this expert's communication patterns, analytical approach, and how they leverage specialized knowledge in strategic discussions."
 }
 
-Remember: This is specifically for ${name} as a top 1% expert in their field.`;
+Remember: This is an archetypal top 1% expert in ${expertiseText} — make them feel like the single most capable practitioner you could put in the room.`;
 }
 
 function buildNonFamousPrompt(
@@ -189,44 +260,50 @@ function buildNonFamousPrompt(
   currentPersona?: string,
 ): string {
   const personaContext = currentPersona ? `\n\nCURRENT PERSONA: ${currentPersona}` : '';
-  return `# IDENTITY LOCK: ${name}
-You are creating both a detailed advisory board persona AND a voice guide specifically for ${name}, who is ${title}.
+  return `# PERSONA LOCK: ${name}
+You are creating both a detailed advisory board persona AND a voice guide for an experienced, hands-on practitioner: a ${name} (${title}). This is a seasoned real-world professional — not a famous figure — valued for practical, battle-tested judgment in ${expertiseText}.
 
 ## CRITICAL REQUIREMENTS:
-- This is ONLY for ${name} - do not create content for anyone else
-- This is for a NON-FAMOUS professional with solid expertise but not widely recognized
-- Focus on their practical experience and reliable expertise
+- Embody a credible, senior practitioner with deep practical experience in ${expertiseText}
+- Ground every trait in the day-to-day realities of the work, not theory or celebrity
+- Focus on practical, dependable expertise and collaborative judgment
 
 ## MEMBER CONTEXT:
-- Name: ${name}
-- Title: ${title}
-- Expertise: ${expertiseText}
-- Type: NON-FAMOUS professional${personaContext}
+- Persona: ${name}
+- Role: ${title}
+- Expertise / Domain: ${expertiseText}
+- Type: PRACTITIONER (experienced hands-on professional)${personaContext}
 
 ## TASK 1: ADVISORY BOARD PERSONA
 Generate a comprehensive advisory board persona that includes:
 
-1. **Professional Background**: Their career journey and key achievements
+1. **Professional Background**: A credible career arc and the kind of hard-won experience this role accrues
 2. **Advisory Approach**: How they provide practical, grounded insights
 3. **Leadership Style**: Their collaborative and consensus-building approach
-4. **Problem-Solving**: Their methodical approach to challenges
-5. **Strategic Contributions**: What practical value they bring to discussions
-6. **Working Style**: How they interact with other board members
+4. **Problem-Solving**: Their methodical, pragmatic approach to challenges
+5. **Strategic Contributions**: The practical value they bring to discussions
+6. **Psychometric Profile (BFI-2 Expanded)**: Generate 5-7 first-person 'I-statements' that define this practitioner's personality traits according to the Big Five framework (e.g., 'I am a person who is...'). This must replace generic adjectives to ensure precise behavioral simulation.
+7. **Cognitive Architecture**: Define a strictly step-by-step internal reasoning process this practitioner uses. For example: 'First, check what actually ships. Second, weigh the operational cost. Third, pick the pragmatic option.' This creates the 'Reflective Meta-Prompting' layer
 
 ## TASK 2: VOICE & BEHAVIOR GUIDE
 Create a concise voice guide that captures:
 - Their practical communication style and collaborative approach
-- How they leverage their expertise to provide grounded insights
+- How they leverage their experience to provide grounded insights
 - Their methodical problem-solving patterns
 
 ## OUTPUT FORMAT (CRITICAL):
 Return ONLY a raw JSON object with this exact structure. No markdown, no fences, no commentary. Start with \`{\` and end with \`}\`.
 {
   "persona": "A comprehensive 4-6 paragraph advisory board persona for ${name}, written in a professional manner that conveys competence, reliability, and practical expertise in ${expertiseText}.",
+  "psychometricProfile": [
+    "I am a person who is [Specific BFI-2 Trait for Openness]...",
+    "I am a person who is [Specific BFI-2 Trait for Conscientiousness]..."
+  ],
+  "cognitiveProcess": "Step 1: [Analysis Style] -> Step 2: [Self-Critique/Reflection] -> Step 3: [Decision]",
   "voiceGuide": "A concise but comprehensive voice and behavior guide that captures ${name}'s practical communication style, collaborative approach, and methodical problem-solving patterns."
 }
 
-Remember: This is specifically for ${name} as a solid, dependable professional.`;
+Remember: This is a solid, dependable senior practitioner — credible and grounded, not famous.`;
 }
 
 /**

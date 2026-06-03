@@ -2508,3 +2508,88 @@ textarea, input, button { color: inherit; }
   padding: 6px 0;
   font-size: 12.5px;
 }
+
+/* ------------------------------------------------------------------ */
+/* Boards (Phase 7)                                                    */
+/* ------------------------------------------------------------------ */
+
+.boards-section { margin-top: 28px; }
+.section-subhead {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.boards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+.board-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.board-card.is-active-board { border-color: var(--m-green, #4ade80); box-shadow: 0 0 0 1px var(--m-green, #4ade80) inset; }
+.board-card-head { display: flex; align-items: center; justify-content: space-between; }
+.board-card-name { font-size: 14px; font-weight: 600; }
+.board-card-meta { font-size: 12px; color: var(--text-dim); }
+.board-card-desc { font-size: 12px; color: var(--text-dim); }
+
+.avatar-stack { display: flex; }
+.avatar-sm {
+  width: 26px; height: 26px;
+  font-size: 10px;
+  margin-left: -8px;
+  border: 2px solid var(--bg-elev);
+}
+.avatar-stack .avatar-sm:first-child { margin-left: 0; }
+.avatar-more { background: var(--bg-elev-2) !important; color: var(--text-dim); }
+
+.badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  background: var(--bg-elev-2);
+  color: var(--text-dim);
+}
+.badge-active { background: var(--m-green, #4ade80); color: #04210f; font-weight: 600; }
+
+.board-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.board-chip {
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 99px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text);
+  cursor: pointer;
+}
+.board-chip:hover { background: var(--bg-elev-2); }
+.board-chip.selected { background: var(--accent, #6366f1); color: #fff; border-color: transparent; }
+.board-chip.is-active-board { border-color: var(--m-green, #4ade80); }
+
+/* Dynamic member add (Phase 7, Chunk 5) */
+.chip-added { border-style: dashed !important; border-color: var(--accent, #6366f1) !important; }
+.round-joined-badge {
+  font-size: 10px;
+  color: var(--accent, #6366f1);
+  font-weight: 600;
+}
+.btn-sm { font-size: 12px; padding: 4px 10px; }
+.follow-up-catchup select {
+  font-size: 12px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text);
+}

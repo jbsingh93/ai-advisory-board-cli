@@ -37,6 +37,19 @@ export interface BuildMessageOptions {
    * because the member's cwd is the project dir, not the workspace.
    */
   wikiDir?: string;
+  /**
+   * For a member joining mid-discussion via `summary` catch-up: a pre-rendered
+   * text block summarising the prior rounds (used in place of the full
+   * transcript). When set, the message frames the member as a newcomer being
+   * brought up to speed.
+   */
+  priorRoundsSummary?: string;
+  /**
+   * Catch-up mode for a mid-discussion joiner (spec §2.3). Governs the framing
+   * of the join note; the actual context shaping (which history to pass) is
+   * done by the caller. Undefined ⇒ a returning/founding member (normal flow).
+   */
+  joinCatchUpMode?: 'full' | 'summary' | 'fresh';
 }
 
 const MAX_BUSINESS_CONTEXT_CHARS = 3500;
@@ -65,6 +78,32 @@ export function buildMemberUserMessage(opts: BuildMessageOptions): string {
   if (opts.followUpQuestion) {
     lines.push('## User follow-up question');
     lines.push(opts.followUpQuestion.trim());
+    lines.push('');
+  }
+
+  // Mid-discussion join note (newcomer being brought up to speed).
+  if (opts.joinCatchUpMode) {
+    lines.push('## You are joining this discussion mid-stream');
+    if (opts.joinCatchUpMode === 'fresh') {
+      lines.push(
+        'You are being brought in for a fresh, uncontaminated take. You have NOT been given the prior rounds on purpose — respond to the question above from first principles, in your own voice.',
+      );
+    } else if (opts.joinCatchUpMode === 'summary') {
+      lines.push(
+        'You are new to this discussion. Below is a summary of what the board has covered so far — use it to ground your answer, then add your distinct perspective.',
+      );
+    } else {
+      lines.push(
+        'You are new to this discussion. The full prior-rounds transcript is included below so you can catch up — read it, then add your distinct perspective rather than repeating what others said.',
+      );
+    }
+    lines.push('');
+  }
+
+  // Summary of prior rounds (summary catch-up mode for a newcomer).
+  if (opts.priorRoundsSummary && opts.priorRoundsSummary.trim()) {
+    lines.push('## Summary of prior rounds');
+    lines.push(opts.priorRoundsSummary.trim());
     lines.push('');
   }
 

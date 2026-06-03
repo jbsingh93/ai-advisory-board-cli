@@ -2247,3 +2247,52 @@ Confirmed by user 2026-05-19:
 ## 9.6 Net effect
 
 The CLI stops being verified by "typecheck + build" — which catches type errors but not silently-truncated argv, fallback-decision-papered orchestrator failures, or LLM contract drift. Every CLI change ships with at least one live smoke against the real binary. The discipline pairs with Part 8's UI testing to give every surface of `aab` (terminal + browser) the same verification bar: real binary, real calls, real assertions. The reference-regression log (`SMOKE_TESTING.md` §9) is the institutional memory — every silent-fail bug we catch goes in, every future change checks itself against the list.
+
+---
+
+# Part 10 — Boards (member groups) + Dynamic member targeting
+
+User request (2026-06-02): two related features. (1) **Boards** — create separate boards that group multiple members, mirroring `sage-council`. (2) **Dynamic member targeting in follow-ups** — in a discussion, select which members answer a follow-up *and* add a brand-new member into the live discussion.
+
+> **The full authoritative spec is `docs/development/SPEC_BOARDS_AND_DYNAMIC_MEMBERS.md`** (data model, CLI/REST/GUI surface, engine changes, edge cases, migration, testing, 5-chunk phasing, open questions, sources). This Part 10 is the rationale + the locked design decisions; for any detail not covered here, defer to that spec. The checklist lives in `CHECKLIST.md` Phase 7.
+
+## 10.1 Why this is "finish the wiring", not "build from scratch"
+
+A codebase audit (2026-06-02) found both features are ~70% scaffolded:
+
+- **Boards data layer already ships** — `Board { id, name, description?, memberIds, createdAt, updatedAt }` (`src/storage/types.ts:26`), `loadBoards/saveBoard/updateBoard/deleteBoard` (`fs-storage-service.ts:110`, interface at `types.ts:576`), `boards.json` path (`paths.ts:153`). `Discussion` already carries `boardId?` + `boardName?` (`types.ts:157`).
+- **Follow-up targeting already ships** — `addFollowUpQuestion` does `all`/`specific`/`subset` (`conversation-flow.ts:672`), wired through the CLI (`--all/--member/--members`, `discuss.ts:282`) and web chip-picker (`server.ts:1521`, `app.js:450`).
+
+What's missing: no `aab board` command, no board REST/UI, `init` seeds no board, member-delete leaves dangling `memberIds` (orphan risk), `discuss start` can't select by board, and the follow-up candidate pool is hard-locked to the discussion's *original* roster (`conversation-flow.ts:716`, `server.ts:1565`, `app.js:465`) so a **new** member can't join a live discussion.
+
+## 10.2 The one design principle (from sage-council + CrewAI/Dust/LangGraph)
+
+**Members are the source of truth; boards and discussions hold _references_, never copies.** A board is a named, ordered list of `memberIds`. A discussion additionally **snapshots** each participant's identity (name/slug/title + `joinedAtRound`) so history never breaks when a member is later renamed or deleted. This avoids OpenAI's non-composable Custom-GPTs-vs-Projects mistake (boards are just curated selections of the same members the user already manages) and the classic dangling-foreign-key problem (prune references in app code on delete; snapshot history; no storage-level cascade).
+
+## 10.3 Locked design decisions
+
+1. **Board model:** keep the existing `Board` type; add `slug` (CLI addressing, unique) + optional `archivedAt`. No join table — `memberIds` is a plain ordered array (matches sage-council `member_ids TEXT[]`). Constraints ported from sage-council `boundary-validation.ts`: name 1–100, description 0–500, memberIds deduped + each must reference a real member.
+2. **Active board = kubectx idiom:** `aab board use <slug>` / `use -` / `current`, stored as `settings.activeBoardId` **per-workspace**. Resolution precedence: `--members` > `--board` > `AAB_BOARD` env > `settings.activeBoardId` > all-active. Fully backward compatible (no board ⇒ today's behavior). Always echo the resolved panel so a user never convenes the wrong board.
+3. **Orphan integrity:** `pruneMemberFromBoards` on member delete (app-level, not storage cascade). Discussions are safe by **participant snapshot**; prefer soft-delete (`isActive:false`) for members that appear in any discussion.
+4. **Per-discussion cap:** `settings.maxMembersPerDiscussion` (default 5) becomes *enforced* at discussion start — **block** with a hint when a board exceeds it (open question #1). Note as a behavior change in CHANGELOG (previously advisory).
+5. **Mid-discussion member join needs an explicit catch-up choice** (Slack's "include history?" UX; the multi-agent failure taxonomy names context-loss FM-1.4 and unwanted restarts FM-2.1): `full` (default — whole transcript), `summary` (running/on-demand summary), `fresh` (only the original question + current follow-up). The chosen mode is recorded on the participant entry.
+6. **Keep orchestration global** even when responses are scoped to a subset (anti-pattern guard — FM-2.4 info-withholding, FM-2.5 disregarding input): narrow *who responds*, never *what the orchestrator sees*.
+7. **`init` seeds a "Full Board"** (all starter members, set active) so the feature is discoverable from first run and pickers are never empty.
+
+## 10.4 Phasing (full breakdown in `CHECKLIST.md` Phase 7)
+
+Each chunk is independently shippable + smoke-testable; each user-visible chunk = one `changeset`.
+
+1. **Boards storage finish + CLI** — slug/snapshot/validate, `aab board` command, `resolveBoardMembers`, `--board` on `discuss start`, `pruneMemberFromBoards`, `activeBoardId`, `init` seeds Full Board.
+2. **Boards web** — REST + Members-view board management + new-discussion board picker (port `MemberSelectionDialog`/`CreateBoardDialog`/`BoardGroupCard`).
+3. **Participant snapshot** — `DiscussionParticipant`, read-time normalizer, render from snapshot (pure robustness; pre-req for chunk 4).
+4. **Dynamic member add (engine + CLI)** — `addMemberIds`/`catchUpMode` in `addFollowUpQuestion`, pool relaxation, catch-up modes, `--add-member`/`--catch-up`, strict-abort rollback.
+5. **Dynamic member add (web)** — composer "+ Add member" + catch-up selector, `member_joined` WS event.
+
+## 10.5 What we deliberately do NOT port from sage-council
+
+Per-user RLS / `user_id` scoping (replaced by workspace scope), Supabase `updated_at` triggers (handled by `nowIso()` in the storage layer), and the 5-member *definition* cap (we cap at discussion-time, not board-definition-time, so a user can save the panel they want).
+
+## 10.6 Net effect
+
+`aab` gains the panel-curation ergonomics of the hosted sage-council app (named boards, one-step convening, active-board switching) and goes beyond the follow-up baseline by letting a user pull a fresh advisor into a live discussion with a deliberate context-catch-up choice — all on the filesystem-first, reference-not-copy model that keeps historical transcripts intact no matter how members and boards churn.

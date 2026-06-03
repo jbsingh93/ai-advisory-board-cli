@@ -28,6 +28,7 @@ import {
   type StartProgressEvent,
 } from '../core/discussion/conversation-flow.js';
 import { summarizeDiscussion } from '../core/discussion/summarize.js';
+import { resolveBoardMembers } from '../core/boards/resolve-board-members.js';
 import {
   openSparringSession,
   sendSparringMessage,
@@ -64,22 +65,40 @@ function registerStart(parent: Command): void {
   parent
     .command('start <question>')
     .description('start a new advisory-board discussion (round 1)')
-    .option('--members <names>', 'comma-separated subset of member names (default: all active)')
+    .option('--members <names>', 'comma-separated subset of member names (default: active board / all active)')
+    .option('--board <token>', 'convene a saved board by slug/id/name (mutually exclusive with --members)')
     .option('--max-turns <n>', 'override settings.maxTurnsPerDiscussion for this run', (v) => Number(v))
     .option('--agents-dir <path>', 'where .claude/agents/ lives (default: cwd)')
-    .action(async (question: string, opts: { members?: string; maxTurns?: number; agentsDir?: string }) => {
+    .action(async (question: string, opts: { members?: string; board?: string; maxTurns?: number; agentsDir?: string }) => {
       const ctx = await openContext(parent);
       try {
         const settings = await ctx.storage.loadSettings();
         if (opts.maxTurns) settings.maxTurnsPerDiscussion = opts.maxTurns;
 
-        const allMembers = await ctx.storage.loadBoardMembers();
-        const members = pickMembers(allMembers, opts.members);
+        // Resolve the panel via the Phase 7 precedence:
+        //   --members > --board > AAB_BOARD env > settings.activeBoardId > all-active.
+        const resolved = await resolveBoardMembers(ctx.storage, settings, {
+          membersFlag: opts.members,
+          boardToken: opts.board,
+          resolveMemberToken,
+        });
+        const members = resolved.members;
         if (members.length === 0) {
           throw new UserError(
-            opts.members
-              ? `No active members matched: ${opts.members}`
-              : 'No active board members. Run `aab init` to seed starters.',
+            resolved.board
+              ? `Board "${resolved.board.name}" has no active members.`
+              : opts.members
+                ? `No active members matched: ${opts.members}`
+                : 'No active board members. Run `aab init` to seed starters.',
+          );
+        }
+
+        // Enforce the per-discussion cap when convening from a board (spec §1.7) —
+        // block rather than silently truncate.
+        if (resolved.board && members.length > settings.maxMembersPerDiscussion) {
+          throw new UserError(
+            `Board "${resolved.board.name}" has ${members.length} active members; max per discussion is ${settings.maxMembersPerDiscussion}.`,
+            'Narrow with `--members a,b,c`, raise `settings.maxMembersPerDiscussion`, or trim the board.',
           );
         }
 
@@ -87,9 +106,10 @@ function registerStart(parent: Command): void {
         verifyAgentFiles(members, projectRoot);
 
         if (!ctx.json) {
+          const panelLabel = resolved.board ? `${resolved.board.name} — ${members.map((m) => m.name).join(', ')}` : members.map((m) => m.name).join(', ');
           process.stdout.write(`\n${c.brand('AI Advisory Board')}  ${c.hint('· starting discussion')}\n`);
-          process.stdout.write(c.hint(`  question: ${question}\n`));
-          process.stdout.write(c.hint(`  members:  ${members.map((m) => m.name).join(', ')}\n\n`));
+          process.stdout.write(c.hint(`  question:  ${question}\n`));
+          process.stdout.write(`  ${c.hint('Convening:')} ${c.bold(panelLabel)}\n\n`);
         }
 
         const sp = spinner('initializing...');
@@ -100,6 +120,8 @@ function registerStart(parent: Command): void {
           settings,
           storage: ctx.storage,
           projectRoot,
+          boardId: resolved.board?.id,
+          boardName: resolved.board?.name,
           onProgress: progressHandler(sp),
         });
         sp.succeed(`Discussion ${shortId(result.discussion.id)} ready in ${formatDuration(result.totalDurationMs)} (${formatUsd(result.totalCostUsd)}).`);
@@ -282,16 +304,27 @@ function registerRespond(parent: Command): void {
 function registerFollowUp(parent: Command): void {
   parent
     .command('follow-up <idOrShort> <question>')
-    .description('ask a follow-up question (default: all members; --member or --members for targeted)')
+    .description('ask a follow-up question (default: all members; --member/--members target; --add-member brings someone new in)')
     .option('--all', 'every active member from this discussion responds (default)')
     .option('--member <name>', 'exactly one member responds (name, slug, or id)')
     .option('--members <names>', 'comma-separated subset of member names, slugs, or ids')
+    .option('--add-member <name>', 'add an active member not yet in this discussion (repeatable)', collectRepeat, [])
+    .option('--add-members <names>', 'comma-separated members to add to this discussion')
+    .option('--catch-up <mode>', 'how added members catch up: full | summary | fresh (default full)')
     .option('--agents-dir <path>', 'where .claude/agents/ lives (default: cwd)')
     .action(
       async (
         idOrShort: string,
         question: string,
-        opts: { all?: boolean; member?: string; members?: string; agentsDir?: string },
+        opts: {
+          all?: boolean;
+          member?: string;
+          members?: string;
+          addMember?: string[];
+          addMembers?: string;
+          catchUp?: string;
+          agentsDir?: string;
+        },
       ) => {
         const flagCount = [opts.all, opts.member, opts.members].filter(Boolean).length;
         if (flagCount > 1) {
@@ -300,29 +333,63 @@ function registerFollowUp(parent: Command): void {
             'Pick one to control who answers.',
           );
         }
+        const catchUpMode = normalizeCatchUp(opts.catchUp);
 
         const ctx = await openContext(parent);
         try {
           const discussion = await resolveDiscussion(ctx.storage, idOrShort);
           const settings = await ctx.storage.loadSettings();
           const allMembers = await ctx.storage.loadBoardMembers();
+          const activeAll = allMembers.filter((m) => m.isActive);
 
           const selectedIds = new Set(discussion.selectedMemberIds ?? allMembers.map((m) => m.id));
-          const candidatePool = allMembers.filter((m) => selectedIds.has(m.id) && m.isActive);
-          if (candidatePool.length === 0) {
+          const existingPool = activeAll.filter((m) => selectedIds.has(m.id));
+          if (existingPool.length === 0) {
             throw new UserError("No active members from this discussion's original board remain.");
           }
+
+          // ---- Resolve members to add (against ALL active members) ----
+          const addTokens = [
+            ...(opts.addMember ?? []),
+            ...(opts.addMembers ? opts.addMembers.split(',').map((t) => t.trim()).filter(Boolean) : []),
+          ];
+          const addMembers: AdvisoryBoardMember[] = [];
+          for (const tok of addTokens) {
+            const m = resolveMemberToken(activeAll, tok);
+            if (!m) {
+              throw new UserError(
+                `No active member matched "${tok}" to add.`,
+                `Active members: ${activeAll.map((x) => x.name).join(', ')}`,
+              );
+            }
+            if (selectedIds.has(m.id)) {
+              throw new UserError(`${m.name} is already in this discussion — use --member/--members to target them.`);
+            }
+            if (!addMembers.some((x) => x.id === m.id)) addMembers.push(m);
+          }
+          const addMemberIds = addMembers.length > 0 ? addMembers.map((m) => m.id) : undefined;
+
+          // Targeting resolves against the effective pool = existing + newcomers.
+          const effectivePool = [...existingPool, ...addMembers];
 
           let targetType: FollowUpTargetType = 'all';
           let selectedMemberId: string | undefined;
           let selectedMemberIdList: string[] | undefined;
 
           if (opts.member) {
-            const match = resolveMemberToken(candidatePool, opts.member);
+            const match = resolveMemberToken(effectivePool, opts.member);
             if (!match) {
+              // Soft hint: the member exists & is active but isn't in this discussion.
+              const elsewhere = resolveMemberToken(activeAll, opts.member);
+              if (elsewhere && !selectedIds.has(elsewhere.id)) {
+                throw new UserError(
+                  `${elsewhere.name} isn't in this discussion.`,
+                  `Bring them in with: aab discuss follow-up ${shortId(discussion.id)} "${question}" --add-member "${elsewhere.name}"`,
+                );
+              }
               throw new UserError(
                 `No member matched "${opts.member}" in this discussion.`,
-                `Active members: ${candidatePool.map((m) => m.name).join(', ')}`,
+                `Members: ${effectivePool.map((m) => m.name).join(', ')}`,
               );
             }
             targetType = 'specific';
@@ -332,7 +399,7 @@ function registerFollowUp(parent: Command): void {
             const matched: AdvisoryBoardMember[] = [];
             const unmatched: string[] = [];
             for (const tok of tokens) {
-              const m = resolveMemberToken(candidatePool, tok);
+              const m = resolveMemberToken(effectivePool, tok);
               if (m) {
                 if (!matched.some((x) => x.id === m.id)) matched.push(m);
               } else unmatched.push(tok);
@@ -340,7 +407,7 @@ function registerFollowUp(parent: Command): void {
             if (unmatched.length > 0) {
               throw new UserError(
                 `No member matched: ${unmatched.join(', ')}`,
-                `Active members: ${candidatePool.map((m) => m.name).join(', ')}`,
+                `Members: ${effectivePool.map((m) => m.name).join(', ')}`,
               );
             }
             if (matched.length < 2) {
@@ -350,28 +417,34 @@ function registerFollowUp(parent: Command): void {
             selectedMemberIdList = matched.map((m) => m.id);
           }
 
-          // The members the engine sees as "active candidates" — equals the
-          // pool. The engine narrows to targets via targetType.
           const projectRoot = opts.agentsDir ?? process.cwd();
-          // Verify only the agent files for the targets we'll actually spawn.
-          const willSpawn =
+          // Verify agent files for the EXISTING members we'll spawn (the engine
+          // emits missing files for newcomers).
+          const willSpawnExisting =
             targetType === 'all'
-              ? candidatePool
+              ? existingPool
               : targetType === 'specific'
-                ? candidatePool.filter((m) => m.id === selectedMemberId)
-                : candidatePool.filter((m) => selectedMemberIdList!.includes(m.id));
-          verifyAgentFiles(willSpawn, projectRoot);
+                ? existingPool.filter((m) => m.id === selectedMemberId)
+                : existingPool.filter((m) => selectedMemberIdList!.includes(m.id));
+          verifyAgentFiles(willSpawnExisting, projectRoot);
 
           if (!ctx.json) {
+            const willSpawnAll =
+              targetType === 'all'
+                ? effectivePool
+                : targetType === 'specific'
+                  ? effectivePool.filter((m) => m.id === selectedMemberId)
+                  : effectivePool.filter((m) => selectedMemberIdList!.includes(m.id));
             const targetLabel =
               targetType === 'all'
-                ? `all (${candidatePool.length})`
-                : targetType === 'specific'
-                  ? willSpawn[0]!.name
-                  : willSpawn.map((m) => m.name).join(', ');
+                ? `all (${willSpawnAll.length})`
+                : willSpawnAll.map((m) => m.name).join(', ');
             process.stdout.write(`\n${c.brand('AI Advisory Board')}  ${c.hint('· follow-up to ' + shortId(discussion.id))}\n`);
             process.stdout.write(c.hint(`  question: ${question}\n`));
             process.stdout.write(c.hint(`  target:   ${targetLabel}\n`));
+            if (addMembers.length > 0) {
+              process.stdout.write(`  ${c.hint('adding:')} ${c.bold(addMembers.map((m) => m.name).join(', '))} ${c.hint('(catch-up: ' + catchUpMode + ')')}\n`);
+            }
             process.stdout.write(c.hint(`  rounds:   ${discussion.rounds.length} so far · ${discussion.totalTurns}/${discussion.maxTurns} turns\n\n`));
           }
 
@@ -380,13 +453,15 @@ function registerFollowUp(parent: Command): void {
           const result = await addFollowUpQuestion({
             discussion,
             question,
-            members: candidatePool,
+            members: activeAll,
             settings,
             storage: ctx.storage,
             projectRoot,
             targetType,
             selectedMemberId,
             selectedMemberIds: selectedMemberIdList,
+            addMemberIds,
+            catchUpMode,
             onProgress: progressHandler(sp),
           });
 
@@ -1067,6 +1142,18 @@ function truncateActivityDetail(detail: string): string {
 
 // ---------------- helpers ----------------
 
+/** commander accumulator for a repeatable option (`--add-member a --add-member b`). */
+function collectRepeat(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+function normalizeCatchUp(raw: string | undefined): 'full' | 'summary' | 'fresh' {
+  if (raw === undefined) return 'full';
+  const v = raw.trim().toLowerCase();
+  if (v === 'full' || v === 'summary' || v === 'fresh') return v;
+  throw new UserError(`Unknown --catch-up mode "${raw}".`, 'Use one of: full | summary | fresh.');
+}
+
 function verifyAgentFiles(members: AdvisoryBoardMember[], projectRoot: string): void {
   const missing: string[] = [];
   for (const m of members) {
@@ -1095,7 +1182,7 @@ function progressHandler(sp: ReturnType<typeof spinner>): (e: StartProgressEvent
   };
 }
 
-function resolveMemberToken(pool: AdvisoryBoardMember[], token: string): AdvisoryBoardMember | undefined {
+export function resolveMemberToken(pool: AdvisoryBoardMember[], token: string): AdvisoryBoardMember | undefined {
   const t = token.trim().toLowerCase();
   if (!t) return undefined;
   // Exact id, exact slug, exact (case-insensitive) name, then prefix on name/slug.
@@ -1105,18 +1192,6 @@ function resolveMemberToken(pool: AdvisoryBoardMember[], token: string): Advisor
     pool.find((m) => m.name.toLowerCase() === t) ??
     pool.find((m) => m.name.toLowerCase().startsWith(t)) ??
     pool.find((m) => memberAgentSlug(m.name).startsWith(t))
-  );
-}
-
-function pickMembers(all: AdvisoryBoardMember[], filter?: string): AdvisoryBoardMember[] {
-  if (!filter) return all.filter((m) => m.isActive);
-  const wanted = new Set(filter.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
-  return all.filter(
-    (m) =>
-      m.isActive &&
-      (wanted.has(m.name.toLowerCase()) ||
-        wanted.has(memberAgentSlug(m.name)) ||
-        wanted.has(m.id)),
   );
 }
 

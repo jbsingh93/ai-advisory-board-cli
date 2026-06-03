@@ -15,6 +15,7 @@ import { registerDiscussCommand } from './commands/discuss.js';
 import { registerUiCommand } from './commands/ui.js';
 import { registerKnowledgeCommand } from './commands/knowledge.js';
 import { registerMembersCommand } from './commands/members.js';
+import { registerBoardCommand } from './commands/board.js';
 import { registerPrinciplesCommand } from './commands/principles.js';
 import { registerCoachCommand } from './commands/coach.js';
 import { registerActionsCommand } from './commands/actions.js';
@@ -63,6 +64,7 @@ export async function runCli(argv: string[]): Promise<void> {
   registerUiCommand(program);
   registerKnowledgeCommand(program);
   registerMembersCommand(program);
+  registerBoardCommand(program);
   registerPrinciplesCommand(program);
   registerCoachCommand(program);
   registerActionsCommand(program);

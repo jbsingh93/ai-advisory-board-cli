@@ -14,7 +14,7 @@
  */
 import { runClaude, extractText } from '../../llm/claude-code-runner.js';
 import { logger } from '../logger.js';
-import { nowIso } from '../utils.js';
+import { generateUUID, nowIso } from '../utils.js';
 import { safeParseJSON, safeParseJSONWithSchema } from '../parsing/safe-json.js';
 import { conversationSummaryPayloadSchema } from '../parsing/llm-response-schemas.js';
 import { ContractError, ModelError } from '../errors.js';
@@ -25,6 +25,8 @@ import type {
   Discussion,
   ParticipationMetrics,
   Response,
+  StorageService,
+  TokenUsageLog,
 } from '../../storage/types.js';
 
 export interface SummarizeOptions {
@@ -32,6 +34,11 @@ export interface SummarizeOptions {
   members: AdvisoryBoardMember[];
   settings: AppSettings;
   signal?: AbortSignal;
+  /** When provided, token usage from the summary call is logged (fire-and-forget). */
+  storage?: StorageService;
+  discussionId?: string;
+  /** Telemetry operationType for the token log (default 'summary'). */
+  operationType?: string;
 }
 
 export async function summarizeDiscussion(opts: SummarizeOptions): Promise<ConversationSummary> {
@@ -61,6 +68,15 @@ export async function summarizeDiscussion(opts: SummarizeOptions): Promise<Conve
       timeoutMs: 120_000,
     });
     text = extractText(result);
+    if (opts.storage) {
+      logSummaryUsage(opts.storage, {
+        discussionId: opts.discussionId ?? discussion.id,
+        operationType: opts.operationType ?? 'summary',
+        model: typeof settings.fastModel === 'string' ? settings.fastModel : 'haiku',
+        usage: result.json?.usage,
+        costUsd: result.json?.cost_usd ?? 0,
+      });
+    }
   } catch (error) {
     throw new ModelError(
       `Summary generation failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -276,6 +292,42 @@ function computeParticipation(
   // Stable order: highest participation first, then alphabetical.
   out.sort((a, b) => b.totalResponses - a.totalResponses || a.memberName.localeCompare(b.memberName));
   return out;
+}
+
+function logSummaryUsage(
+  storage: StorageService,
+  input: {
+    discussionId: string;
+    operationType: string;
+    model: string;
+    usage: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | undefined;
+    costUsd: number;
+  },
+): void {
+  const promptTokenCount =
+    (input.usage?.input_tokens ?? 0) +
+    (input.usage?.cache_creation_input_tokens ?? 0) +
+    (input.usage?.cache_read_input_tokens ?? 0);
+  const candidatesTokenCount = input.usage?.output_tokens ?? 0;
+  const log: TokenUsageLog = {
+    id: generateUUID(),
+    discussionId: input.discussionId,
+    feature: 'discussions',
+    operationType: input.operationType,
+    model: input.model,
+    tokens: {
+      promptTokenCount,
+      candidatesTokenCount,
+      cacheReadTokens: input.usage?.cache_read_input_tokens,
+      cacheCreationTokens: input.usage?.cache_creation_input_tokens,
+      totalTokenCount: promptTokenCount + candidatesTokenCount,
+    },
+    costUsd: input.costUsd,
+    createdAt: nowIso(),
+  };
+  storage.appendTokenUsageLog(log).catch((err) => {
+    logger.debug('[summarize] token-usage log failed (non-blocking):', err);
+  });
 }
 
 function asStringArray(value: unknown): string[] {

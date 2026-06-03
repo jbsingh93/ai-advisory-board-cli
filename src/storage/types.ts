@@ -26,10 +26,15 @@ export interface AdvisoryBoardMember {
 export interface Board {
   id: string;
   name: string;
+  /** Kebab-case, unique within the workspace; derived from name. CLI addressing. */
+  slug: string;
   description?: string;
+  /** Ordered references into members.json. */
   memberIds: string[];
   createdAt: string;
   updatedAt: string;
+  /** Soft-delete: hidden from pickers, kept for history. */
+  archivedAt?: string;
 }
 
 // ============================================================
@@ -130,6 +135,8 @@ export interface ConversationRound {
   followUpTargetType?: 'all' | 'specific' | 'subset';
   followUpSelectedMemberId?: string;
   followUpSelectedMemberIds?: string[];
+  /** Members who joined the discussion in this round (mid-discussion adds). */
+  addedMemberIds?: string[];
 }
 
 export interface ConversationSummary {
@@ -151,12 +158,35 @@ export interface ParticipationMetrics {
   influence: number;
 }
 
+/**
+ * Snapshot of a discussion participant's identity, captured at join time. Lets
+ * historical transcripts render correctly even after the underlying member is
+ * renamed or deleted. Append-only (LangGraph-style history integrity).
+ */
+export interface DiscussionParticipant {
+  memberId: string;
+  /** Snapshot at join time. */
+  name: string;
+  /** Snapshot — drives agent dispatch even if the member is later renamed. */
+  slug: string;
+  /** Snapshot for display. */
+  title: string;
+  /** 1 for founding members; N for mid-discussion joins. */
+  joinedAtRound: number;
+  /** Set for mid-discussion joins — how the newcomer was brought up to speed. */
+  catchUpMode?: 'full' | 'summary' | 'fresh';
+  /** Optional: if a member is dropped from later rounds. */
+  removedAtRound?: number;
+}
+
 export interface Discussion {
   id: string;
   question: string;
   selectedMemberIds?: string[];
   boardId?: string;
   boardName?: string;
+  /** Authoritative, append-only participant snapshot (see {@link DiscussionParticipant}). */
+  participants?: DiscussionParticipant[];
   responses: Response[];
   rounds: ConversationRound[];
   orchestratorState: OrchestratorState;
@@ -427,6 +457,12 @@ export interface AppSettings {
   locale?: string;
   /** Knowledge Wiki (Phase 1.5) — replaces BusinessContext. */
   knowledgeWiki?: KnowledgeWikiSettings;
+  /**
+   * Active board id (Phase 7). When set, `aab discuss start` convenes this
+   * board's roster by default. `undefined` ⇒ "All active members" (the
+   * implicit default board). Per-workspace (lives in settings.json).
+   */
+  activeBoardId?: string;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {

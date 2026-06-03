@@ -19,6 +19,8 @@ const state = {
   workspace: null,
   settings: null,
   members: [],
+  boards: [],
+  activeBoardId: null,
   principles: [],
   actionItems: [],
   discussions: [],
@@ -65,6 +67,8 @@ async function refreshState(opts = {}) {
       workspace: data.workspace,
       settings: data.settings,
       members: data.members || [],
+      boards: data.boards || [],
+      activeBoardId: data.activeBoardId ?? null,
       principles: data.principles || [],
       actionItems: data.actionItems || [],
       discussions: data.discussions || [],
@@ -135,6 +139,8 @@ function handleWsMessage(msg) {
   } else if (msg.type === 'orchestrator_thinking') {
     // Optional: show a system "Orchestrator analyzing..." line
     addSystemLine('Orchestrator analyzing the round…');
+  } else if (msg.type === 'member_joined') {
+    addSystemLine(`＋ ${msg.name} joined the discussion (caught up via ${msg.catchUpMode || 'full'}).`);
   } else if (msg.type === 'orchestrator_decision') {
     addOrchestratorDecision(msg.decision, msg.roundNumber);
   } else if (msg.type === 'discussion_gated') {
@@ -175,6 +181,15 @@ function handleWsMessage(msg) {
     window.dispatchEvent(new CustomEvent('aab-coach-event', { detail: msg }));
   } else if (msg.type && msg.type.startsWith('sparring_')) {
     window.dispatchEvent(new CustomEvent('aab-sparring-event', { detail: msg }));
+  } else if (
+    msg.type === 'board_created' ||
+    msg.type === 'board_updated' ||
+    msg.type === 'board_deleted' ||
+    msg.type === 'board_activated'
+  ) {
+    refreshState({ silent: true }).then(() => {
+      if (state.route === 'members') navigate('members');
+    });
   } else if (
     msg.type === 'action_created' ||
     msg.type === 'action_updated' ||
@@ -343,7 +358,11 @@ function discussionTimeline(discussion) {
   else if (discussion.question) nodes.push(userBubble(discussion.question, 'Question'));
 
   for (const round of discussion.rounds || []) {
-    nodes.push(roundDivider(round.roundNumber));
+    const joinedNames = (round.addedMemberIds || []).map((id) => {
+      const p = (discussion.participants || []).find((x) => x.memberId === id);
+      return p ? p.name + (p.catchUpMode ? ` (${p.catchUpMode})` : '') : id.slice(0, 8);
+    });
+    nodes.push(roundDivider(round.roundNumber, joinedNames));
 
     // HITL reply that triggered THIS round was attached with
     // roundNumber = previous round's number.
@@ -486,6 +505,61 @@ function renderFollowUpComposer(discussion) {
   });
   wrap.appendChild(chips);
 
+  // ---- "+ Add member" affordance (Phase 7, Chunk 5) ----
+  const addedMembers = []; // {id,name} of members newly brought into the discussion
+  const inDiscussion = new Set(candidates.map((m) => m.id));
+  const addable = state.members.filter((m) => m.isActive && !inDiscussion.has(m.id));
+
+  const addRow = h('div', { class: 'follow-up-add-row', style: 'margin-top:8px' });
+  const addBtn = h('button', { class: 'btn-secondary btn-sm', type: 'button', 'data-testid': 'followup-add-member-btn' }, '+ Add member');
+  const catchUpWrap = h('div', { class: 'follow-up-catchup', style: 'display:none;align-items:center;gap:6px;margin-top:8px' });
+  catchUpWrap.appendChild(h('span', { class: 'message-meta' }, 'Catch up with:'));
+  const catchUpSel = h('select', { 'data-testid': 'followup-catchup-select', 'aria-label': 'Catch-up mode for added members' });
+  [['full', 'Full transcript'], ['summary', 'Summary'], ['fresh', 'Fresh start']].forEach(([v, label]) => {
+    catchUpSel.appendChild(h('option', { value: v }, label));
+  });
+  catchUpWrap.appendChild(catchUpSel);
+
+  const addList = h('div', { class: 'follow-up-add-list', 'data-testid': 'followup-add-member-list', style: 'display:none;flex-wrap:wrap;gap:6px;margin-top:6px' });
+  if (addable.length === 0) {
+    addBtn.disabled = true;
+    addBtn.title = 'Every active member is already in this discussion';
+  }
+  addBtn.addEventListener('click', () => {
+    addList.style.display = addList.style.display === 'none' ? 'flex' : 'none';
+    addList.innerHTML = '';
+    if (addList.style.display === 'none') return;
+    for (const m of addable) {
+      if (addedMembers.some((x) => x.id === m.id)) continue;
+      const opt = h('button', { class: 'chip', type: 'button', 'data-testid': 'followup-add-member-option', 'data-member-id': m.id }, m.name);
+      opt.addEventListener('click', () => {
+        addedMembers.push({ id: m.id, name: m.name });
+        selectedSet.add(m.id);
+        // Add a visually-distinct (dashed) chip into the main chip row.
+        const chip = h('button', { class: 'chip selected chip-added', type: 'button', 'data-member-id': m.id, title: 'Newly added to this discussion' });
+        chip.appendChild(h('div', { class: 'avatar', 'data-color': m.color || colorForMember(m.name) }, m.initials || initialsOf(m.name)));
+        chip.appendChild(h('span', {}, m.name + ' ＋'));
+        chip.addEventListener('click', () => {
+          // Removing an added chip pulls them back out entirely.
+          const i = addedMembers.findIndex((x) => x.id === m.id);
+          if (i >= 0) addedMembers.splice(i, 1);
+          selectedSet.delete(m.id);
+          chip.remove();
+          if (addedMembers.length === 0) catchUpWrap.style.display = 'none';
+        });
+        chips.appendChild(chip);
+        opt.remove();
+        catchUpWrap.style.display = 'flex';
+      });
+      addList.appendChild(opt);
+    }
+    if (!addList.querySelector('button')) addList.appendChild(h('span', { class: 'message-meta' }, 'No more members to add.'));
+  });
+  addRow.appendChild(addBtn);
+  wrap.appendChild(addRow);
+  wrap.appendChild(addList);
+  wrap.appendChild(catchUpWrap);
+
   const actions = h('div', { class: 'chat-actions', style: 'justify-content:flex-end;width:100%' });
   const cancel = h('button', { class: 'btn-secondary' }, 'Cancel');
   cancel.addEventListener('click', () => {
@@ -509,9 +583,10 @@ function renderFollowUpComposer(discussion) {
       toast('Pick at least one member to answer.', 'err');
       return;
     }
+    const totalRoster = candidates.length + addedMembers.length;
     let targetType = 'all';
     let payload = { question };
-    if (selectedSet.size === candidates.length) {
+    if (selectedSet.size === totalRoster) {
       targetType = 'all';
     } else if (selectedSet.size === 1) {
       targetType = 'specific';
@@ -521,6 +596,10 @@ function renderFollowUpComposer(discussion) {
       payload.selectedMemberIds = [...selectedSet];
     }
     payload.targetType = targetType;
+    if (addedMembers.length > 0) {
+      payload.addMemberIds = addedMembers.map((m) => m.id);
+      payload.catchUpMode = catchUpSel.value;
+    }
     triggerFollowUp(discussion, payload);
   });
   actions.appendChild(submit);
@@ -728,8 +807,14 @@ function userBubble(text, label, selectedOption) {
   return wrap;
 }
 
-function roundDivider(n) {
-  return h('div', { class: 'round-divider' }, `Round ${n}`);
+function roundDivider(n, joinedNames) {
+  const div = h('div', { class: 'round-divider' }, `Round ${n}`);
+  if (Array.isArray(joinedNames) && joinedNames.length > 0) {
+    div.appendChild(
+      h('span', { class: 'round-joined-badge', 'data-testid': 'round-joined-badge', title: joinedNames.join(', ') }, ` ＋${joinedNames.length} joined`),
+    );
+  }
+  return div;
 }
 
 function messageBubble(r) {
@@ -1204,9 +1289,51 @@ async function openNewDiscussionModal() {
     chip.addEventListener('click', () => {
       chip.classList.toggle('selected');
       chip.setAttribute('aria-checked', chip.classList.contains('selected') ? 'true' : 'false');
+      // Manual member edits clear the board selection (it's no longer "the board").
+      $('#new-discussion-modal').dataset.boardId = '';
+      $$('#new-discussion-boards .board-chip').forEach((b) => b.classList.remove('selected'));
     });
     chips.appendChild(chip);
   }
+
+  // ---- Board picker (Phase 7): pick a board → pre-fills its members ----
+  const boardRow = $('#new-discussion-boards');
+  boardRow.innerHTML = '';
+  $('#new-discussion-modal').dataset.boardId = '';
+  const boards = (state.boards || []).filter((b) => (b.activeMemberCount ?? b.memberIds.length) > 0);
+  if (boards.length === 0) {
+    boardRow.appendChild(h('span', { class: 'field-help' }, 'No boards yet — manage them in the Board members tab.'));
+  } else {
+    for (const b of boards) {
+      const pill = h('button', {
+        class: 'board-chip' + (b.id === state.activeBoardId ? ' is-active-board' : ''),
+        type: 'button',
+        'data-board-id': b.id,
+        'data-testid': `new-discussion-board-card`,
+        title: b.description || '',
+      }, `${b.name} · ${b.activeMemberCount ?? b.memberIds.length}`);
+      pill.addEventListener('click', () => {
+        const already = pill.classList.contains('selected');
+        $$('#new-discussion-boards .board-chip').forEach((x) => x.classList.remove('selected'));
+        if (already) {
+          // Toggle off → back to "Individual" (leave member selection as-is).
+          $('#new-discussion-modal').dataset.boardId = '';
+          return;
+        }
+        pill.classList.add('selected');
+        $('#new-discussion-modal').dataset.boardId = b.id;
+        // Pre-fill: select exactly this board's active members.
+        const wanted = new Set(b.memberIds);
+        $$('#member-chips .chip').forEach((chip) => {
+          const on = wanted.has(chip.dataset.memberId);
+          chip.classList.toggle('selected', on);
+          chip.setAttribute('aria-checked', on ? 'true' : 'false');
+        });
+      });
+      boardRow.appendChild(pill);
+    }
+  }
+
   $('#new-question').focus();
 }
 
@@ -1238,11 +1365,12 @@ async function submitNewDiscussion() {
   startNewChatView(question, selectedMembers);
   for (const m of selectedMembers) addTypingBubble(m.name);
 
+  const boardId = $('#new-discussion-modal').dataset.boardId || undefined;
   try {
     await fetchJSON('/api/discussions', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ question, memberIds }),
+      body: JSON.stringify({ question, memberIds, boardId }),
     });
     toast('Discussion started — members are thinking…', 'ok');
   } catch (e) {
@@ -1299,7 +1427,10 @@ function renderMembersView(main) {
   });
   const addBtn = h('button', { class: 'btn-primary', 'data-testid': 'members-add-btn' }, '+ Add member');
   addBtn.addEventListener('click', () => openMemberAddWizard());
+  const boardBtn = h('button', { class: 'btn-secondary', 'data-testid': 'board-create-btn', title: 'Create a board (named group of members)' }, '+ Board');
+  boardBtn.addEventListener('click', () => openBoardEditModal(null));
   headerActions.appendChild(syncBtn);
+  headerActions.appendChild(boardBtn);
   headerActions.appendChild(addBtn);
   header.appendChild(headerActions);
   view.appendChild(header);
@@ -1320,8 +1451,192 @@ function renderMembersView(main) {
     for (const m of state.members) grid.appendChild(memberCard(m));
     body.appendChild(grid);
   }
+
+  // ---- Boards section (Phase 7) ----
+  const boardsSection = h('div', { class: 'boards-section', 'data-testid': 'boards-section' });
+  boardsSection.appendChild(
+    h('div', { class: 'section-subhead' }, [
+      h('div', { class: 'view-title', style: 'font-size:16px' }, 'Boards'),
+      h('div', { class: 'view-subtitle' }, `${state.boards.length} board${state.boards.length === 1 ? '' : 's'} · convene a curated panel`),
+    ]),
+  );
+  if (state.boards.length === 0) {
+    boardsSection.appendChild(h('div', { class: 'field-help', style: 'margin-top:8px' }, 'No boards yet. Click "+ Board" above to group members into a reusable panel.'));
+  } else {
+    const bgrid = h('div', { class: 'boards-grid' });
+    for (const b of state.boards) bgrid.appendChild(boardCard(b));
+    boardsSection.appendChild(bgrid);
+  }
+  body.appendChild(boardsSection);
+
   view.appendChild(body);
   main.appendChild(view);
+}
+
+function boardCard(b) {
+  const isActive = b.id === state.activeBoardId;
+  const card = h('div', { class: 'board-card' + (isActive ? ' is-active-board' : ''), 'data-testid': 'board-card' });
+
+  const head = h('div', { class: 'board-card-head' });
+  // Overlapped member avatars (+N overflow).
+  const stack = h('div', { class: 'avatar-stack', 'aria-hidden': 'true' });
+  const previews = (b.members || []).slice(0, 4);
+  previews.forEach((m) => {
+    stack.appendChild(h('div', { class: 'avatar avatar-sm', 'data-color': m.color || colorForMember(m.name || '?') }, m.initials || initialsOf(m.name || '?')));
+  });
+  const overflow = (b.members || []).length - previews.length;
+  if (overflow > 0) stack.appendChild(h('div', { class: 'avatar avatar-sm avatar-more' }, `+${overflow}`));
+  head.appendChild(stack);
+  if (isActive) head.appendChild(h('span', { class: 'badge badge-active', title: 'Active board' }, '★ active'));
+  card.appendChild(head);
+
+  card.appendChild(h('div', { class: 'board-card-name', 'data-testid': 'board-card-title' }, b.name));
+  card.appendChild(h('div', { class: 'board-card-meta' }, `${b.members ? b.members.length : b.memberIds.length} member${(b.members ? b.members.length : b.memberIds.length) === 1 ? '' : 's'}`));
+  if (b.description) card.appendChild(h('div', { class: 'board-card-desc' }, b.description));
+
+  const actions = h('div', { class: 'card-actions' });
+  const useBtn = h('button', { class: 'btn-secondary', 'data-testid': 'board-use-btn' }, isActive ? '✓ Active' : 'Set active');
+  useBtn.disabled = isActive;
+  useBtn.addEventListener('click', async () => {
+    try {
+      await fetchJSON(`/api/boards/${b.id}/activate`, { method: 'POST' });
+      await refreshState({ silent: true });
+      if (state.route === 'members') navigate('members');
+      toast(`Active board → ${b.name}`, 'ok');
+    } catch (e) {
+      toast('Could not activate: ' + e.message, 'err');
+    }
+  });
+  const editBtn = h('button', { class: 'btn-secondary', 'data-testid': 'board-edit-btn' }, 'Edit');
+  editBtn.addEventListener('click', () => openBoardEditModal(b));
+  const delBtn = h('button', { class: 'btn-danger-ghost', 'data-testid': 'board-delete-btn' }, 'Delete');
+  delBtn.addEventListener('click', () =>
+    openConfirmModal({
+      title: `Delete board "${b.name}"?`,
+      message: 'This removes the board only — its members are untouched.',
+      okLabel: 'Delete',
+      onOk: async () => {
+        try {
+          await fetchJSON(`/api/boards/${b.id}`, { method: 'DELETE' });
+          await refreshState({ silent: true });
+          if (state.route === 'members') navigate('members');
+          toast(`Board "${b.name}" deleted.`, 'ok');
+        } catch (e) {
+          toast('Could not delete: ' + e.message, 'err');
+        }
+      },
+    }),
+  );
+  actions.appendChild(useBtn);
+  actions.appendChild(editBtn);
+  actions.appendChild(delBtn);
+  card.appendChild(actions);
+  return card;
+}
+
+function openBoardEditModal(board) {
+  const isNew = !board;
+  $('#edit-modal-title').textContent = isNew ? 'Create board' : `Edit ${board.name}`;
+  const body = $('#edit-modal-body');
+  body.innerHTML = '';
+
+  const fields = {
+    name: input('Name', board?.name || '', 'e.g. Go-to-Market Board'),
+    description: textarea('Description (optional)', board?.description || '', 'What this panel is for.', 2),
+  };
+  fields.name.input.setAttribute('data-testid', 'board-name-input');
+  fields.description.input.setAttribute('data-testid', 'board-desc-input');
+  body.appendChild(fields.name.wrap);
+  body.appendChild(fields.description.wrap);
+
+  // Member multi-select chip grid.
+  const memberRow = h('div', { class: 'form-field' });
+  memberRow.appendChild(h('label', { class: 'field-label' }, 'Members (ordered)'));
+  const grid = h('div', { class: 'member-chips', 'data-testid': 'board-member-grid' });
+  const preselected = new Set(board?.memberIds || []);
+  const order = [];
+  // Show board's members first (in order), then the rest.
+  const ordered = [
+    ...(board?.memberIds || []).map((id) => state.members.find((m) => m.id === id)).filter(Boolean),
+    ...state.members.filter((m) => !preselected.has(m.id)),
+  ];
+  for (const m of ordered) {
+    const on = preselected.has(m.id);
+    if (on) order.push(m.id);
+    const chip = h('button', {
+      class: 'chip' + (on ? ' selected' : ''),
+      type: 'button',
+      'data-member-id': m.id,
+      'data-testid': 'board-member-chip',
+      'aria-checked': on ? 'true' : 'false',
+    });
+    chip.appendChild(h('div', { class: 'avatar', 'data-color': m.color || colorForMember(m.name) }, m.initials || initialsOf(m.name)));
+    chip.appendChild(h('span', {}, m.name + (m.isActive ? '' : ' (inactive)')));
+    chip.addEventListener('click', () => {
+      const sel = chip.classList.toggle('selected');
+      chip.setAttribute('aria-checked', sel ? 'true' : 'false');
+      if (sel) order.push(m.id);
+      else order.splice(order.indexOf(m.id), 1);
+    });
+    grid.appendChild(chip);
+  }
+  memberRow.appendChild(grid);
+  body.appendChild(memberRow);
+
+  if (!isNew) {
+    $('#edit-modal-delete').hidden = false;
+    editModalOnDelete = () =>
+      openConfirmModal({
+        title: `Delete board "${board.name}"?`,
+        message: 'This removes the board only — its members are untouched.',
+        okLabel: 'Delete',
+        onOk: async () => {
+          try {
+            await fetchJSON(`/api/boards/${board.id}`, { method: 'DELETE' });
+            await refreshState({ silent: true });
+            closeEditModal();
+            if (state.route === 'members') navigate('members');
+            toast(`Board "${board.name}" deleted.`, 'ok');
+          } catch (e) {
+            toast('Could not delete: ' + e.message, 'err');
+          }
+        },
+      });
+  }
+
+  $('#edit-modal').hidden = false;
+  $('#edit-modal-save').setAttribute('data-testid', 'board-save-btn');
+  fields.name.input.focus();
+
+  editModalOnSave = async () => {
+    const name = fields.name.input.value.trim();
+    if (!name) {
+      toast('Board name is required.', 'err');
+      throw new Error('name required');
+    }
+    if (order.length === 0) {
+      toast('Pick at least one member.', 'err');
+      throw new Error('members required');
+    }
+    const payload = { name, description: fields.description.input.value.trim(), memberIds: order };
+    if (isNew) {
+      await fetchJSON('/api/boards', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      toast(`Board "${name}" created.`, 'ok');
+    } else {
+      await fetchJSON(`/api/boards/${board.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      toast(`Board "${name}" updated.`, 'ok');
+    }
+    await refreshState({ silent: true });
+    if (state.route === 'members') navigate('members');
+  };
 }
 
 function memberCard(m) {
@@ -1412,11 +1727,12 @@ function memberCard(m) {
       okLabel: 'Delete',
       onOk: async () => {
         try {
-          await fetchJSON(`/api/members/${m.id}`, { method: 'DELETE' });
+          const r = await fetchJSON(`/api/members/${m.id}`, { method: 'DELETE' });
           await refreshState({ silent: true });
           renderWorkspaceCard();
           navigate('members');
-          toast(`${m.name} deleted.`, 'ok');
+          const pruned = r && Array.isArray(r.affectedBoards) ? r.affectedBoards.length : 0;
+          toast(`${m.name} deleted${pruned > 0 ? ` · pruned from ${pruned} board${pruned === 1 ? '' : 's'}` : ''}.`, 'ok');
         } catch (e) {
           toast('Could not delete: ' + e.message, 'err');
         }
@@ -2271,6 +2587,8 @@ function closeEditModal() {
   editModalOnSave = null;
   editModalOnDelete = null;
   $('#edit-modal-delete').hidden = true;
+  // Board modal tags the shared Save button — clear it for the next consumer.
+  $('#edit-modal-save').removeAttribute('data-testid');
   // The add-member wizard hides Save on its archetype-selection step; restore it
   // so the next consumer of this shared modal (e.g. Edit) shows Save normally.
   $('#edit-modal-save').hidden = false;

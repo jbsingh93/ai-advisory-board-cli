@@ -64,6 +64,15 @@ export function renderDiscussionMarkdown(d: Discussion): string {
       lines.push('');
       lines.push(`> **Follow-up:** ${round.followUpQuestion}`);
     }
+    if (round.addedMemberIds && round.addedMemberIds.length > 0) {
+      const names = round.addedMemberIds.map((id) => {
+        const p = d.participants?.find((x) => x.memberId === id);
+        const mode = p?.catchUpMode ? ` (caught up via ${p.catchUpMode})` : '';
+        return `${p?.name ?? id}${mode}`;
+      });
+      lines.push('');
+      lines.push(`> **+ Joined this round:** ${names.join(', ')}`);
+    }
     lines.push('');
 
     for (const r of round.responses) {

@@ -28,6 +28,9 @@ import {
 import { summarizeDiscussion } from './summarize.js';
 import { resolveWorkspace, paths } from '../../storage/paths.js';
 import { ingestDiscussionRaw, ingestPaste } from '../knowledge/ingest.js';
+import { memberAgentSlug, memberAgentPath, emitMemberAgentFile } from '../../agents/emit-member-agent.js';
+import { ensureParticipants } from './participants.js';
+import { buildCatchUpContext, renderSummaryText, type CatchUpMode } from './catch-up.js';
 import type {
   AdvisoryBoardMember,
   AppSettings,
@@ -75,6 +78,9 @@ export interface StartDiscussionOptions {
   projectRoot?: string;
   signal?: AbortSignal;
   onProgress?: (event: StartProgressEvent) => void;
+  /** Board this discussion was convened from (Phase 7 snapshot). */
+  boardId?: string;
+  boardName?: string;
 }
 
 export interface StartDiscussionResult {
@@ -99,6 +105,17 @@ export async function startDiscussion(opts: StartDiscussionOptions): Promise<Sta
     id: discussionId,
     question: opts.question,
     selectedMemberIds: activeMembers.map((m) => m.id),
+    boardId: opts.boardId,
+    boardName: opts.boardName,
+    // Founding-participant snapshot (Phase 7) so history renders correctly even
+    // if a member is later renamed or deleted.
+    participants: activeMembers.map((m) => ({
+      memberId: m.id,
+      name: m.name,
+      slug: memberAgentSlug(m.name),
+      title: m.title,
+      joinedAtRound: 1,
+    })),
     responses: [],
     rounds: [],
     orchestratorState: createInitialOrchestratorState(),
@@ -373,6 +390,10 @@ export async function continueDiscussion(
   if (activeMembers.length === 0) {
     throw new UserError('No active board members. Add or activate at least one with `aab members add`.');
   }
+
+  // Back-fill the participant snapshot for legacy discussions (non-destructive;
+  // persisted on the next save). New discussions already carry one.
+  ensureParticipants(discussion, opts.members);
 
   // Bail if we're already at maxTurns — mark concluded.
   if (discussion.totalTurns >= discussion.maxTurns) {
@@ -667,6 +688,14 @@ export interface AddFollowUpQuestionOptions {
   selectedMemberId?: string;
   /** Required when targetType='subset'. */
   selectedMemberIds?: string[];
+  /**
+   * Members to add to the discussion before this round runs (active member ids
+   * not yet in the discussion). They join the roster; whether they *respond*
+   * this round depends on `targetType` (Slack "add to channel" vs "@mention").
+   */
+  addMemberIds?: string[];
+  /** How freshly-added members are brought up to speed (spec §2.3). Default 'full'. */
+  catchUpMode?: CatchUpMode;
 }
 
 export async function addFollowUpQuestion(
@@ -711,12 +740,50 @@ export async function addFollowUpQuestion(
     throw new UserError('No active board members.');
   }
 
-  // Restrict candidates to the discussion's original member set so a
-  // follow-up doesn't pull in someone the discussion never had.
-  const allowedIds = new Set(discussion.selectedMemberIds ?? activeMembers.map((m) => m.id));
-  const candidatePool = activeMembers.filter((m) => allowedIds.has(m.id));
+  // Back-fill the participant snapshot for legacy discussions (non-destructive).
+  ensureParticipants(discussion, opts.members);
+
+  const catchUpMode: CatchUpMode = opts.catchUpMode ?? 'full';
+
+  // The roster as it stands before this round (existing participants).
+  const rosterIds = new Set(discussion.selectedMemberIds ?? activeMembers.map((m) => m.id));
+
+  // ---- Validate + resolve newly-added members (mid-discussion join) ----
+  // `opts.members` is the full active-member pool (the CLI/server pass all
+  // active members so newcomers are resolvable). New members must be active,
+  // exist, and not already be in the discussion.
+  const newcomers: AdvisoryBoardMember[] = [];
+  for (const id of opts.addMemberIds ?? []) {
+    const member = activeMembers.find((m) => m.id === id);
+    if (!member) {
+      throw new UserError(
+        `Cannot add member ${id}: not found among active members.`,
+        'Only active, existing members can be added. Create them first with `aab members add`.',
+      );
+    }
+    if (rosterIds.has(id)) {
+      throw new UserError(`${member.name} is already part of this discussion.`);
+    }
+    if (newcomers.some((m) => m.id === id)) continue; // dedupe
+    newcomers.push(member);
+  }
+
+  // Ensure each newcomer has a .claude/agents/<slug>.md (emit if missing —
+  // defensive; UI/CLI-created members always have one).
+  const projectRootForAgents = opts.projectRoot ?? process.cwd();
+  for (const member of newcomers) {
+    const agentPath = memberAgentPath(memberAgentSlug(member.name), projectRootForAgents);
+    if (!existsSync(agentPath)) {
+      emitMemberAgentFile(member, { projectRoot: projectRootForAgents });
+    }
+  }
+
+  const newcomerIds = new Set(newcomers.map((m) => m.id));
+
+  // Candidate pool = existing roster members + newcomers (the relaxed pool).
+  const candidatePool = activeMembers.filter((m) => rosterIds.has(m.id) || newcomerIds.has(m.id));
   if (candidatePool.length === 0) {
-    throw new UserError('None of the discussion\'s original members are still active.');
+    throw new UserError('None of the discussion\'s members are still active.');
   }
 
   let targetMembers: AdvisoryBoardMember[];
@@ -743,6 +810,11 @@ export async function addFollowUpQuestion(
       throw new UserError('No members from selectedMemberIds are part of this discussion.');
     }
   }
+
+  // Newcomers who actually respond this round (targeted). Non-targeted
+  // newcomers join the roster for future rounds but don't respond / get caught
+  // up yet (Slack "add to channel" vs "@mention" — spec §2.5).
+  const respondingNewcomerIds = new Set(targetMembers.filter((m) => newcomerIds.has(m.id)).map((m) => m.id));
 
   // Pre-round clarification gate (PLAN.md §4.3.1: must fire here too).
   opts.onProgress?.({ stage: 'orchestrating' });
@@ -797,6 +869,34 @@ export async function addFollowUpQuestion(
   const conversationHistory = discussion.responses;
   const businessContext = await loadBusinessContextSafe(opts.storage);
 
+  // If any responding newcomer is caught up via `summary`, render the prior
+  // rounds into a summary text block once (reuse discussion.summary if present,
+  // else generate one — logged as a `catchup_summary` token call, spec §3.4).
+  let catchUpSummaryText: string | undefined;
+  const needsSummaryCatchUp =
+    catchUpMode === 'summary' && targetMembers.some((m) => respondingNewcomerIds.has(m.id));
+  if (needsSummaryCatchUp) {
+    if (discussion.summary) {
+      catchUpSummaryText = renderSummaryText(discussion.summary);
+    } else if (discussion.rounds.length > 0) {
+      try {
+        const summary = await summarizeDiscussion({
+          discussion,
+          members: candidatePool,
+          settings: opts.settings,
+          storage: opts.storage,
+          discussionId: discussion.id,
+          operationType: 'catchup_summary',
+          signal: opts.signal,
+        });
+        discussion.summary = summary;
+        catchUpSummaryText = renderSummaryText(summary);
+      } catch (error) {
+        logger.warn('[addFollowUpQuestion] catch-up summary failed; falling back to full transcript:', error);
+      }
+    }
+  }
+
   let totalCostUsd = 0;
   for (let i = 0; i < targetMembers.length; i++) {
     const member = targetMembers[i]!;
@@ -807,13 +907,24 @@ export async function addFollowUpQuestion(
       total: targetMembers.length,
     });
 
+    // Shape the context per catch-up mode (newcomers only; founding/returning
+    // members always get the full transcript).
+    const catchUp = buildCatchUpContext(
+      respondingNewcomerIds.has(member.id),
+      catchUpMode,
+      conversationHistory,
+      catchUpSummaryText,
+    );
+
     // Strict: any failure aborts the whole follow-up round (per PLAN §1.5).
     const result = await runMember({
       question: discussion.question,
       member,
       roundNumber: nextRoundNumber,
       previousResponsesInRound: round.responses,
-      conversationHistory,
+      conversationHistory: catchUp.conversationHistory,
+      priorRoundsSummary: catchUp.priorRoundsSummary,
+      joinCatchUpMode: catchUp.joinCatchUpMode,
       businessContext,
       settings: opts.settings,
       storage: opts.storage,
@@ -878,6 +989,28 @@ export async function addFollowUpQuestion(
   discussion.userResponses.push(userResponse);
   for (const r of round.responses) discussion.responses.push(r);
   discussion.totalTurns += round.responses.length;
+
+  // Commit the mid-discussion joins now that the round succeeded (strict-abort
+  // means a member failure threw before reaching here, rolling back the add).
+  if (newcomers.length > 0) {
+    discussion.participants ??= [];
+    discussion.selectedMemberIds = [...new Set([...(discussion.selectedMemberIds ?? []), ...newcomers.map((m) => m.id)])];
+    for (const member of newcomers) {
+      discussion.participants.push({
+        memberId: member.id,
+        name: member.name,
+        slug: memberAgentSlug(member.name),
+        title: member.title,
+        joinedAtRound: nextRoundNumber,
+        // Catch-up mode is recorded only for newcomers who actually responded
+        // (and were caught up) this round; non-responding joins catch up the
+        // first round they speak.
+        ...(respondingNewcomerIds.has(member.id) ? { catchUpMode } : {}),
+      });
+    }
+    round.addedMemberIds = newcomers.map((m) => m.id);
+  }
+
   discussion.rounds.push(round);
   discussion.orchestratorState = updateOrchestratorState(
     discussion.orchestratorState,

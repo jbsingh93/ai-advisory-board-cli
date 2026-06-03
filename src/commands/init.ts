@@ -23,7 +23,7 @@ import { askConfirm, askSelect } from '../ui/prompts.js';
 import { spinner } from '../ui/spinner.js';
 import { homeRoot, paths, setActiveWorkspaceId, slugifyWorkspaceId } from '../storage/paths.js';
 import { FsStorageService } from '../storage/fs-storage-service.js';
-import { DEFAULT_SETTINGS, type AdvisoryBoardMember, type Principle } from '../storage/types.js';
+import { DEFAULT_SETTINGS, type AdvisoryBoardMember, type Board, type Principle } from '../storage/types.js';
 import { STARTER_BOARD_MEMBERS } from '../starter/starter-board-members.js';
 import { STARTER_PRINCIPLES } from '../starter/starter-principles.js';
 import { emitMemberAgentFile } from '../agents/emit-member-agent.js';
@@ -173,8 +173,28 @@ async function runInit(opts: InitOptions): Promise<void> {
       principleCount++;
     }
   }
+  // Seed a starter "Full Board" containing all seeded members + set it active,
+  // so the boards feature is discoverable from first run (spec §1.8).
+  if (opts.seed !== false && seededMembers.length > 0) {
+    const now = nowIso();
+    const board: Board = {
+      id: generateUUID(),
+      name: 'Full Board',
+      slug: 'full-board',
+      description: 'All starter members.',
+      memberIds: seededMembers.map((m) => m.id),
+      createdAt: now,
+      updatedAt: now,
+    };
+    await storage.saveBoard(board);
+    const seededSettings = await storage.loadSettings();
+    await storage.saveSettings({ ...seededSettings, activeBoardId: board.id });
+  }
+
   sp2.succeed(
-    `Workspace ready (${memberCount} starter members, ${principleCount} starter principles).`,
+    `Workspace ready (${memberCount} starter members, ${principleCount} starter principles${
+      opts.seed !== false && seededMembers.length > 0 ? ', 1 board' : ''
+    }).`,
   );
 
   // 6. Generate .claude/agents/<slug>.md for each member (so Claude Code can dispatch them)

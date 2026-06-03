@@ -36,6 +36,14 @@ export function renderDiscussion(d: Discussion, opts: { round?: number } = {}): 
     if (round.followUpQuestion) {
       lines.push(c.hint(`  follow-up: ${round.followUpQuestion}`));
     }
+    if (round.addedMemberIds && round.addedMemberIds.length > 0) {
+      const names = round.addedMemberIds.map((id) => {
+        const p = d.participants?.find((x) => x.memberId === id);
+        const mode = p?.catchUpMode ? ` via ${p.catchUpMode}` : '';
+        return `${p?.name ?? id.slice(0, 8)}${mode}`;
+      });
+      lines.push(c.green(`  + joined this round: ${names.join(', ')}`));
+    }
     lines.push('');
 
     for (const r of round.responses) {

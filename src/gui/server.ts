@@ -66,11 +66,18 @@ import type {
   ActionItem,
   AdvisoryBoardMember,
   AppSettings,
+  Board,
   DecisionSession,
   Discussion,
   Principle,
   PrincipleCategory,
 } from '../storage/types.js';
+import {
+  boardSlug,
+  ensureUniqueBoardSlug,
+  validateBoardFields,
+} from '../core/boards/board-helpers.js';
+import { pruneMemberFromBoards } from '../core/boards/prune-member-from-boards.js';
 import {
   extractActionItems,
   type ExtractedActionItem,
@@ -215,13 +222,15 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
   // ---------- API: read ----------
   app.get('/api/state', async (_req, res) => {
     try {
-      const [settings, members, principles, actionItems, discussionPage] = await Promise.all([
+      const [settings, members, principles, actionItems, discussionPage, boards] = await Promise.all([
         opts.storage.loadSettings(),
         opts.storage.loadBoardMembers(),
         opts.storage.loadPrinciples(),
         opts.storage.loadActionItems(),
         opts.storage.loadDiscussionPage({ limit: 50 }),
+        opts.storage.loadBoards(),
       ]);
+      const enrichedBoards = await Promise.all(boards.filter((b) => !b.archivedAt).map((b) => enrichBoard(b)));
       res.json({
         workspace: {
           id: opts.storage.getWorkspaceId(),
@@ -235,6 +244,8 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
         actionItems,
         discussions: discussionPage.discussions,
         discussionTotal: discussionPage.totalCount,
+        boards: enrichedBoards,
+        activeBoardId: settings.activeBoardId ?? null,
       });
     } catch (error) {
       sendError(res, 500, error);
@@ -612,6 +623,8 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
         return;
       }
       await opts.storage.deleteBoardMember(existing.id);
+      // Cascade-prune the member from every board's roster (Phase 7 orphan fix).
+      const prune = await pruneMemberFromBoards(opts.storage, existing.id);
       // Clean up the agent file iff it was AAB-generated (don't nuke user-edited).
       try {
         const p = memberAgentPath(memberAgentSlug(existing.name), projectRoot);
@@ -621,7 +634,182 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
       } catch {
         /* fine */
       }
-      res.status(204).end();
+      if (prune.affected.length > 0) {
+        for (const b of prune.affected) {
+          broadcast({ type: 'board_updated', board: await enrichBoard(b) });
+        }
+      }
+      // 204 has no body; surface affected boards via a 200 JSON so the UI can toast.
+      res.status(200).json({
+        deleted: true,
+        affectedBoards: prune.affected.map((b) => ({ id: b.id, name: b.name, memberCount: b.memberIds.length })),
+        emptiedBoards: prune.emptied.map((b) => ({ id: b.id, name: b.name })),
+      });
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  // ============================================================
+  // Boards (member groups) — Phase 7
+  // ============================================================
+
+  async function enrichBoard(board: Board): Promise<Record<string, unknown>> {
+    const members = await opts.storage.loadBoardMembers();
+    const byId = new Map(members.map((m) => [m.id, m]));
+    const memberPreviews = board.memberIds.map((id) => {
+      const m = byId.get(id);
+      if (!m) return { id, name: '(deleted member)', slug: '', initials: '?', active: false, missing: true };
+      return {
+        id: m.id,
+        name: m.name,
+        slug: memberAgentSlug(m.name),
+        initials: initialsOf(m.name),
+        active: m.isActive,
+        ...(readMemberAgentColor(m.name, projectRoot) ? { color: readMemberAgentColor(m.name, projectRoot) } : {}),
+      };
+    });
+    const activeMemberCount = board.memberIds
+      .map((id) => byId.get(id))
+      .filter((m) => m && m.isActive).length;
+    return { ...board, members: memberPreviews, activeMemberCount };
+  }
+
+  // List
+  app.get('/api/boards', async (_req, res) => {
+    try {
+      const settings = await opts.storage.loadSettings();
+      const boards = await opts.storage.loadBoards();
+      const enriched = await Promise.all(boards.filter((b) => !b.archivedAt).map((b) => enrichBoard(b)));
+      res.json({ boards: enriched, activeBoardId: settings.activeBoardId ?? null });
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  // Active (resolved) — registered before any /:id route so it isn't shadowed.
+  app.get('/api/boards/active', async (_req, res) => {
+    try {
+      const settings = await opts.storage.loadSettings();
+      const boards = await opts.storage.loadBoards();
+      const board = settings.activeBoardId ? boards.find((b) => b.id === settings.activeBoardId) : undefined;
+      res.json({ board: board ? await enrichBoard(board) : null });
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  // Create
+  app.post('/api/boards', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as { name?: string; description?: string; memberIds?: string[] };
+      const memberIds = Array.isArray(body.memberIds) ? [...new Set(body.memberIds.filter(Boolean))] : [];
+      const boards = await opts.storage.loadBoards();
+      const members = await opts.storage.loadBoardMembers();
+      const errors = validateBoardFields(
+        { name: body.name ?? '', description: body.description, memberIds },
+        { existingBoards: boards, members },
+      );
+      if (errors.length > 0) {
+        res.status(400).json({ error: errors.join('; ') });
+        return;
+      }
+      const slug = ensureUniqueBoardSlug(boardSlug(body.name!.trim()), boards.map((b) => b.slug));
+      const now = nowIso();
+      const board: Board = {
+        id: generateUUID(),
+        name: body.name!.trim(),
+        slug,
+        description: body.description?.trim() || undefined,
+        memberIds,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await opts.storage.saveBoard(board);
+      const enriched = await enrichBoard(board);
+      broadcast({ type: 'board_created', board: enriched });
+      res.status(201).json(enriched);
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  // Update (name / description / memberIds)
+  app.patch('/api/boards/:id', async (req, res) => {
+    try {
+      const boards = await opts.storage.loadBoards();
+      const existing = boards.find((b) => b.id === req.params.id);
+      if (!existing) {
+        res.status(404).json({ error: `No board with id ${req.params.id}` });
+        return;
+      }
+      const body = (req.body ?? {}) as { name?: string; description?: string; memberIds?: string[] };
+      const members = await opts.storage.loadBoardMembers();
+      const nextName = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : existing.name;
+      const nextDescription = body.description !== undefined ? body.description.trim() : existing.description;
+      const nextMemberIds = Array.isArray(body.memberIds)
+        ? [...new Set(body.memberIds.filter(Boolean))]
+        : existing.memberIds;
+      const errors = validateBoardFields(
+        { name: nextName, description: nextDescription, memberIds: nextMemberIds },
+        { existingBoards: boards, members, excludeBoardId: existing.id },
+      );
+      if (errors.length > 0) {
+        res.status(400).json({ error: errors.join('; ') });
+        return;
+      }
+      const next: Board = {
+        ...existing,
+        name: nextName,
+        description: nextDescription || undefined,
+        memberIds: nextMemberIds,
+        ...(typeof body.name === 'string' && body.name.trim() && boardSlug(nextName) !== existing.slug
+          ? { slug: ensureUniqueBoardSlug(boardSlug(nextName), boards.filter((b) => b.id !== existing.id).map((b) => b.slug)) }
+          : {}),
+      };
+      await opts.storage.updateBoard(next);
+      const enriched = await enrichBoard(next);
+      broadcast({ type: 'board_updated', board: enriched });
+      res.json(enriched);
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  // Delete (boards only — never touches members)
+  app.delete('/api/boards/:id', async (req, res) => {
+    try {
+      const boards = await opts.storage.loadBoards();
+      const existing = boards.find((b) => b.id === req.params.id);
+      if (!existing) {
+        res.status(404).json({ error: `No board with id ${req.params.id}` });
+        return;
+      }
+      await opts.storage.deleteBoard(existing.id);
+      const settings = await opts.storage.loadSettings();
+      if (settings.activeBoardId === existing.id) {
+        await opts.storage.saveSettings({ ...settings, activeBoardId: undefined });
+      }
+      broadcast({ type: 'board_deleted', boardId: existing.id });
+      res.status(200).json({ deleted: true });
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  // Activate (set settings.activeBoardId)
+  app.post('/api/boards/:id/activate', async (req, res) => {
+    try {
+      const boards = await opts.storage.loadBoards();
+      const board = boards.find((b) => b.id === req.params.id);
+      if (!board) {
+        res.status(404).json({ error: `No board with id ${req.params.id}` });
+        return;
+      }
+      const settings = await opts.storage.loadSettings();
+      await opts.storage.saveSettings({ ...settings, activeBoardId: board.id });
+      broadcast({ type: 'board_activated', boardId: board.id });
+      res.json({ activeBoardId: board.id, board: await enrichBoard(board) });
     } catch (error) {
       sendError(res, 500, error);
     }
@@ -1316,7 +1504,7 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
   // ---------- API: write ----------
   app.post('/api/discussions', async (req, res) => {
     try {
-      const { question, memberIds } = req.body as { question?: string; memberIds?: string[] };
+      const { question, memberIds, boardId } = req.body as { question?: string; memberIds?: string[]; boardId?: string };
       if (!question || typeof question !== 'string' || !question.trim()) {
         res.status(400).json({ error: 'question is required' });
         return;
@@ -1328,6 +1516,19 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
       if (selected.length === 0) {
         res.status(400).json({ error: 'No active members selected' });
         return;
+      }
+
+      // Board snapshot (Phase 7): when the picker convened a board, stamp its
+      // id/name onto the discussion. Enforce the per-discussion cap.
+      let board: Board | undefined;
+      if (boardId) {
+        board = (await opts.storage.loadBoards()).find((b) => b.id === boardId);
+        if (board && selected.length > settings.maxMembersPerDiscussion) {
+          res.status(400).json({
+            error: `Board "${board.name}" has ${selected.length} members; max per discussion is ${settings.maxMembersPerDiscussion}.`,
+          });
+          return;
+        }
       }
 
       // Confirm agent files exist for the selected members
@@ -1355,6 +1556,8 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
         settings,
         storage: opts.storage,
         projectRoot,
+        boardId: board?.id,
+        boardName: board?.name,
         onProgress: broadcastRoundProgress('', selected),
       })
         .then((result) => {
@@ -1525,6 +1728,8 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
         targetType?: FollowUpTargetType;
         selectedMemberId?: string;
         selectedMemberIds?: string[];
+        addMemberIds?: string[];
+        catchUpMode?: 'full' | 'summary' | 'fresh';
       };
       if (!body.question || typeof body.question !== 'string' || !body.question.trim()) {
         res.status(400).json({ error: 'question is required' });
@@ -1541,6 +1746,11 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
       }
       if (targetType === 'subset' && (!Array.isArray(body.selectedMemberIds) || body.selectedMemberIds.length < 2)) {
         res.status(400).json({ error: 'targetType=subset requires at least 2 selectedMemberIds' });
+        return;
+      }
+      const catchUpMode = body.catchUpMode ?? 'full';
+      if (!['full', 'summary', 'fresh'].includes(catchUpMode)) {
+        res.status(400).json({ error: `invalid catchUpMode "${catchUpMode}"` });
         return;
       }
 
@@ -1562,31 +1772,53 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
 
       const settings = await opts.storage.loadSettings();
       const allMembers = await opts.storage.loadBoardMembers();
+      const activeAll = allMembers.filter((m) => m.isActive);
       const allowedIds = new Set(discussion.selectedMemberIds ?? allMembers.map((m) => m.id));
-      const candidatePool = allMembers.filter((m) => allowedIds.has(m.id) && m.isActive);
-      if (candidatePool.length === 0) {
+      const existingPool = activeAll.filter((m) => allowedIds.has(m.id));
+      if (existingPool.length === 0) {
         res.status(400).json({ error: "No active members from this discussion's original board remain." });
         return;
       }
 
+      // ---- Validate members to add (Phase 7, Chunk 5) ----
+      const addMemberIds = Array.isArray(body.addMemberIds) ? [...new Set(body.addMemberIds.filter(Boolean))] : [];
+      const addMembers: AdvisoryBoardMember[] = [];
+      for (const id of addMemberIds) {
+        const m = activeAll.find((x) => x.id === id);
+        if (!m) {
+          res.status(400).json({ error: `Cannot add member ${id}: not an active member.` });
+          return;
+        }
+        if (allowedIds.has(id)) {
+          res.status(400).json({ error: `${m.name} is already part of this discussion.` });
+          return;
+        }
+        addMembers.push(m);
+      }
+      const effectivePool = [...existingPool, ...addMembers];
+
       // Resolve which members will actually spawn (so we can verify their files).
-      let willSpawn = candidatePool;
+      let willSpawn = effectivePool;
       if (targetType === 'specific') {
-        willSpawn = candidatePool.filter((m) => m.id === body.selectedMemberId);
+        willSpawn = effectivePool.filter((m) => m.id === body.selectedMemberId);
         if (willSpawn.length === 0) {
           res.status(400).json({ error: `Member ${body.selectedMemberId} is not part of this discussion.` });
           return;
         }
       } else if (targetType === 'subset') {
         const set = new Set(body.selectedMemberIds);
-        willSpawn = candidatePool.filter((m) => set.has(m.id));
+        willSpawn = effectivePool.filter((m) => set.has(m.id));
         if (willSpawn.length === 0) {
           res.status(400).json({ error: 'None of the selected members are part of this discussion.' });
           return;
         }
       }
 
+      // Verify agent files only for EXISTING members; the engine emits files for
+      // newcomers if missing.
+      const addIdSet = new Set(addMembers.map((m) => m.id));
       const missing = willSpawn
+        .filter((m) => !addIdSet.has(m.id))
         .map((m) => ({ name: m.name, slug: memberAgentSlug(m.name) }))
         .filter((m) => !existsSync(join(projectRoot, '.claude', 'agents', `${m.slug}.md`)));
       if (missing.length > 0) {
@@ -1600,21 +1832,36 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
 
       const fromRoundNumber = (discussion.rounds[discussion.rounds.length - 1]?.roundNumber ?? 0) + 1;
       logger.info(
-        `[ui] follow-up on discussion ${discussion.id.slice(0, 8)} (target=${targetType}, members=${willSpawn.length})`,
+        `[ui] follow-up on discussion ${discussion.id.slice(0, 8)} (target=${targetType}, members=${willSpawn.length}, add=${addMembers.length})`,
       );
       addFollowUpQuestion({
         discussion,
         question: body.question.trim(),
-        members: candidatePool,
+        members: activeAll,
         settings,
         storage: opts.storage,
         projectRoot,
         targetType,
         selectedMemberId: body.selectedMemberId,
         selectedMemberIds: body.selectedMemberIds,
+        addMemberIds: addMemberIds.length > 0 ? addMemberIds : undefined,
+        catchUpMode,
         onProgress: broadcastRoundProgress(discussion.id, willSpawn),
       })
         .then((result) => {
+          // Announce mid-discussion joins (member_joined) from the new round's snapshot.
+          const newRound = result.discussion.rounds.find((r) => r.roundNumber === fromRoundNumber);
+          for (const id of newRound?.addedMemberIds ?? []) {
+            const p = result.discussion.participants?.find((x) => x.memberId === id);
+            broadcast({
+              type: 'member_joined',
+              discussionId: result.discussion.id,
+              memberId: id,
+              name: p?.name ?? id,
+              joinedAtRound: p?.joinedAtRound ?? fromRoundNumber,
+              catchUpMode: p?.catchUpMode ?? catchUpMode,
+            });
+          }
           broadcastFinalDiscussion(result.discussion, fromRoundNumber, {
             costUsd: result.totalCostUsd,
             durationMs: result.totalDurationMs,

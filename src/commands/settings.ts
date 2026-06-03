@@ -26,6 +26,7 @@ const ALLOWED_KEYS = [
   'fastModel',
   'perCallBudgetUsd',
   'locale',
+  'activeBoardId',
 ] as const satisfies readonly (keyof AppSettings)[];
 
 type AllowedKey = (typeof ALLOWED_KEYS)[number];
@@ -93,6 +94,7 @@ function prettySettings(s: AppSettings): string {
     ['autoSummarization', String(s.autoSummarization)],
     ['perCallBudgetUsd', s.perCallBudgetUsd != null ? String(s.perCallBudgetUsd) : '(unset)'],
     ['locale', s.locale ?? '(unset)'],
+    ['activeBoardId', s.activeBoardId ?? '(unset — all active members; set via `aab board use`)'],
   ];
   const width = Math.max(...rows.map(([k]) => k.length));
   return rows.map(([k, v]) => `  ${c.bold(k.padEnd(width))}  ${v}`).join('\n');

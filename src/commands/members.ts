@@ -26,6 +26,7 @@ import { generateUUID, nowIso } from '../core/utils.js';
 import { UserError } from '../core/errors.js';
 import { enhancePersona, type EnhancementType } from '../core/members/ai-enhancer.js';
 import { generateVoiceGuide } from '../core/members/voice-guide.js';
+import { pruneMemberFromBoards } from '../core/boards/prune-member-from-boards.js';
 import type { AdvisoryBoardMember } from '../storage/types.js';
 
 const DEFAULT_TOOL_PALETTE = ['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'] as const;
@@ -365,6 +366,8 @@ export function registerMembersCommand(program: Command): void {
           }
         }
         await ctx.storage.deleteBoardMember(member.id);
+        // Cascade-prune the member from every board's roster (Phase 7 orphan fix).
+        const prune = await pruneMemberFromBoards(ctx.storage, member.id);
         const path = memberAgentPath(memberAgentSlug(member.name), process.cwd());
         let removedAgent = false;
         if (existsSync(path)) {
@@ -377,12 +380,29 @@ export function registerMembersCommand(program: Command): void {
         }
         if (ctx.json) {
           process.stdout.write(
-            JSON.stringify({ deleted: { id: member.id, name: member.name }, removedAgent }, null, 2) + '\n',
+            JSON.stringify(
+              {
+                deleted: { id: member.id, name: member.name },
+                removedAgent,
+                affectedBoards: prune.affected.map((b) => ({ id: b.id, name: b.name, memberCount: b.memberIds.length })),
+                emptiedBoards: prune.emptied.map((b) => ({ id: b.id, name: b.name })),
+              },
+              null,
+              2,
+            ) + '\n',
           );
           return;
         }
         process.stdout.write(`${c.ok('✓')} Deleted ${member.name}\n`);
         if (removedAgent) process.stdout.write(c.hint(`  → removed ${path}\n`));
+        if (prune.affected.length > 0) {
+          process.stdout.write(
+            c.warn(`  ! pruned from ${prune.affected.length} board(s): ${prune.affected.map((b) => b.name).join(', ')}\n`),
+          );
+        }
+        for (const b of prune.emptied) {
+          process.stdout.write(c.warn(`  ! board "${b.name}" is now empty — add members or delete it.\n`));
+        }
       } finally {
         await closeContext(ctx);
       }

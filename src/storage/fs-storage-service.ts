@@ -113,21 +113,55 @@ export class FsStorageService implements StorageService {
 
   async saveBoard(board: Board): Promise<void> {
     const all = await this.loadBoards();
-    all.push(board);
-    writeJsonAtomic(this.p.boards, all);
+    await this.validateBoardForPersist(board, all, false);
+    all.push({ ...board, memberIds: [...new Set(board.memberIds)] });
+    writeJsonAtomic(this.p.boards, all, { snapshotDir: this.p.snapshots });
   }
 
   async updateBoard(board: Board): Promise<void> {
     const all = await this.loadBoards();
     const idx = all.findIndex((b) => b.id === board.id);
-    if (idx === -1) all.push(board);
-    else all[idx] = { ...board, updatedAt: nowIso() };
-    writeJsonAtomic(this.p.boards, all);
+    await this.validateBoardForPersist(board, all, true);
+    const next: Board = { ...board, memberIds: [...new Set(board.memberIds)], updatedAt: nowIso() };
+    if (idx === -1) all.push(next);
+    else all[idx] = next;
+    writeJsonAtomic(this.p.boards, all, { snapshotDir: this.p.snapshots });
   }
 
   async deleteBoard(id: string): Promise<void> {
     const all = await this.loadBoards();
-    writeJsonAtomic(this.p.boards, all.filter((b) => b.id !== id));
+    writeJsonAtomic(this.p.boards, all.filter((b) => b.id !== id), { snapshotDir: this.p.snapshots });
+  }
+
+  /**
+   * Defensive persistence validation for boards: name bounds, description
+   * bounds, slug uniqueness, and member existence. Empty `memberIds` is
+   * permitted (a cascade-prune can empty a board — see
+   * `pruneMemberFromBoards`); the ≥1-member rule is enforced at the
+   * command/REST layer via `validateBoardFields`.
+   */
+  private async validateBoardForPersist(board: Board, all: Board[], isUpdate: boolean): Promise<void> {
+    const name = board.name?.trim() ?? '';
+    if (name.length < 1) throw new Error('Board name is required.');
+    if (name.length > 100) throw new Error('Board name must be ≤ 100 characters.');
+    if (board.description && board.description.length > 500) {
+      throw new Error('Board description must be ≤ 500 characters.');
+    }
+    if (!board.slug || !/^[a-z0-9-]+$/.test(board.slug)) {
+      throw new Error(`Board slug "${board.slug}" is invalid (expected kebab-case).`);
+    }
+    const slugClash = all.some((b) => b.id !== board.id && b.slug === board.slug);
+    if (slugClash) throw new Error(`Board slug "${board.slug}" is already in use.`);
+    const nameClash = all.some(
+      (b) => b.id !== board.id && b.name.trim().toLowerCase() === name.toLowerCase(),
+    );
+    if (nameClash) throw new Error(`A board named "${name}" already exists.`);
+
+    const members = await this.loadBoardMembers();
+    const known = new Set(members.map((m) => m.id));
+    const missing = [...new Set(board.memberIds)].filter((id) => !known.has(id));
+    if (missing.length > 0) throw new Error(`Board references unknown member id(s): ${missing.join(', ')}`);
+    void isUpdate;
   }
 
   // ============================================================

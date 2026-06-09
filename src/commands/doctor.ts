@@ -115,7 +115,7 @@ export function registerDoctorCommand(program: Command): void {
             activeMembers.length === 0
               ? 'no active members'
               : missing.length === 0
-                ? `${activeMembers.length} agent file(s) at ${projectRoot}\\.claude\\agents\\`
+                ? `${activeMembers.length} agent file(s) at ${join(projectRoot, '.claude', 'agents')}`
                 : `missing: ${missing.join(', ')} — run \`aab members sync-agents\``,
         });
 

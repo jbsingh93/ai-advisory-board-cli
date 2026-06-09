@@ -44,7 +44,9 @@ export function isAabGenerated(path: string): boolean {
     const raw = readFileSync(path, 'utf8');
     return raw.includes(GENERATED_MARKER);
   } catch {
-    return true;
+    // The file exists but can't be read (permissions, transient FS error) —
+    // we can't prove it's ours, so protect it like a hand-edited file.
+    return false;
   }
 }
 

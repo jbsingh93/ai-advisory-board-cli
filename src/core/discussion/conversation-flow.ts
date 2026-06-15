@@ -27,7 +27,8 @@ import {
 } from './orchestrator.js';
 import { summarizeDiscussion } from './summarize.js';
 import { resolveWorkspace, paths } from '../../storage/paths.js';
-import { ingestDiscussionRaw, ingestPaste } from '../knowledge/ingest.js';
+import { ingestDiscussionRaw } from '../knowledge/ingest.js';
+import { maybeEnqueueUserInput } from '../knowledge/ingest-queue.js';
 import { memberAgentSlug, memberAgentPath, emitMemberAgentFile } from '../../agents/emit-member-agent.js';
 import { ensureParticipants } from './participants.js';
 import { buildCatchUpContext, renderSummaryText, type CatchUpMode } from './catch-up.js';
@@ -240,6 +241,16 @@ export async function startDiscussion(opts: StartDiscussionOptions): Promise<Sta
   opts.onProgress?.({ stage: 'finalizing', round: 1 });
   await opts.storage.saveDiscussion(discussion);
 
+  // Phase 8: ingest the user's opening question as net-new user facts.
+  maybeEnqueueUserInput({
+    text: opts.question,
+    kind: 'initial_question',
+    settings: opts.settings,
+    storage: opts.storage,
+    discussionId: discussion.id,
+    eventId: initialUserResponse.id,
+  });
+
   // Phase 1.5: auto-ingest into the Knowledge Wiki on conclude.
   await maybeAutoIngestOnConclude(discussion, activeMembers, opts.settings, opts.storage);
 
@@ -303,33 +314,6 @@ async function maybeAutoIngestOnConclude(
     await ingestDiscussionRaw({ discussion, workspace, settings, storage });
   } catch (error) {
     logger.warn('[auto-ingest] discussion ingest failed (non-blocking):', error);
-  }
-}
-
-/**
- * Auto-ingest a user's HITL response as a paste-style raw input. Same
- * non-blocking semantics as discussion ingest.
- * Reference: `docs/development/KNOWLEDGE_WIKI.md` §16 ("User HITL responses also get
- * auto-ingested").
- */
-async function maybeAutoIngestUserResponse(
-  content: string,
-  settings: AppSettings,
-  storage: StorageService,
-): Promise<void> {
-  if (settings.knowledgeWiki?.enabled === false) return;
-  if (settings.knowledgeWiki?.autoIngestUserResponses === false) return;
-  const trimmed = content.trim();
-  if (trimmed.length < 40) return; // tiny replies aren't worth a wiki entry
-  try {
-    const root = storage.getWorkspaceRoot();
-    const p = paths(root);
-    if (!existsSync(p.wiki) || !existsSync(p.wikiKnowledge)) return;
-    const workspace = resolveWorkspace({ override: storage.getWorkspaceId() });
-    workspace.root = root;
-    await ingestPaste({ text: trimmed, workspace, settings });
-  } catch (error) {
-    logger.warn('[auto-ingest] user-response ingest failed (non-blocking):', error);
   }
 }
 
@@ -650,9 +634,17 @@ export async function respondToUserRequest(
   // doesn't leave the discussion stuck "awaiting input" forever.
   await opts.storage.saveDiscussion(discussion);
 
-  // Phase 1.5: auto-ingest the user's HITL reply as a paste-style raw input
-  // (fire-and-forget so a wiki hiccup never blocks the discussion).
-  void maybeAutoIngestUserResponse(trimmed, opts.settings, opts.storage);
+  // Phase 8: ingest the user's HITL reply as net-new user facts (serialized,
+  // fire-and-forget so a wiki hiccup never blocks the discussion). Supersedes
+  // the old paste-style `maybeAutoIngestUserResponse` path.
+  maybeEnqueueUserInput({
+    text: trimmed,
+    kind: 'hitl_response',
+    settings: opts.settings,
+    storage: opts.storage,
+    discussionId: discussion.id,
+    eventId: userResponse.id,
+  });
 
   // Drive the next round, threading the user's reply as a follow-up question.
   // Skip the pre-round gate — the orchestrator just asked for this exact
@@ -1050,6 +1042,16 @@ export async function addFollowUpQuestion(
 
   opts.onProgress?.({ stage: 'finalizing', round: nextRoundNumber });
   await opts.storage.saveDiscussion(discussion);
+
+  // Phase 8: ingest the user's follow-up question as net-new user facts.
+  maybeEnqueueUserInput({
+    text: trimmed,
+    kind: 'follow_up',
+    settings: opts.settings,
+    storage: opts.storage,
+    discussionId: discussion.id,
+    eventId: userResponse.id,
+  });
 
   // Phase 1.5: auto-ingest into the Knowledge Wiki on conclude.
   if (concluded) {

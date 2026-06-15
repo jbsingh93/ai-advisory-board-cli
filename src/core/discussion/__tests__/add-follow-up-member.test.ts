@@ -42,6 +42,16 @@ vi.mock('node:fs', async (importActual) => {
   return { ...actual, existsSync: () => true };
 });
 
+// The engine fires fire-and-forget user-fact ingests after each round (Phase 8).
+// This test mocks `node:fs` existsSync→true, which would otherwise defeat the
+// queue's wiki-dirs gate and spawn a real background ingest against the fake
+// workspace — leaking past the test and hanging the vitest worker. Stub the
+// queue to a no-op; the ingest pipeline has its own dedicated tests.
+vi.mock('../../knowledge/ingest-queue.js', () => ({
+  maybeEnqueueUserInput: () => undefined,
+  drainUserFactQueue: async () => undefined,
+}));
+
 import { addFollowUpQuestion } from '../conversation-flow.js';
 import type {
   AdvisoryBoardMember,

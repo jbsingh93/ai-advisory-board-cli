@@ -2296,3 +2296,50 @@ Per-user RLS / `user_id` scoping (replaced by workspace scope), Supabase `update
 ## 10.6 Net effect
 
 `aab` gains the panel-curation ergonomics of the hosted sage-council app (named boards, one-step convening, active-board switching) and goes beyond the follow-up baseline by letting a user pull a fresh advisor into a live discussion with a deliberate context-catch-up choice — all on the filesystem-first, reference-not-copy model that keeps historical transcripts intact no matter how members and boards churn.
+
+---
+
+# Part 11 — Continuous user-input wiki ingest
+
+> **Full context, rationale, rejected approaches, open questions, and the file-change manifest live in `docs/development/USER_INPUT_INGEST.md` — that is the canonical document for this feature.** This Part is the design-level summary; `CHECKLIST.md` Phase 8 is the deliverable list. Extends `KNOWLEDGE_WIKI.md` §15 (ingest) and §16 (auto-ingest hook).
+
+## 11.1 Goal in one sentence
+
+Every word the user types into the system — the initial question, every follow-up, every HITL/board-question response, and every 1:1 sparring message — is handed to a wiki-ingest agent that compares it against the existing wiki and merges in only what is genuinely **new or changed**, never duplicating and never skipping a real update.
+
+## 11.2 The problem with what we have
+
+The wiki today only learns the user's voice as a side effect: whole transcripts on conclude (`autoIngestDiscussions`) and HITL replies ≥40 chars (`autoIngestUserResponses`). The initial question and follow-ups are never ingested standalone, and 1:1 sparring touches the wiki **nowhere**. The highest-signal source — the user's own first-person words — is captured partially and mixed with advisor opinions.
+
+## 11.3 The locked dedup principle (and the approach we rejected)
+
+**Rejected:** any cheap deterministic pre-filter (normalized-content hash, or slug/keyword overlap against the slug-map) that skips "redundant" utterances. **Why:** the user can re-mention a known entity (their company) *while bringing new nuance or updated facts in the same sentence*; a lexical/slug gate matches on the entity, not on whether the fact is new, so it would silently discard the user's most valuable input — the updates. Redundancy is a **semantic** judgment that only an LLM which has read the current wiki can make.
+
+**Therefore:** there is no knowledge-level deterministic skip. Every input always goes to the agent. Dedup happens **per extracted fact, inside the agent, after it reads the wiki** — create if new, merge + bump `updated:` if changed, flag `^[ambiguous]` if conflicting, skip if already fully captured. "Company mentioned ten times" collapses because nine mentions yield zero page changes and the tenth (carrying real new info) yields one targeted update — never a duplicate page.
+
+## 11.4 Why not reuse the document-ingest pipeline
+
+`runIngestCore`/`buildIngestPrompt` (`src/core/knowledge/ingest.ts`, `src/core/prompts/skill-ingest.ts`) **always create one `wiki/sources/<slug>.md` audit page per source** (skill-ingest.ts step 5). Routing every utterance through it would create a source page per mention even when nothing is new — exactly the bloat we're avoiding. So per-utterance ingest gets its own path with **no mandatory source page** and an empty result as a valid outcome. (Entity/concept dedup is already the document agent's design intent — it's the unconditional audit page that's the problem.)
+
+## 11.5 Do we need a Claude Code hook? No.
+
+A settings.json hook fires on the *harness* lifecycle and can't see `aab`'s "user submitted an utterance" events, and would be invisible to the web UI. Ingestion is already invoked programmatically inside the engine (`void maybeAutoIngestUserResponse(...)`, `conversation-flow.ts:655`). "Forcing" the ingest just means calling the new path inline at the four input points. No hook.
+
+## 11.6 The four pieces (build in this order)
+
+1. **Merge prompt** — `src/core/prompts/wiki-merge.ts` → `buildUserFactMergePrompt`. Frames the input as pure first-person user voice; mandates reading the slug-map + candidate pages *before* writing; per-fact create/update/skip; merge-not-append; conflict → newer-wins + `^[ambiguous]`; respect `userEdited: true`; reuse skill-ingest's frontmatter/wiki-link/secrets contracts; empty result allowed.
+2. **Ingest function** — `src/core/knowledge/ingest-user-facts.ts` → `ingestUserFacts({ text, kind, discussionId?, sparringSessionId?, workspace, settings, storage? })`. Mirrors `runIngestCore` plumbing but: no mandatory source page, update-biased, `maxTurns ~8`, haiku. New manifest `sourceType: 'user-input'`.
+3. **Serialized queue** — `src/core/knowledge/ingest-queue.ts`. Per-workspace, drains one ingest at a time (so concurrent ingests don't race the `wiki/index.md` slug-map rebuild + `.manifest.json` append), debounces/coalesces bursts into one merge pass, fired async after persistence. Mandatory — naive fan-out fire-and-forget would race and lose pages.
+4. **Call-site wiring** — enqueue in `conversation-flow.ts` (initial question `~:138/241`, follow-up `~:1002/1052`, replace HITL ingest `:655`) and `sparring-service.ts` (`sendSparringMessage`). Behind new flag `autoIngestUserInputs` (default true) + existing `knowledgeWiki.enabled` + wiki-dirs-exist guards.
+
+## 11.7 Reconcile with conclude-time transcript ingest
+
+Per-utterance ingest now owns the user's raw facts, so conclude-time `ingestDiscussionRaw` would double-process them (manifest hash dedup won't catch it — different hash). Re-scope conclude-time ingest to **advisor synthesis / consensus / decisions** (driven by the `discussion.summary` payload) so the two don't fight over the same entity pages.
+
+## 11.8 Settings
+
+Add `autoIngestUserInputs: boolean` (default `true`) to `KnowledgeWikiSettings` (`src/storage/types.ts:403`) + `DEFAULT_KNOWLEDGE_WIKI_SETTINGS` (`:420`). Master toggle for the whole feature. Open: whether `autoIngestUserResponses` is subsumed (HITL becomes one `kind`) or kept independent — see `USER_INPUT_INGEST.md` §7.4.
+
+## 11.9 Net effect
+
+The wiki becomes genuine compounding memory: the more the user talks to their board — in any surface — the more the board knows them, with no duplication and no lost updates, and no extra work for the user.

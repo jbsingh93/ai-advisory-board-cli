@@ -6,10 +6,13 @@ export default defineConfig({
     environment: 'node',
     globals: false,
     // A few integration-style tests do real work (subprocess skill builds,
-    // a live PC recon scan) and run 3–9s locally. On slower CI runners under
-    // shard parallelism they exceed Vitest's default 5s per-test timeout, so
-    // give them generous headroom. Fast unit tests never approach this.
-    testTimeout: 30000,
-    hookTimeout: 30000,
+    // a live PC recon scan). They run 3–9s locally but 25–31s on slower CI
+    // runners (ubuntu/windows) under shard parallelism — enough to trip the
+    // old 30s per-test ceiling and, on a blocked worker, Vitest's internal
+    // "onTaskUpdate" RPC timeout. Give them generous headroom; fast unit tests
+    // never approach this. (See PR #34 / #33 CI failures, 2026-06-15.)
+    testTimeout: 60000,
+    hookTimeout: 60000,
+    teardownTimeout: 60000,
   },
 });

@@ -898,6 +898,21 @@ if (settings.knowledgeWiki?.autoIngestDiscussions !== false) {
 
 **User HITL responses also get auto-ingested.** Settings `knowledgeWiki.autoIngestUserResponses: true` (default true) — when the user answers an orchestrator clarification (`aab discuss respond`), the response text is treated as a paste-style raw input and ingested. This is how the wiki learns the user's stated preferences and corrections over time.
 
+### 16.1 Continuous user-input ingest (Phase 8 — superset of the HITL path)
+
+> **Implemented.** Full design + rationale: `docs/development/USER_INPUT_INGEST.md`; plan: `PLAN.md` Part 11. This generalises the HITL-response ingest above to **every** user utterance.
+
+Settings `knowledgeWiki.autoIngestUserInputs: true` (default true) makes the engine ingest the user's own words at **all four input points** — the initial question (`discuss start`), follow-ups (`discuss follow-up`), HITL/board responses (`discuss respond`), and 1:1 sparring messages (`discuss spar`) — through a **dedicated user-fact merge agent** (`src/core/knowledge/ingest-user-facts.ts` + `src/core/prompts/wiki-merge.ts`), distinct from the document-ingest pipeline.
+
+Key differences from document ingest:
+
+- **No deterministic dedup gate.** A re-mention of a known entity (the user's company) can carry brand-new nuance, so a hash/slug skip would silently throw away real updates. Every utterance always reaches the agent; dedup is **semantic and per-fact** — create-if-new / merge-if-changed (bump `updated:`, flag conflicts with `^[ambiguous]`) / skip-if-known.
+- **No mandatory source page.** When the utterance adds nothing new, the agent writes **nothing** (only a `wiki/log.md` line + a manifest entry with empty page arrays + the raw capture under `raw/user-inputs/`). This is what prevents wiki bloat from repeated mentions — the redundancy bug the document pipeline's always-on source page would cause.
+- **Serialized + coalesced.** All four points enqueue into a per-workspace queue (`src/core/knowledge/ingest-queue.ts`) that drains one ingest at a time (so concurrent ingests never race the slug-map rebuild + manifest append) and coalesces a burst for the same (discussion, kind) into one merge pass. The CLI flushes the queue in `closeContext` before releasing the workspace lock; the long-lived web server drains in the background.
+- **Conclude-time reconciliation.** When `autoIngestUserInputs` is on, the conclude-time transcript ingest (§16) is told the user's raw facts are already captured and to focus on **advisor synthesis / consensus / decisions**, so the two paths don't double-process the user's voice (`skill-ingest.ts` `userFactsAlreadyIngested` flag).
+
+`autoIngestUserInputs` supersedes `autoIngestUserResponses` for HITL replies (the HITL reply is now just one `kind` among four; the old 40-char paste path is removed).
+
 ---
 
 ## 17. CLI surface
@@ -1201,7 +1216,9 @@ Add to `AppSettings` (`src/storage/types.ts:300`) under a new `knowledgeWiki` na
 knowledgeWiki: {
   enabled: boolean;                          // default: true
   autoIngestDiscussions: boolean;            // default: true
-  autoIngestUserResponses: boolean;          // default: true (aab discuss respond bodies → raw/pasted/)
+  autoIngestUserResponses: boolean;          // default: true (legacy HITL paste path; superseded by autoIngestUserInputs)
+  autoIngestUserInputs: boolean;             // default: true (Phase 8 — every user utterance → user-fact merge agent;
+                                             //   see §16.1 and docs/development/USER_INPUT_INGEST.md)
   ingestModel: ClaudeModelAlias;             // default: 'haiku' (= settings.fastModel)
   queryModel: ClaudeModelAlias;              // default: 'inherit' (= settings.primaryModel)
   lintStaleDays: number;                     // default: 90

@@ -18,6 +18,15 @@ export interface IngestPromptInput {
    *  cheaply (paste, summary). When provided, the agent uses this instead of
    *  re-reading the file. */
   inlineBody?: string;
+  /**
+   * Phase 8 reconciliation: when true, the user's own raw facts from this
+   * source have already been captured per-utterance by the user-fact merge
+   * agent, so this (transcript) ingest should focus on ADVISOR synthesis —
+   * consensus, disagreements, and decisions — rather than re-extracting the
+   * user's facts. Set by `ingestDiscussionRaw` when `autoIngestUserInputs` is
+   * on. See `docs/development/USER_INPUT_INGEST.md` §5.7.
+   */
+  userFactsAlreadyIngested?: boolean;
 }
 
 export function buildIngestPrompt(input: IngestPromptInput): string {
@@ -58,6 +67,11 @@ export function buildIngestPrompt(input: IngestPromptInput): string {
   lines.push('Capture these as `entity` pages (the user, their company, key people/products) and `concept`/`decision` pages (their goals, strategies, choices). Advisor analysis is still worth filing as `source-summary`/`concept` pages, but user facts come first.');
   lines.push('**Do not duplicate** what the wiki already covers — if a page exists, update/extend it rather than creating a near-duplicate. If the source adds nothing new about the user, it is fine to produce only the audit-trail source page (step 5).');
   lines.push('');
+  if (input.userFactsAlreadyIngested) {
+    lines.push('## IMPORTANT — the user\'s own facts are already captured');
+    lines.push('Every word the **user** spoke in this discussion (their question, follow-ups, and replies) has ALREADY been ingested into the wiki separately, as it was said. So for THIS transcript, do not re-extract the user\'s raw facts. Instead prioritise what only the *advisors* and the *board as a whole* produced: the **consensus** they reached, their **disagreements**, the **decisions/recommendations** the board converged on, and any notable advisor insight worth a `concept`/`source-summary`/`decision` page. Only touch a user-fact page if the discussion revealed something about the user that their own words did not already state. This avoids double-processing the user\'s voice.');
+    lines.push('');
+  }
   lines.push('## Your procedure (follow exactly)');
   lines.push('1. Read the source at the path above (use the `Read` tool, or use the inlined content above if present).');
   lines.push('2. Read the wiki schema above and the wiki index above (the slug-map section is your resolver).');

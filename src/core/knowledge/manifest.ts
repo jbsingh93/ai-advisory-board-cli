@@ -17,7 +17,10 @@ export type ManifestSourceType =
   | 'pasted'
   | 'discussion'
   | 'summary'
-  | 'discussion-rerun';
+  | 'discussion-rerun'
+  // Phase 8 — a single user utterance ingested via the user-fact merge agent
+  // (initial question / follow-up / HITL response / sparring message).
+  | 'user-input';
 
 export interface ManifestEntry {
   id: string;

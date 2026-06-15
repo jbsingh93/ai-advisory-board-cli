@@ -470,6 +470,7 @@ export function registerActionsCommand(program: Command): void {
     .option('--planner-tier <tier>', 'cap ambition: minimal | standard | maximalist (default maximalist)')
     .option('--planner-no-web', 'skip the web research phase')
     .option('--planner-no-pc-scan', 'skip the PC scan phase')
+    .option('--planner-deep-scan', 'crawl the whole disk for MCP servers + skills (slower; default off)')
     .option('--planner-no-wiki', 'skip the wiki recon phase')
     .option('--out <path>', 'save proposal markdown to <path>')
     .option('--yes', 'auto-accept the Planner proposal')
@@ -477,6 +478,7 @@ export function registerActionsCommand(program: Command): void {
       plannerTier?: string;
       plannerNoWeb?: boolean;
       plannerNoPcScan?: boolean;
+      plannerDeepScan?: boolean;
       plannerNoWiki?: boolean;
       out?: string;
       yes?: boolean;
@@ -500,6 +502,7 @@ export function registerActionsCommand(program: Command): void {
             skipPcScan: opts.plannerNoPcScan,
             skipWiki: opts.plannerNoWiki,
             skipWeb: opts.plannerNoWeb,
+            pcDeepScan: opts.plannerDeepScan,
             planOnly: true,
             yes: opts.yes,
             projectRoot: process.cwd(),
@@ -550,6 +553,7 @@ export function registerActionsCommand(program: Command): void {
     .option('--planner-tier <tier>', 'cap ambition: minimal | standard | maximalist')
     .option('--planner-no-web', 'skip the web research phase')
     .option('--planner-no-pc-scan', 'skip the PC scan phase')
+    .option('--planner-deep-scan', 'crawl the whole disk for MCP servers + skills (slower; default off)')
     .option('--planner-no-wiki', 'skip the wiki recon phase')
     .option('--skill-name <name>', 'override auto-derived skill name')
     .option('--scope <scope>', 'project | user (default project)', 'project')
@@ -562,6 +566,7 @@ export function registerActionsCommand(program: Command): void {
       plannerTier?: string;
       plannerNoWeb?: boolean;
       plannerNoPcScan?: boolean;
+      plannerDeepScan?: boolean;
       plannerNoWiki?: boolean;
       skillName?: string;
       scope?: string;
@@ -591,6 +596,7 @@ export function registerActionsCommand(program: Command): void {
             skipPcScan: opts.plannerNoPcScan,
             skipWiki: opts.plannerNoWiki,
             skipWeb: opts.plannerNoWeb,
+            pcDeepScan: opts.plannerDeepScan,
             skillName: opts.skillName,
             scope: opts.scope === 'user' ? 'user' : 'project',
             noInstall: opts.install === false,

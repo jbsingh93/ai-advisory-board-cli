@@ -43,7 +43,10 @@ export interface ReconOptions {
   skipWeb?: boolean;
   /**
    * Run the full-disk crawl during the PC scan (finds MCP/skills outside known
-   * config stores). Blocks for several seconds — default ON for thoroughness.
+   * config stores). **Opt-in (default off)** — it blocks synchronously for up to
+   * `pcDiskBudgetMs`, which would otherwise freeze every plan/solve and starve
+   * test workers. Layers 1+2 of the scan (config stores + known-project sweep)
+   * are already comprehensive and fast; the crawl is for the long tail.
    */
   pcDeepScan?: boolean;
   /** Wall-clock budget for the deep disk crawl. Default 12_000ms. */
@@ -74,7 +77,7 @@ export async function runRecon(opts: ReconOptions): Promise<ReconTriple> {
   if (opts.skipPcScan) {
     pc = emptyPc('skipped via --planner-no-pc-scan');
   } else {
-    const deepScan = opts.pcDeepScan !== false; // default ON
+    const deepScan = opts.pcDeepScan === true; // opt-in (blocks; see ReconOptions)
     if (deepScan) opts.onPhaseProgress?.('pc-scan', 'crawling disk for MCP servers + skills…');
     try {
       pc = scanPc({ projectRoot: opts.workspace.root, deepScan, diskBudgetMs: opts.pcDiskBudgetMs });

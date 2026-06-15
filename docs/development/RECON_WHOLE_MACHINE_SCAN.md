@@ -159,19 +159,26 @@ quickPcScanProbe(opts?): {
 ```
 
 ### Call sites
-- **Planner recon** (`orchestrator.ts`): `runRecon` now defaults `pcDeepScan: true`
-  (override with `ReconOptions.pcDeepScan: false`; budget via `pcDiskBudgetMs`). It
-  fires an `onPhaseProgress('pc-scan', 'crawling disk…')` heartbeat and the
-  pc-scan done summary now includes the skill count.
+- **Planner recon** (`orchestrator.ts`): `runRecon` exposes `pcDeepScan`
+  (**opt-in, default off** — `const deepScan = opts.pcDeepScan === true`) +
+  `pcDiskBudgetMs`. When on, it fires an `onPhaseProgress('pc-scan', 'crawling
+  disk…')` heartbeat. The pc-scan done summary always includes the skill count.
+- **CLI flag**: `aab actions plan|solve --planner-deep-scan` turns the crawl on
+  (threaded `actions.ts → solve-orchestrator.ts → runRecon`). The GUI
+  `/api/actions/:id/plan` accepts `plannerDeepScan` in the body. Default off
+  everywhere.
 - **`aab doctor`**: the "PC scan probe" line now reads
   `… N CLI tool(s), N MCP server(s), N skill(s), N env var(s) flagged`.
 
-> **Caveat — blocking:** `pc-scan.ts` is intentionally synchronous (injected
-> `fs`/`child_process`, no async). With `deepScan` on, `scan()` blocks for up to
-> `diskBudgetMs`. That's fine in the CLI Planner path (progress UI + parallel
-> wiki/web after it) but callers that must not block the event loop (e.g. the GUI
-> server's fast `/api/recon/environment`) should leave `deepScan` off and rely on
-> layers 1–2, which are already comprehensive.
+> **Caveat — why opt-in, not default-on:** `pc-scan.ts` is intentionally
+> synchronous (injected `fs`/`child_process`, no async). With `deepScan` on,
+> `scan()` blocks for up to `diskBudgetMs`. Defaulting it on froze every
+> plan/solve for ~12 s **and** starved the vitest worker's RPC heartbeat in CI
+> (`Error: [vitest-worker]: Timeout calling "onTaskUpdate"` — solve-orchestrator
+> tests tripled 26 s→63 s on Linux/Windows runners; macOS, being faster, still
+> passed, which is the tell-tale of a load/timing issue). Layers 1–2 are already
+> comprehensive (20 MCP / 29 skills on the reference machine with **no** crawl),
+> so the crawl is reserved for the explicit `--planner-deep-scan` opt-in.
 
 ---
 

@@ -37,8 +37,12 @@ describe('quickPcScanProbe', () => {
 });
 
 describe('scan (smoke)', () => {
+  // NOTE: these tests pass `PATH: ''` deliberately. A real PATH makes `scan`
+  // shell out `--version` to every CLI tool it finds (~80 synchronous
+  // execFileSync calls, ~15s on CI) — that blocked the vitest worker long
+  // enough to trip its `onTaskUpdate` RPC heartbeat. Keep them hermetic.
   it('produces a structurally-valid ReconResult', () => {
-    const r = scan({ envOverride: { STRIPE_KEY: 'sk_redacted', NOTION_TOKEN: 't', PATH: process.env.PATH ?? '' } });
+    const r = scan({ envOverride: { STRIPE_KEY: 'sk_redacted', NOTION_TOKEN: 't', PATH: '' } });
     expect(['win32', 'darwin', 'linux']).toContain(r.platform);
     expect(Array.isArray(r.apps)).toBe(true);
     expect(Array.isArray(r.cliTools)).toBe(true);
@@ -58,7 +62,7 @@ describe('scan (smoke)', () => {
   });
 
   it('caps apps at 200 and cli tools at 80', () => {
-    const r = scan({ envOverride: { PATH: process.env.PATH ?? '' } });
+    const r = scan({ envOverride: { PATH: '' } });
     expect(r.apps.length).toBeLessThanOrEqual(200);
     expect(r.cliTools.length).toBeLessThanOrEqual(80);
   });

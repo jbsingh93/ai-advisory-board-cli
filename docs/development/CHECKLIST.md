@@ -545,17 +545,18 @@ Live progress tracker. Each item is a concrete deliverable. Phase numbering matc
 - [x] Read-only, never-throws, no symlink-follow. Stops on wall-clock deadline (default 12 s) or 3 M-dirent budget. Prunes `PRUNE_DIR_NAMES`; always descends `DESCEND_DOTDIRS` (`.claude`/`.cursor`/`.vscode`/`.config`/`.codeium`). Truncation surfaces an **info** warning (no silent caps).
 - [x] MCP cap 500, skills cap 500; MCP dedup by name, skills dedup by dir path; both sorted.
 
-### Chunk 4 — doctor + orchestrator wiring ✅
+### Chunk 4 — doctor + orchestrator wiring + opt-in flag ✅
 
 - [x] `quickPcScanProbe` now also returns `mcpServers` + `skills` counts (config-store reads only, no disk crawl). `aab doctor` "PC scan probe" line shows `… N MCP server(s), N skill(s) …`.
-- [x] `orchestrator.runRecon` defaults `pcDeepScan: true` (override via `ReconOptions.pcDeepScan`/`pcDiskBudgetMs`), fires a `crawling disk…` heartbeat, and the pc-scan done summary now reports skill count.
+- [x] `orchestrator.runRecon` exposes `pcDeepScan` (**opt-in, default off**) + `pcDiskBudgetMs`; fires a `crawling disk…` heartbeat when on; pc-scan done summary reports skill count. Threaded `actions.ts → solve-orchestrator.ts → runRecon` behind a new `aab actions plan|solve --planner-deep-scan` flag; GUI `/api/actions/:id/plan` accepts `plannerDeepScan` in the body.
+- [x] **Default is off — and that matters.** The first push of this PR defaulted `pcDeepScan: true`, which made every plan/solve block ~12 s on a synchronous crawl **and** broke CI: solve-orchestrator tests tripled (26 s→63 s) and starved the vitest worker RPC (`Error: [vitest-worker]: Timeout calling "onTaskUpdate"`) on Linux/Windows runners (macOS, faster, still passed — the load-timing tell). Fixed by making the crawl opt-in; layers 1–2 already deliver the win without it.
 
 ### Chunk 5 — tests + live verification ✅
 
-- [x] `__tests__/pc-scan.test.ts` — added probe-field assertions (`mcpServers`/`skills`), source/scope validity + cap (≤500) checks, and a `deepScan` termination test (empty `diskRoots`, 1.5 s budget). All 28 recon tests pass; full typecheck clean.
+- [x] `__tests__/pc-scan.test.ts` — added probe-field assertions (`mcpServers`/`skills`), source/scope validity + cap (≤500) checks, and a `deepScan` termination test (empty `diskRoots`, 1.5 s budget). Made the two `scan (smoke)` tests **hermetic** (`PATH: ''`) so they no longer shell out `--version` to ~80 real binaries (~15 s of synchronous worker-blocking on CI). All recon tests pass; full typecheck clean.
 - [x] **Live verification (2026-06-15)** via `tsx` against the reporting machine: fast probe → **20 MCP, 29 skills**; `deepScan` → **24 MCP servers across 6 source kinds** (cursor / claude.ai / claude-desktop / project / windsurf / disk) + skills across all four scopes (saturated the 500 cap). Up from **1 MCP / 0 skills**. Transports now populate.
 
-> **Caveat:** `pc-scan.ts` is synchronous by design; `deepScan` blocks for up to `diskBudgetMs`. Fine in the CLI Planner path; GUI fast-path callers should keep `deepScan` off (layers 1–2 are already comprehensive).
+> **Caveat:** `pc-scan.ts` is synchronous by design; `deepScan` blocks for up to `diskBudgetMs`. That's why it's opt-in (`--planner-deep-scan`). Layers 1–2 (config stores + known-project sweep) are comprehensive and fast, so the default path never crawls.
 
 ---
 

@@ -2481,6 +2481,7 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
         plannerTier?: 'minimal' | 'standard' | 'maximalist';
         plannerNoWeb?: boolean;
         plannerNoPcScan?: boolean;
+        plannerDeepScan?: boolean;
         plannerNoWiki?: boolean;
       };
       const discussion = action.discussionId ? await opts.storage.loadDiscussionById(action.discussionId) : null;
@@ -2502,6 +2503,7 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
             skipPcScan: body.plannerNoPcScan,
             skipWiki: body.plannerNoWiki,
             skipWeb: body.plannerNoWeb,
+            pcDeepScan: body.plannerDeepScan,
             planOnly: true,
             yes: true,
             projectRoot: process.cwd(),

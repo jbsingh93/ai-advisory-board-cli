@@ -95,7 +95,7 @@ export async function startDiscussion(opts: StartDiscussionOptions): Promise<Sta
 
   const activeMembers = opts.members.filter((m) => m.isActive);
   if (activeMembers.length === 0) {
-    throw new Error('No active board members. Add or activate at least one with `aab members add`.');
+    throw new UserError('No active board members. Add or activate at least one with `aab members add`.');
   }
 
   // Skeleton discussion record
@@ -160,40 +160,44 @@ export async function startDiscussion(opts: StartDiscussionOptions): Promise<Sta
     const member = activeMembers[i]!;
     opts.onProgress?.({ stage: 'generating', memberName: member.name, index: i + 1, total: activeMembers.length });
 
-    const result = await runMember({
-      question: opts.question,
-      member,
-      roundNumber: 1,
-      previousResponsesInRound: round1.responses,
-      conversationHistory: [],
-      businessContext,
-      settings: opts.settings,
-      storage: opts.storage,
-      discussionId,
-      projectRoot: opts.projectRoot,
-      workspaceRoot: opts.storage.getWorkspaceRoot(),
-      signal: opts.signal,
-      onActivity: (a) =>
-        opts.onProgress?.({ stage: 'member_activity', memberName: member.name, ...a }),
-    });
+    try {
+      const result = await runMember({
+        question: opts.question,
+        member,
+        roundNumber: 1,
+        previousResponsesInRound: round1.responses,
+        conversationHistory: [],
+        businessContext,
+        settings: opts.settings,
+        storage: opts.storage,
+        discussionId,
+        projectRoot: opts.projectRoot,
+        workspaceRoot: opts.storage.getWorkspaceRoot(),
+        signal: opts.signal,
+        onActivity: (a) =>
+          opts.onProgress?.({ stage: 'member_activity', memberName: member.name, ...a }),
+      });
 
-    round1.responses.push(result.response);
-    discussion.responses.push(result.response);
-    discussion.totalTurns++;
-    totalCostUsd += result.costUsd;
+      round1.responses.push(result.response);
+      discussion.responses.push(result.response);
+      discussion.totalTurns++;
+      totalCostUsd += result.costUsd;
 
-    opts.onProgress?.({
-      stage: 'member_done',
-      memberName: member.name,
-      durationMs: result.durationMs,
-      costUsd: result.costUsd,
-      response: result.response,
-      roundNumber: 1,
-    });
+      opts.onProgress?.({
+        stage: 'member_done',
+        memberName: member.name,
+        durationMs: result.durationMs,
+        costUsd: result.costUsd,
+        response: result.response,
+        roundNumber: 1,
+      });
+    } catch (error) {
+      logger.warn(`[startDiscussion] ${member.name} failed (continuing with other members):`, error);
+    }
   }
 
   if (round1.responses.length === 0) {
-    throw new Error('All board members failed to respond. Check `aab doctor` and try again.');
+    throw new UserError('All board members failed to respond. Check `aab doctor` and try again.');
   }
 
   round1.completedAt = nowIso();
@@ -475,7 +479,9 @@ export async function continueDiscussion(
   };
   if (opts.userFollowUp) {
     const lastResponse = discussion.userResponses[discussion.userResponses.length - 1];
-    round.userResponse = lastResponse;
+    // The entry in userResponses was stamped against the previous round; the
+    // copy attached here belongs to the round it actually drives.
+    round.userResponse = lastResponse ? { ...lastResponse, roundNumber: nextRoundNumber } : lastResponse;
   }
 
   const conversationHistory = discussion.responses;
@@ -841,6 +847,13 @@ export async function addFollowUpQuestion(
         roundNumber: null,
       };
     }
+    // NOTE: unlike `continueDiscussion`, a `conclude` decision is deliberately
+    // NOT honored here. A follow-up is an explicit user question, so by the
+    // user's intent it is relevant by definition — the round must always run
+    // even if the orchestrator considers the prior discussion finished (the
+    // gate isn't even shown the new question; it only sees the original
+    // question + prior rounds). Resource limits are still enforced by the
+    // `totalTurns >= maxTurns` check above. Do not re-add a conclude branch.
   } catch (error) {
     logger.warn('[addFollowUpQuestion] pre-round gate failed (non-blocking):', error);
   }

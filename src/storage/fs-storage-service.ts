@@ -33,6 +33,7 @@ import {
 } from './io.js';
 import { ensureWorkspaceDirs, paths, ResolvedWorkspace } from './paths.js';
 import { nowIso } from '../core/utils.js';
+import { UserError } from '../core/errors.js';
 
 export class FsStorageService implements StorageService {
   private readonly workspace: ResolvedWorkspace;
@@ -80,7 +81,7 @@ export class FsStorageService implements StorageService {
   async saveBoardMember(member: AdvisoryBoardMember): Promise<void> {
     const all = await this.loadBoardMembers();
     if (all.some((m) => m.id === member.id)) {
-      throw new Error(`Member with id ${member.id} already exists`);
+      throw new UserError(`Member with id ${member.id} already exists`);
     }
     all.push(member);
     writeJsonAtomic(this.p.members, all, { snapshotDir: this.p.snapshots });
@@ -142,25 +143,25 @@ export class FsStorageService implements StorageService {
    */
   private async validateBoardForPersist(board: Board, all: Board[], isUpdate: boolean): Promise<void> {
     const name = board.name?.trim() ?? '';
-    if (name.length < 1) throw new Error('Board name is required.');
-    if (name.length > 100) throw new Error('Board name must be ≤ 100 characters.');
+    if (name.length < 1) throw new UserError('Board name is required.');
+    if (name.length > 100) throw new UserError('Board name must be ≤ 100 characters.');
     if (board.description && board.description.length > 500) {
-      throw new Error('Board description must be ≤ 500 characters.');
+      throw new UserError('Board description must be ≤ 500 characters.');
     }
     if (!board.slug || !/^[a-z0-9-]+$/.test(board.slug)) {
-      throw new Error(`Board slug "${board.slug}" is invalid (expected kebab-case).`);
+      throw new UserError(`Board slug "${board.slug}" is invalid (expected kebab-case).`);
     }
     const slugClash = all.some((b) => b.id !== board.id && b.slug === board.slug);
-    if (slugClash) throw new Error(`Board slug "${board.slug}" is already in use.`);
+    if (slugClash) throw new UserError(`Board slug "${board.slug}" is already in use.`);
     const nameClash = all.some(
       (b) => b.id !== board.id && b.name.trim().toLowerCase() === name.toLowerCase(),
     );
-    if (nameClash) throw new Error(`A board named "${name}" already exists.`);
+    if (nameClash) throw new UserError(`A board named "${name}" already exists.`);
 
     const members = await this.loadBoardMembers();
     const known = new Set(members.map((m) => m.id));
     const missing = [...new Set(board.memberIds)].filter((id) => !known.has(id));
-    if (missing.length > 0) throw new Error(`Board references unknown member id(s): ${missing.join(', ')}`);
+    if (missing.length > 0) throw new UserError(`Board references unknown member id(s): ${missing.join(', ')}`);
     void isUpdate;
   }
 
@@ -309,7 +310,7 @@ export class FsStorageService implements StorageService {
   async saveBusinessContext(context: BusinessContext): Promise<void> {
     const all = await this.loadBusinessContext();
     all.push(context);
-    writeJsonAtomic(this.p.businessContext, all);
+    writeJsonAtomic(this.p.businessContext, all, { snapshotDir: this.p.snapshots });
   }
 
   async updateBusinessContext(context: BusinessContext): Promise<void> {
@@ -317,12 +318,12 @@ export class FsStorageService implements StorageService {
     const idx = all.findIndex((c) => c.id === context.id);
     if (idx === -1) all.push({ ...context, updatedAt: nowIso() });
     else all[idx] = { ...context, updatedAt: nowIso() };
-    writeJsonAtomic(this.p.businessContext, all);
+    writeJsonAtomic(this.p.businessContext, all, { snapshotDir: this.p.snapshots });
   }
 
   async deleteBusinessContext(id: string): Promise<void> {
     const all = await this.loadBusinessContext();
-    writeJsonAtomic(this.p.businessContext, all.filter((c) => c.id !== id));
+    writeJsonAtomic(this.p.businessContext, all.filter((c) => c.id !== id), { snapshotDir: this.p.snapshots });
   }
 
   async loadBusinessProfile(): Promise<BusinessProfile | null> {

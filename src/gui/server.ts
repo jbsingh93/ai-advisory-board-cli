@@ -1502,6 +1502,14 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
   };
 
   // ---------- API: write ----------
+
+  // In-flight guard (one running round per discussion). The mutation endpoints
+  // below return 202 and run the round async; without this, a double-submit
+  // loads the same discussion record twice and the second save clobbers the
+  // first round (last-writer-wins). Check+add happens synchronously (no await
+  // in between) so concurrent requests can't both pass.
+  const runningDiscussions = new Set<string>();
+
   app.post('/api/discussions', async (req, res) => {
     try {
       const { question, memberIds, boardId } = req.body as { question?: string; memberIds?: string[]; boardId?: string };
@@ -1568,7 +1576,13 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
         })
         .catch((error: unknown) => {
           logger.warn('[ui] discussion failed:', error);
-          broadcast({ type: 'error', message: error instanceof Error ? error.message : String(error) });
+          // No discussion id exists yet when a start fails — `context` lets
+          // clients tell this apart from a round failure on an existing one.
+          broadcast({
+            type: 'error',
+            context: 'start_discussion',
+            message: error instanceof Error ? error.message : String(error),
+          });
         });
     } catch (error) {
       sendError(res, 500, error);
@@ -1613,6 +1627,12 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
         return;
       }
 
+      if (runningDiscussions.has(discussion.id)) {
+        res.status(409).json({ error: 'A round is already running for this discussion.' });
+        return;
+      }
+      runningDiscussions.add(discussion.id);
+
       // 202 + WS streaming, same pattern as POST /api/discussions
       res.status(202).json({ accepted: true });
 
@@ -1641,7 +1661,8 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
             discussionId: discussion.id,
             message: error instanceof Error ? error.message : String(error),
           });
-        });
+        })
+        .finally(() => runningDiscussions.delete(discussion.id));
     } catch (error) {
       sendError(res, 500, error);
     }
@@ -1685,6 +1706,12 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
         return;
       }
 
+      if (runningDiscussions.has(discussion.id)) {
+        res.status(409).json({ error: 'A round is already running for this discussion.' });
+        return;
+      }
+      runningDiscussions.add(discussion.id);
+
       res.status(202).json({ accepted: true });
 
       const fromRoundNumber = (discussion.rounds[discussion.rounds.length - 1]?.roundNumber ?? 0) + 1;
@@ -1714,7 +1741,8 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
             discussionId: discussion.id,
             message: error instanceof Error ? error.message : String(error),
           });
-        });
+        })
+        .finally(() => runningDiscussions.delete(discussion.id));
     } catch (error) {
       sendError(res, 500, error);
     }
@@ -1828,6 +1856,12 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
         return;
       }
 
+      if (runningDiscussions.has(discussion.id)) {
+        res.status(409).json({ error: 'A round is already running for this discussion.' });
+        return;
+      }
+      runningDiscussions.add(discussion.id);
+
       res.status(202).json({ accepted: true });
 
       const fromRoundNumber = (discussion.rounds[discussion.rounds.length - 1]?.roundNumber ?? 0) + 1;
@@ -1876,7 +1910,8 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
             discussionId: discussion.id,
             message: error instanceof Error ? error.message : String(error),
           });
-        });
+        })
+        .finally(() => runningDiscussions.delete(discussion.id));
     } catch (error) {
       sendError(res, 500, error);
     }

@@ -847,22 +847,13 @@ export async function addFollowUpQuestion(
         roundNumber: null,
       };
     }
-    if (gate.action === 'conclude') {
-      // Orchestrator decided no further round is warranted — close out.
-      discussion.completedAt = nowIso();
-      // Stamp the gate decision onto the most recent round if present
-      const last = discussion.rounds[discussion.rounds.length - 1];
-      if (last) last.orchestratorDecision = gate;
-      await opts.storage.saveDiscussion(discussion);
-      return {
-        discussion,
-        totalCostUsd: 0,
-        totalDurationMs: Date.now() - t0,
-        gated: false,
-        concluded: true,
-        roundNumber: null,
-      };
-    }
+    // NOTE: unlike `continueDiscussion`, a `conclude` decision is deliberately
+    // NOT honored here. A follow-up is an explicit user question, so by the
+    // user's intent it is relevant by definition — the round must always run
+    // even if the orchestrator considers the prior discussion finished (the
+    // gate isn't even shown the new question; it only sees the original
+    // question + prior rounds). Resource limits are still enforced by the
+    // `totalTurns >= maxTurns` check above. Do not re-add a conclude branch.
   } catch (error) {
     logger.warn('[addFollowUpQuestion] pre-round gate failed (non-blocking):', error);
   }

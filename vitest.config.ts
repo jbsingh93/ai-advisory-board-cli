@@ -14,5 +14,14 @@ export default defineConfig({
     testTimeout: 60000,
     hookTimeout: 60000,
     teardownTimeout: 60000,
+    // Run test files sequentially in a single fork. On constrained CI runners
+    // (esp. windows, 2 cores) the parallel default lets ~6 forks contend while
+    // the heavy integration tests (solve-orchestrator's recursive cpSync,
+    // pc-scan's live scan) block their worker for 90s+, tripping Vitest's
+    // worker "onTaskUpdate" RPC timeout even though every test passes. Giving
+    // each file the whole machine keeps the heavy ones well under the limit.
+    // Modules are still isolated per file (isolate defaults true). The suite is
+    // small, so the sequential cost is modest.
+    poolOptions: { forks: { singleFork: true } },
   },
 });

@@ -1,25 +1,28 @@
 /**
- * solve-orchestrator end-to-end test with stub mode.
+ * solve-orchestrator end-to-end test with stub mode (part 1 of 2).
  *
  * Verifies that --no-planner --stub --yes drives the full chain (preflight →
  * brief → stub skill-creator → adapter → install → persist) without hitting
  * any real Claude calls. The stub path is the same code path the GUI uses
  * once it has a pre-accepted Planner proposal, so this also covers that.
+ *
+ * The stub-mode tests are split across two files (this one + `*-modes.test.ts`)
+ * so no single test file blocks its worker long enough to trip Vitest's
+ * "onTaskUpdate" RPC timeout on slow CI runners. Shared setup lives in
+ * `solve-orchestrator-fixtures.ts`.
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runSolve, deriveSkillName } from '../solve-orchestrator.js';
-import { FsStorageService } from '../../../storage/fs-storage-service.js';
-import type { ResolvedWorkspace } from '../../../storage/paths.js';
-import type { ActionItem, AppSettings } from '../../../storage/types.js';
-import { DEFAULT_SETTINGS } from '../../../storage/types.js';
-
-function fakeWorkspace(): ResolvedWorkspace {
-  const dir = mkdtempSync(join(tmpdir(), 'aab-solve-'));
-  return { id: 'test', root: dir, scope: 'home' };
-}
+import {
+  setupSolveEnv,
+  teardownSolveEnv,
+  seedAction,
+  solveSettings,
+  type SolveEnv,
+} from './solve-orchestrator-fixtures.js';
 
 describe('deriveSkillName', () => {
   it('produces kebab-case ≤60 chars from a title', () => {
@@ -33,52 +36,23 @@ describe('deriveSkillName', () => {
   });
 });
 
-describe('runSolve — stub mode (no real Claude calls)', () => {
-  let ws: ResolvedWorkspace;
-  let storage: FsStorageService;
-  let projectRoot: string;
+describe('runSolve — stub mode (install + preconditions)', () => {
+  let env: SolveEnv;
 
   beforeEach(() => {
-    ws = fakeWorkspace();
-    storage = new FsStorageService(ws);
-    projectRoot = mkdtempSync(join(tmpdir(), 'aab-solve-project-'));
-    // Seed a fake skill-creator at project scope so the precondition passes.
-    const scDir = join(projectRoot, '.claude', 'skills', 'skill-creator');
-    mkdirSync(scDir, { recursive: true });
-    writeFileSync(
-      join(scDir, 'SKILL.md'),
-      '---\nname: skill-creator\nversion: 0.0.1-stub\n---\nstub',
-    );
+    env = setupSolveEnv();
   });
 
   afterEach(() => {
-    try { rmSync(ws.root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); } catch { /* tmp leak on Windows EPERM is harmless */ }
-    try { rmSync(projectRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); } catch { /* same */ }
+    teardownSolveEnv(env);
   });
 
-  async function seedAction(): Promise<ActionItem> {
-    const item: ActionItem = {
-      id: 'action-id-12345678',
-      title: 'Record YouTube intro for Q3 launch',
-      description: 'Need a 3-min intro for the launch landing page',
-      priority: 'high',
-      status: 'pending',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    await storage.saveActionItem(item);
-    return item;
-  }
-
-  function settings(): AppSettings {
-    return { ...DEFAULT_SETTINGS };
-  }
-
   it('runs --no-planner --stub --yes end-to-end and produces an installed skill', async () => {
-    const action = await seedAction();
+    const { ws, storage, projectRoot } = env;
+    const action = await seedAction(storage);
     const result = await runSolve({
       workspace: ws,
-      settings: settings(),
+      settings: solveSettings(),
       storage,
       action,
       noPlanner: true,
@@ -107,46 +81,8 @@ describe('runSolve — stub mode (no real Claude calls)', () => {
     expect(updatedAction?.skillRunHistory).toContain(result.runId);
   });
 
-  it('runs plan-only (no install, no skill-creator call) with the synthesized minimal profile', async () => {
-    const action = await seedAction();
-    const result = await runSolve({
-      workspace: ws,
-      settings: settings(),
-      storage,
-      action,
-      noPlanner: true,
-      planOnly: true,
-      projectRoot,
-    });
-    expect(result.status).toBe('plan-only');
-    expect(result.installPath).toBeUndefined();
-    expect(result.proposal.skillName).toBe('record-youtube-intro-for-q3-launch');
-    // No skill run was persisted
-    const runs = await storage.loadSkillRuns(action.id);
-    expect(runs.length).toBe(0);
-  });
-
-  it('--no-install builds but skips the cp step', async () => {
-    const action = await seedAction();
-    const result = await runSolve({
-      workspace: ws,
-      settings: settings(),
-      storage,
-      action,
-      noPlanner: true,
-      stub: true,
-      yes: true,
-      noInstall: true,
-      projectRoot,
-    });
-    expect(result.status).toBe('completed');
-    expect(result.installPath).toBeUndefined();
-    // run was persisted but linkedSkill is NOT set on the action.
-    const updatedAction = (await storage.loadActionItems()).find((a) => a.id === action.id);
-    expect(updatedAction?.linkedSkill).toBeUndefined();
-  });
-
   it('rejects when skill-creator is not installed in --solve (no --plan-only)', async () => {
+    const { ws, storage, projectRoot } = env;
     rmSync(join(projectRoot, '.claude'), { recursive: true, force: true });
     // Isolate HOME so the resolver doesn't walk into the real user's
     // ~/.claude/plugins/marketplaces/... and find a globally-installed
@@ -158,11 +94,11 @@ describe('runSolve — stub mode (no real Claude calls)', () => {
     process.env.HOME = isolatedHome;
     process.env.USERPROFILE = isolatedHome;
     try {
-      const action = await seedAction();
+      const action = await seedAction(storage);
       await expect(
         runSolve({
           workspace: ws,
-          settings: settings(),
+          settings: solveSettings(),
           storage,
           action,
           noPlanner: true,

@@ -42,11 +42,20 @@ export async function queryWiki(opts: WikiQueryOptions): Promise<WikiQueryResult
   const maxPages = opts.maxPages ?? opts.settings.knowledgeWiki?.maxAgentPagesPerCall ?? 10;
   const model = pickQueryModel(opts.settings, opts.modelOverride);
   const wikiKnowledgeMd = existsSync(p.wikiKnowledge) ? readFileSync(p.wikiKnowledge, 'utf8') : '';
-  const wikiIndexMd = existsSync(p.wikiIndex) ? readFileSync(p.wikiIndex, 'utf8') : '';
+  // Prefer the compact catalog (small, structured) over the full index.md, which
+  // can blow past 256 KB on a populated wiki and bloat the prompt. Fall back to a
+  // capped slice of index.md only when no catalog exists yet.
+  const wikiCatalogJson = existsSync(p.wikiCatalog) ? readFileSync(p.wikiCatalog, 'utf8') : '';
+  const wikiIndexMd = wikiCatalogJson
+    ? ''
+    : existsSync(p.wikiIndex)
+      ? capText(readFileSync(p.wikiIndex, 'utf8'), 12_000)
+      : '';
   const prompt = buildQueryPrompt({
     question: opts.question,
     wikiKnowledgeMd,
     wikiIndexMd,
+    wikiCatalogJson,
     maxPages,
   });
 
@@ -54,11 +63,13 @@ export async function queryWiki(opts: WikiQueryOptions): Promise<WikiQueryResult
   let text: string;
   let costUsd = 0;
   try {
+    // No `--max-turns`: the harness terminates the agent when it has its answer;
+    // budget + timeout are the real guardrails. A low turn cap only caused
+    // spurious `max_turns` failures on big-wiki retrieval.
     const result = await runClaude({
       prompt,
       model,
       allowedTools: ['Read', 'Grep', 'Glob'],
-      maxTurns: 15,
       cwd: opts.workspace.root,
       maxBudgetUsd: opts.settings.perCallBudgetUsd,
       timeoutMs: 3 * 60_000,
@@ -120,6 +131,11 @@ function pickQueryModel(settings: AppSettings, override?: string): string {
   if (override) return override;
   const v = settings.knowledgeWiki?.queryModel ?? settings.primaryModel;
   return typeof v === 'string' ? v : 'sonnet';
+}
+
+function capText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return text.slice(0, max) + '\n…[truncated — use the compact catalog / Grep instead of reading this in full]';
 }
 
 // Silence unused

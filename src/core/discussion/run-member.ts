@@ -13,6 +13,7 @@ import {
   structuredResponsePayloadSchema,
 } from '../parsing/llm-response-schemas.js';
 import { memberAgentSlug } from '../../agents/emit-member-agent.js';
+import { retrieveWikiContext, type RetrievedWikiPage } from '../knowledge/retrieve.js';
 import type {
   AdvisoryBoardMember,
   AppSettings,
@@ -65,19 +66,34 @@ export async function runMember(opts: RunMemberOptions): Promise<RunMemberResult
   // Derive the absolute wiki path from the workspace root so the member can be
   // told where to look and granted access to it.
   const wikiDir = opts.wikiDir ?? (opts.workspaceRoot ? join(opts.workspaceRoot, 'wiki') : undefined);
-  const userMessage = buildMemberUserMessage({ ...opts, wikiDir });
+
+  // CLI-side retrieval (the architecture: the CLI finds context, the member
+  // advises on it). We deterministically score the wiki and pre-fetch the top
+  // pages as excerpts, so the member rarely needs to search the wiki itself.
+  const retrievedContext = maybeRetrieveContext(opts, wikiDir);
+
+  const userMessage = buildMemberUserMessage({ ...opts, wikiDir, retrievedContext });
   const slug = memberAgentSlug(opts.member.name);
   const tools = opts.member.allowedTools ?? DEFAULT_TOOLS;
   const addDirs = opts.workspaceRoot ? [opts.workspaceRoot] : undefined;
 
-  logger.debug('[runMember] dispatch', { slug, round: opts.roundNumber, msgLen: userMessage.length, wikiDir });
+  logger.debug('[runMember] dispatch', {
+    slug,
+    round: opts.roundNumber,
+    msgLen: userMessage.length,
+    wikiDir,
+    retrieved: retrievedContext.length,
+  });
 
+  // No `--max-turns`: the Claude Code harness terminates the member when it has
+  // its final answer, and `--max-budget-usd` + the wall-clock timeout are the
+  // real guardrails. A low tool-turn cap (we used to hardcode 5) only produced
+  // spurious `max_turns` failures on agents doing Read/Grep/Glob retrieval.
   const result = await runClaude({
     prompt: userMessage,
     agent: slug,
     model: pickMemberModel(opts.settings),
     allowedTools: tools,
-    maxTurns: 5,
     maxBudgetUsd: opts.settings.perCallBudgetUsd,
     cwd: opts.projectRoot,
     addDirs,
@@ -145,6 +161,31 @@ export async function runMember(opts: RunMemberOptions): Promise<RunMemberResult
 
 function pickMemberModel(settings: AppSettings): string {
   return typeof settings.primaryModel === 'string' ? settings.primaryModel : 'inherit';
+}
+
+/**
+ * Run the deterministic wiki retrieval unless disabled. Never throws — a
+ * retrieval hiccup must not break a member call (the agent can still search the
+ * wiki itself via Read/Grep/Glob).
+ */
+function maybeRetrieveContext(opts: RunMemberOptions, wikiDir: string | undefined): RetrievedWikiPage[] {
+  const wiki = opts.settings.knowledgeWiki;
+  if (!wikiDir) return [];
+  if (wiki?.enabled === false) return [];
+  if (wiki?.injectRetrievedContext === false) return [];
+  try {
+    return retrieveWikiContext({
+      wikiRoot: wikiDir,
+      workspaceRoot: opts.workspaceRoot,
+      query: opts.question,
+      extraQuery: opts.followUpQuestion,
+      maxPages: wiki?.retrievalMaxPages ?? 8,
+      excerptChars: wiki?.retrievalExcerptChars ?? 2000,
+    });
+  } catch (error) {
+    logger.debug('[runMember] wiki retrieval failed (non-blocking):', error);
+    return [];
+  }
 }
 
 function extractReferencedMembers(text: string, peers: Response[]): string[] {

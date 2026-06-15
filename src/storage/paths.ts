@@ -130,6 +130,7 @@ export function paths(root: string): {
   wiki: string;
   wikiKnowledge: string;
   wikiIndex: string;
+  wikiCatalog: string;
   wikiLog: string;
   wikiConcepts: string;
   wikiEntities: string;
@@ -171,6 +172,7 @@ export function paths(root: string): {
     wiki,
     wikiKnowledge: join(wiki, 'KNOWLEDGE.md'),
     wikiIndex: join(wiki, 'index.md'),
+    wikiCatalog: join(wiki, '.aab', 'catalog.json'),
     wikiLog: join(wiki, 'log.md'),
     wikiConcepts: join(wiki, 'concepts'),
     wikiEntities: join(wiki, 'entities'),

@@ -52,6 +52,7 @@ export function registerDiscussCommand(program: Command): void {
   registerFollowUp(discuss);
   registerList(discuss);
   registerShow(discuss);
+  registerRename(discuss);
   registerDelete(discuss);
   registerArchive(discuss);
   registerUnarchive(discuss);
@@ -560,6 +561,34 @@ function registerShow(parent: Command): void {
         } else {
           process.stdout.write(renderDiscussion(discussion, { round: opts.round }));
           process.stdout.write('\n');
+        }
+      } finally {
+        await closeContext(ctx);
+      }
+    });
+}
+
+function registerRename(parent: Command): void {
+  parent
+    .command('rename <idOrShort> [title...]')
+    .description('set a display name for a discussion (or --clear to revert to the question)')
+    .option('--clear', 'remove the display name (fall back to the original question)')
+    .action(async (idOrShort: string, titleParts: string[], opts: { clear?: boolean }) => {
+      const ctx = await openContext(parent);
+      try {
+        const discussion = await resolveDiscussion(ctx.storage, idOrShort);
+        const title = (titleParts ?? []).join(' ').trim();
+        if (!opts.clear && !title) {
+          throw new UserError('Provide a new title, or pass --clear to remove the current one.');
+        }
+        discussion.title = opts.clear ? undefined : title;
+        await ctx.storage.updateDiscussion(discussion);
+        if (ctx.json) {
+          process.stdout.write(JSON.stringify({ id: discussion.id, title: discussion.title ?? null }, null, 2) + '\n');
+        } else if (opts.clear) {
+          process.stdout.write(`${c.ok('✓')} discussion ${shortId(discussion.id)} display name cleared.\n`);
+        } else {
+          process.stdout.write(`${c.ok('✓')} discussion ${shortId(discussion.id)} renamed to "${title}".\n`);
         }
       } finally {
         await closeContext(ctx);
@@ -1236,6 +1265,7 @@ function renderListRow(d: Discussion): string {
   const turns = `${d.totalTurns}t`;
   const rounds = `${d.rounds.length}r`;
   const arch = d.archivedAt ? c.dim(' [archived]') : '';
-  const q = d.question.length > 80 ? d.question.slice(0, 80) + '…' : d.question;
+  const name = (d.title && d.title.trim()) || d.question;
+  const q = name.length > 80 ? name.slice(0, 80) + '…' : name;
   return `  ${c.bold(id)}  ${c.hint(date)}  ${rounds.padEnd(4)} ${turns.padEnd(5)} ${status.padEnd(20)}${arch}  ${q}`;
 }

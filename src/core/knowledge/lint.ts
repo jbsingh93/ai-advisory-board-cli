@@ -23,6 +23,7 @@ import {
 import {
   buildSlugMapFromPages,
   writeSlugMapToIndex,
+  writeCatalog,
   setBacklinksSection,
   BACKLINKS_OPEN,
   BACKLINKS_CLOSE,
@@ -330,13 +331,25 @@ export async function lintWiki(opts: LintOptions): Promise<LintResult> {
         suggestion: 'lint will append a fresh slug-map section on this run',
       });
     }
+    // Oversized index — agents must not Read it directly.
+    const warnBytes = settings?.indexSizeWarnBytes ?? 200 * 1024;
+    const indexBytes = Buffer.byteLength(indexBody, 'utf8');
+    if (indexBytes > warnBytes) {
+      findings.push({
+        severity: 'warn',
+        code: 'index-too-large',
+        message: `wiki/index.md is ${(indexBytes / 1024).toFixed(1)} KB (> ${(warnBytes / 1024).toFixed(0)} KB) — agents must not Read it directly`,
+        file: 'wiki/index.md',
+        suggestion: 'agents should use the compact catalog (wiki/.aab/catalog.json) + Grep; lint refreshes the catalog on this run',
+      });
+    }
   }
 
   // ---------- maintenance writes ----------
   let slugMapUpdated = false;
   if (settings?.slugMapInIndex !== false) {
     try {
-      writeSlugMapToIndex(p.wikiIndex, slugMap);
+      writeSlugMapToIndex(p.wikiIndex, slugMap); // also refreshes the compact catalog
       slugMapUpdated = true;
     } catch (error) {
       findings.push({
@@ -344,6 +357,14 @@ export async function lintWiki(opts: LintOptions): Promise<LintResult> {
         code: 'slug-map-write-failed',
         message: `failed to write slug-map: ${error instanceof Error ? error.message : String(error)}`,
       });
+    }
+  } else {
+    // Slug-map-in-index disabled, but the compact catalog should still track
+    // the wiki so CLI retrieval + agents have a current machine index.
+    try {
+      writeCatalog(p.wikiCatalog, slugMap);
+    } catch {
+      // derived artifact — non-fatal
     }
   }
 

@@ -182,6 +182,13 @@ export interface DiscussionParticipant {
 export interface Discussion {
   id: string;
   question: string;
+  /**
+   * Optional human-friendly display name. When set, UIs/CLI show this instead
+   * of the (immutable) original `question`. Renaming a discussion sets this —
+   * we never mutate `question`, since it's the prompt members were actually
+   * asked and is replayed as context on continue/follow-up.
+   */
+  title?: string;
   selectedMemberIds?: string[];
   boardId?: string;
   boardName?: string;
@@ -425,6 +432,25 @@ export interface KnowledgeWikiSettings {
   recommendFoam: boolean;
   slugMapInIndex: boolean;
   maxAliasesGlobal: number;
+  /**
+   * When true, the CLI deterministically retrieves the most relevant wiki pages
+   * (keyword overlap against slug/title/summary/tags) and injects short excerpts
+   * into the member message *before* the agent runs. The agent still has
+   * Read/Grep/Glob as a fallback. This makes the agent an advisor, not a wiki
+   * search engine — fewer tool calls, lower latency, no `index.md` mega-reads.
+   * Default true.
+   */
+  injectRetrievedContext: boolean;
+  /** How many pages the CLI pre-fetches and injects per member call. Default 8. */
+  retrievalMaxPages: number;
+  /** Per-page excerpt cap (chars) for injected context. Default 2000. */
+  retrievalExcerptChars: number;
+  /**
+   * Soft size ceiling (bytes) for `wiki/index.md`. Above this, `aab doctor` and
+   * `aab knowledge lint` flag it — agents should never `Read` the full index.
+   * Default 204800 (200 KB).
+   */
+  indexSizeWarnBytes: number;
 }
 
 export const DEFAULT_KNOWLEDGE_WIKI_SETTINGS: KnowledgeWikiSettings = {
@@ -443,6 +469,10 @@ export const DEFAULT_KNOWLEDGE_WIKI_SETTINGS: KnowledgeWikiSettings = {
   recommendFoam: true,
   slugMapInIndex: true,
   maxAliasesGlobal: 100,
+  injectRetrievedContext: true,
+  retrievalMaxPages: 8,
+  retrievalExcerptChars: 2000,
+  indexSizeWarnBytes: 200 * 1024,
 };
 
 export interface AppSettings {

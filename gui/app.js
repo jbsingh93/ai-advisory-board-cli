@@ -271,6 +271,10 @@ function renderDiscussionsView(main) {
   main.appendChild(view);
 }
 
+function discussionDisplayName(d) {
+  return (d.title && d.title.trim()) || d.question;
+}
+
 function renderDiscussionCard(d) {
   const card = h('div', {
     class: 'discussion-card',
@@ -279,7 +283,38 @@ function renderDiscussionCard(d) {
     role: 'button',
     tabindex: '0',
   });
-  card.appendChild(h('div', { class: 'discussion-card-q' }, d.question));
+
+  // Top row: the (possibly renamed) display name + per-card actions.
+  const top = h('div', { class: 'discussion-card-top' });
+  top.appendChild(h('div', { class: 'discussion-card-q' }, discussionDisplayName(d)));
+
+  const actions = h('div', { class: 'discussion-card-actions' });
+  const renameBtn = h('button', {
+    class: 'icon-btn',
+    type: 'button',
+    title: 'Rename discussion',
+    'aria-label': 'Rename discussion',
+    'data-testid': `discussion-rename-${shortIdOf(d.id)}`,
+  }, '✎');
+  renameBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openRenameDiscussionModal(d);
+  });
+  const deleteBtn = h('button', {
+    class: 'icon-btn danger',
+    type: 'button',
+    title: 'Delete discussion',
+    'aria-label': 'Delete discussion',
+    'data-testid': `discussion-delete-${shortIdOf(d.id)}`,
+  }, '🗑');
+  deleteBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    confirmDeleteDiscussion(d);
+  });
+  actions.appendChild(renameBtn);
+  actions.appendChild(deleteBtn);
+  top.appendChild(actions);
+  card.appendChild(top);
 
   const status = d.completedAt ? 'done' : d.pendingUserRequest ? 'awaiting' : 'open';
   const statusLabel = status === 'done' ? 'concluded' : status === 'awaiting' ? 'awaiting input' : 'open';
@@ -293,6 +328,65 @@ function renderDiscussionCard(d) {
 
   card.addEventListener('click', () => openChatView(d));
   return card;
+}
+
+// Rename a discussion via the shared edit-modal (sets `title`, not `question`).
+function openRenameDiscussionModal(d) {
+  $('#edit-modal-title').textContent = 'Rename discussion';
+  const body = $('#edit-modal-body');
+  body.innerHTML = '';
+  const field = input('Display name', discussionDisplayName(d), 'A short name for this discussion');
+  field.input.setAttribute('data-testid', 'discussion-rename-input');
+  field.input.setAttribute('maxlength', '300');
+  body.appendChild(field.wrap);
+  body.appendChild(
+    h('div', { class: 'field-help' }, 'This only changes the display name — the original question the board was asked is unchanged.'),
+  );
+
+  $('#edit-modal').hidden = false;
+  $('#edit-modal-save').setAttribute('data-testid', 'discussion-rename-save');
+  field.input.focus();
+  field.input.select();
+
+  editModalOnSave = async () => {
+    const title = field.input.value.trim();
+    if (!title) {
+      toast('Please enter a name.', 'err');
+      throw new Error('name required');
+    }
+    const updated = await fetchJSON(`/api/discussions/${encodeURIComponent(d.id)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title }),
+    });
+    if (state.currentDiscussion && state.currentDiscussion.id === d.id) {
+      state.currentDiscussion = updated || { ...d, title };
+    }
+    await refreshState({ silent: true });
+    if (state.route === 'discussions') navigate('discussions');
+    toast('Discussion renamed.', 'ok');
+  };
+}
+
+function confirmDeleteDiscussion(d) {
+  openConfirmModal({
+    title: 'Delete discussion?',
+    message: `"${discussionDisplayName(d)}" will be permanently deleted. This cannot be undone.`,
+    okLabel: 'Delete',
+    onOk: async () => {
+      try {
+        await fetchJSON(`/api/discussions/${encodeURIComponent(d.id)}`, { method: 'DELETE' });
+        if (state.currentDiscussion && state.currentDiscussion.id === d.id) {
+          state.currentDiscussion = null;
+        }
+        await refreshState({ silent: true });
+        navigate('discussions');
+        toast('Discussion deleted.', 'ok');
+      } catch (e) {
+        toast('Could not delete: ' + e.message, 'err');
+      }
+    },
+  });
 }
 
 // ------------------------------------------------------------------
@@ -313,7 +407,7 @@ function openChatView(discussion) {
   const back = h('button', { class: 'btn-secondary' }, '← Back');
   back.addEventListener('click', () => navigate('discussions'));
   header.appendChild(back);
-  header.appendChild(h('div', { class: 'chat-header-q' }, discussion.question));
+  header.appendChild(h('div', { class: 'chat-header-q' }, discussionDisplayName(discussion)));
   const headerActions = h('div', { class: 'chat-header-actions' });
   const sparListBtn = h(
     'button',

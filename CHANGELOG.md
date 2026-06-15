@@ -18,7 +18,7 @@
   - **MCP / connectors** are now read from every config store on the box: the three `.mcp.json` scopes, Claude Code's real `~/.claude.json` (top-level + per-project `mcpServers` + the `claudeAiMcpEverConnected` remote connectors), Claude Desktop, Cursor, Windsurf, and VS Code. Transport is inferred from `type` _or_ `transport` (the old code read only `transport`, so it was never populated for `{"type":"http",...}` servers).
   - **Skills** are discovered by a bounded recursive walk of the whole `~/.claude/plugins` tree plus every `installPath` in `installed_plugins.json` — the old one-level walk found zero plugin skills.
   - **Known-project sweep** reads the folders the user has opened in Claude Code (from `~/.claude.json`) and checks each for `.mcp.json` / `.cursor` / `.vscode` / `.claude/skills` — covers "any folder you work in" with no disk crawl.
-  - **Optional full-disk crawl** (`scan({ deepScan: true })`, default on in the Planner recon) walks every fixed drive for stray configs/skills. Read-only, never throws, time-bounded (default 12s) with a dirent budget, prunes noise dirs, and surfaces an info warning if it truncates.
+  - **Optional full-disk crawl** (`scan({ deepScan: true })`, opt-in via `aab actions plan|solve --planner-deep-scan` — off by default since it blocks synchronously) walks every fixed drive for stray configs/skills. Read-only, never throws, time-bounded (default 12s) with a dirent budget, prunes noise dirs, and surfaces an info warning if it truncates. The fast default path (config stores + known-project sweep) is already comprehensive.
   - `aab doctor`'s PC-scan probe now reports MCP-server and skill counts.
 
 ## 0.7.1

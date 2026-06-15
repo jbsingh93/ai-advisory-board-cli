@@ -73,6 +73,8 @@ export interface SolveOptions {
   skipPcScan?: boolean;
   skipWiki?: boolean;
   skipWeb?: boolean;
+  /** Opt-in full-disk crawl during the PC scan (blocks; default off). */
+  pcDeepScan?: boolean;
   /** Skip the skill-creator headless call — useful for `aab actions plan`. */
   planOnly?: boolean;
   /** Stub the skill-creator emit (test mode). */
@@ -169,6 +171,7 @@ export async function runSolve(opts: SolveOptions): Promise<SolveResult> {
       skipPcScan: opts.skipPcScan,
       skipWiki: opts.skipWiki,
       skipWeb: opts.skipWeb,
+      pcDeepScan: opts.pcDeepScan,
       signal: opts.signal,
       ...reconCallbacks,
     });

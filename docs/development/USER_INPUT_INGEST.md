@@ -1,6 +1,6 @@
 # Continuous user-input wiki ingest — design, context, and rationale
 
-> **Status:** design locked, not yet built (as of 2026-06-15).
+> **Status:** ✅ shipped + live-smoke verified (2026-06-15). 344 unit tests green; smoke on `smoke-p8-2026-06-15` confirmed create / merge-no-duplicate / update-in-place / sparring-wired / userEdited-skip. See `CHECKLIST.md` Phase 8 for the run detail.
 > **Owning plan section:** `PLAN.md` Part 11. **Owning checklist phase:** `CHECKLIST.md` Phase 8.
 > **Parent system:** the Knowledge Wiki (`KNOWLEDGE_WIKI.md`). Read §15 (ingest workflow) and §16 (auto-ingest hook) there first — this document extends them.
 

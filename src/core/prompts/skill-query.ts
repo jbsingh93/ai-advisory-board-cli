@@ -8,7 +8,10 @@
 export interface QueryPromptInput {
   question: string;
   wikiKnowledgeMd: string;
+  /** Capped slice of `wiki/index.md` — only used when no compact catalog exists. */
   wikiIndexMd: string;
+  /** Compact catalog JSON (`wiki/.aab/catalog.json`) — preferred over the index. */
+  wikiCatalogJson?: string;
   maxPages: number;
 }
 
@@ -23,16 +26,26 @@ export function buildQueryPrompt(input: QueryPromptInput): string {
   lines.push('## Wiki schema (`wiki/KNOWLEDGE.md`)');
   lines.push(input.wikiKnowledgeMd);
   lines.push('');
-  lines.push('## Wiki index (`wiki/index.md`)');
-  lines.push('');
-  lines.push('READ THIS FIRST — the `<!-- AAB:SLUG-MAP -->` section is your `[[wikilink]]` resolver.');
-  lines.push('');
-  lines.push(input.wikiIndexMd);
+  if (input.wikiCatalogJson) {
+    lines.push('## Wiki catalog (`wiki/.aab/catalog.json`)');
+    lines.push('');
+    lines.push('This compact catalog lists every page (slug, type, title, summary, tags, path). Use it to pick pages and resolve slugs — do NOT `Read wiki/index.md` in full (it can exceed 256 KB).');
+    lines.push('');
+    lines.push('```json');
+    lines.push(input.wikiCatalogJson.trim());
+    lines.push('```');
+  } else {
+    lines.push('## Wiki index (`wiki/index.md`, possibly truncated)');
+    lines.push('');
+    lines.push('The `<!-- AAB:SLUG-MAP -->` section is your `[[wikilink]]` resolver. Do NOT re-`Read` the full index.md (it can exceed 256 KB) — `Grep` it or `Read` with `limit: 150` if you need more.');
+    lines.push('');
+    lines.push(input.wikiIndexMd);
+  }
   lines.push('');
   lines.push('## Your procedure');
-  lines.push(`1. Read the slug-map in the wiki index. Identify the most relevant ≤${input.maxPages} pages.`);
+  lines.push(`1. From the catalog/index above, identify the most relevant ≤${input.maxPages} pages — do NOT read the full index.md.`);
   lines.push('2. `Grep wiki/` for keywords from the question (target `summary:` and `tags:` first).');
-  lines.push('3. `Read` the relevant pages. Follow `[[wikilinks]]` only when useful.');
+  lines.push('3. `Read` only the relevant pages. Follow `[[wikilinks]]` only when useful.');
   lines.push('4. Synthesize a focused answer.');
   lines.push('5. Mark any claims you inferred (rather than read directly from a page) with `^[inferred]`.');
   lines.push('6. NEVER fabricate page slugs in citations — only cite slugs you actually opened.');

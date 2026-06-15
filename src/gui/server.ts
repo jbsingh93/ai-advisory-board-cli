@@ -288,6 +288,39 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
     }
   });
 
+  // PATCH /api/discussions/:id — rename (set the display title). Body: { title }.
+  // We set `title` rather than mutating `question` (the prompt members were
+  // asked). An empty/whitespace title clears it (falls back to the question).
+  app.patch('/api/discussions/:id', async (req, res) => {
+    try {
+      const discussion = await resolveDiscussionByIdOrPrefix(opts.storage, req.params.id, res);
+      if (!discussion) return;
+      const body = req.body as { title?: unknown };
+      if (!('title' in (body ?? {}))) {
+        res.status(400).json({ error: 'Body must include a `title` string.' });
+        return;
+      }
+      const title = typeof body.title === 'string' ? body.title.trim() : '';
+      discussion.title = title || undefined;
+      await opts.storage.updateDiscussion(discussion);
+      res.json(discussion);
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
+  // DELETE /api/discussions/:id — permanently delete a discussion.
+  app.delete('/api/discussions/:id', async (req, res) => {
+    try {
+      const discussion = await resolveDiscussionByIdOrPrefix(opts.storage, req.params.id, res);
+      if (!discussion) return;
+      await opts.storage.deleteDiscussion(discussion.id);
+      res.status(204).end();
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
   app.get('/api/members', async (_req, res) => {
     try {
       const members = await opts.storage.loadBoardMembers();
@@ -2823,6 +2856,31 @@ function sendError(res: Response, status: number, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   logger.warn('[ui] api error', message);
   res.status(status).json({ error: message });
+}
+
+/**
+ * Resolve a discussion by full id or short-id prefix. On miss/ambiguity it
+ * writes the appropriate 404/409 response and returns null, so callers can
+ * `if (!discussion) return;`.
+ */
+async function resolveDiscussionByIdOrPrefix(
+  storage: FsStorageService,
+  id: string,
+  res: Response,
+): Promise<Discussion | null> {
+  const direct = await storage.loadDiscussionById(id);
+  if (direct) return direct;
+  const all = await storage.loadDiscussions();
+  const matches = all.filter((d) => d.id.startsWith(id));
+  if (matches.length === 0) {
+    res.status(404).json({ error: `No discussion matching "${id}"` });
+    return null;
+  }
+  if (matches.length > 1) {
+    res.status(409).json({ error: `Multiple discussions match "${id}"` });
+    return null;
+  }
+  return matches[0]!;
 }
 
 /**

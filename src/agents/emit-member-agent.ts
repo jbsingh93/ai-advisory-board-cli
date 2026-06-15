@@ -2,7 +2,12 @@
  * Emit a `.claude/agents/<member-slug>.md` file for one board member.
  *
  * Frontmatter follows Claude Code's actual current contract:
- *   name, description, tools, model, permissionMode, maxTurns, color
+ *   name, description, tools, model, permissionMode, color
+ *
+ * We deliberately do NOT emit `maxTurns` — a low tool-turn cap only produced
+ * spurious `max_turns` failures on members doing Read/Grep/Glob wiki retrieval.
+ * The Claude Code harness, the per-call budget, and the wall-clock timeout are
+ * the real guardrails.
  *
  * Body is the existing member-response system prompt with placeholders
  * pre-filled. The body carries an `# AAB:GENERATED` marker on line 1 of the
@@ -118,7 +123,6 @@ export function emitMemberAgentFile(
     `tools: ${tools.join(', ')}`,
     'model: inherit',
     'permissionMode: default',
-    'maxTurns: 5',
     `color: ${pickColor(member.name)}`,
     '---',
     '',
@@ -159,13 +163,13 @@ const KNOWLEDGE_WIKI_ADDENDUM = [
   '',
   '## Knowledge Wiki — your primary source of truth about the user',
   '',
-  'The user has a knowledge wiki: markdown files with YAML frontmatter holding what we know about them, their business, goals, prior decisions, and context. **Your task message gives the wiki\'s absolute directory path under a `## Knowledge base` heading** — use that exact path (the wiki lives outside your working directory, so relative paths like `wiki/` will NOT resolve). Read `<wikiDir>/KNOWLEDGE.md` once for the schema if you haven\'t this session.',
+  'The user has a knowledge wiki: markdown files with YAML frontmatter holding what we know about them, their business, goals, prior decisions, and context. The CLI usually **pre-fetches the most relevant pages for you** and injects them into your task message under a `## Retrieved knowledge` heading — when present, that is your primary context and you normally do NOT need to open the wiki yourself.',
   '',
-  '**Consulting the wiki is NOT optional — do it before every answer:**',
-  '1. `Read <wikiDir>/index.md` — the catalog AND the canonical slug→path map (the `<!-- AAB:SLUG-MAP -->` section lists every page\'s slug, path, type, and one-line summary, including aliases). This is your cheap-pass retrieval and your link resolver.',
-  '2. `Grep` the wiki directory for keywords from the question (target the `summary:` and `tags:` frontmatter first).',
-  '3. `Read` 3-10 of the most relevant pages.',
-  '4. Follow `[[wikilinks]]` to connected pages when useful. Resolve them via the slug-map in step 1. If a slug isn\'t in the slug-map (stale index), fall back to `Glob \'**/<slug>.md\'` under the wiki dir — slug uniqueness guarantees ≤1 hit. Block links (`[[slug#section-header]]`) point to a markdown header inside the target page; Read the page and find the header.',
+  '**If you do need to retrieve from the wiki, your task message gives its absolute directory path** (the wiki lives outside your working directory, so relative paths like `wiki/` will NOT resolve). Follow these rules — they keep you within your finite tool-turn budget:',
+  '1. **Never `Read <wikiDir>/index.md` in full** — on a populated wiki it can exceed 256 KB and will exhaust your tool budget. If you must inspect it, `Read` it with `limit: 150`, or `Grep` it for keywords.',
+  '2. `Grep <wikiDir>` for the question\'s key terms first (target `summary:` and `tags:` frontmatter). For `[[wikilink]]` / slug→path resolution, prefer the compact catalog at `<wikiDir>/.aab/catalog.json` (small JSON: slug, type, title, summary, tags, path) over the full index.',
+  '3. `Read` only the 1-3 most relevant pages, then answer. You have a finite tool-turn budget — do targeted retrieval, don\'t browse.',
+  '4. Follow `[[wikilinks]]` only when genuinely useful. Resolve via the catalog; if a slug is missing (stale catalog), `Glob \'**/<slug>.md\'` under the wiki dir — slug uniqueness guarantees ≤1 hit. Block links (`[[slug#section-header]]`) point to a markdown header inside the target page.',
   '',
   '**Web search is the fallback, not the default.** The wiki is what makes your advice specific to THIS user. Only reach for WebSearch/WebFetch to fill gaps the wiki genuinely does not cover (fresh market data, current events). Never give generic advice when the wiki has relevant context.',
   '',

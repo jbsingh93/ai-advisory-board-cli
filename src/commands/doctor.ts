@@ -31,6 +31,12 @@ interface CheckResult {
   detail?: string;
 }
 
+function fmtBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function registerDoctorCommand(program: Command): void {
   program
     .command('doctor')
@@ -138,6 +144,23 @@ export function registerDoctorCommand(program: Command): void {
             ? `present at ${wikiPaths.wiki}`
             : 're-run `aab init` to bootstrap wiki/ + raw/ + .manifest.json',
         });
+
+        // Wiki index size — a huge index.md is the #1 cause of member agents
+        // burning their tool budget trying to read it. Flag it loudly.
+        if (wikiPresent && existsSync(wikiPaths.wikiIndex)) {
+          const settingsForWiki = await ctx.storage.loadSettings();
+          const warnBytes = settingsForWiki.knowledgeWiki?.indexSizeWarnBytes ?? 200 * 1024;
+          const indexBytes = statSync(wikiPaths.wikiIndex).size;
+          const oversized = indexBytes > warnBytes;
+          const catalogPresent = existsSync(wikiPaths.wikiCatalog);
+          checks.push({
+            label: 'Wiki index size',
+            ok: !oversized,
+            detail: oversized
+              ? `index.md is ${fmtBytes(indexBytes)} (> ${fmtBytes(warnBytes)}) — agents must not Read it directly. Run \`aab knowledge lint\` and rely on compact-catalog retrieval (${catalogPresent ? 'catalog present' : 'catalog MISSING — run `aab knowledge lint`'}).`
+              : `${fmtBytes(indexBytes)}${catalogPresent ? ' · compact catalog present' : ''}`,
+          });
+        }
 
         // skill-creator (Phase 5 prerequisite — info-level unless solve is attempted)
         const skillCreator = resolveSkillCreator({ projectRoot });

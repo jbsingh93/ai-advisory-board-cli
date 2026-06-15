@@ -12,6 +12,11 @@ export function renderDiscussion(d: Discussion, opts: { round?: number } = {}): 
   lines.push('');
   lines.push(c.brand('AI Advisory Board') + c.hint(`  · discussion ${shortId(d.id)}`));
   lines.push(HR);
+  if (d.title && d.title.trim()) {
+    lines.push(c.bold('Title:'));
+    lines.push(`  ${d.title.trim()}`);
+    lines.push('');
+  }
   lines.push(c.bold('Question:'));
   lines.push(`  ${d.question}`);
   lines.push('');

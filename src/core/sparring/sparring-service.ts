@@ -188,7 +188,6 @@ export async function sendSparringMessage(opts: SendSparringMessageOptions): Pro
       agent: slug,
       model: research,
       allowedTools: tools,
-      maxTurns: 5,
       maxBudgetUsd: opts.settings.perCallBudgetUsd,
       cwd: opts.projectRoot,
       signal: opts.signal,

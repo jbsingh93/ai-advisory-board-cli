@@ -240,7 +240,14 @@ textarea, input, button { color: inherit; }
   border-color: var(--border-strong);
 }
 
+.discussion-card-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
 .discussion-card-q {
+  flex: 1;
   font-size: 14px;
   color: var(--text);
   margin-bottom: 6px;
@@ -249,6 +256,20 @@ textarea, input, button { color: inherit; }
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+.discussion-card-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0.55;
+  transition: opacity 0.12s;
+}
+.discussion-card:hover .discussion-card-actions,
+.discussion-card:focus-within .discussion-card-actions {
+  opacity: 1;
+}
+.discussion-card-actions .icon-btn { font-size: 14px; padding: 2px 6px; line-height: 1.2; }
+.icon-btn.danger:hover { background: rgba(248, 113, 113, 0.15); color: var(--err, #f87171); }
 
 .discussion-card-meta {
   display: flex;

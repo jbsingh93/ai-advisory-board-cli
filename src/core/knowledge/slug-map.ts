@@ -12,7 +12,7 @@
  * lookup table covers both forms.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { walkWikiPages, type WikiPageEntry, type PageType } from './page.js';
 
@@ -28,6 +28,8 @@ export interface SlugMapEntry {
   type: PageType | string;
   title?: string;
   summary?: string;
+  /** Frontmatter tags — carried for the compact catalog + CLI retrieval scoring. */
+  tags?: string[];
   /** When this row represents an alias, the canonical slug. */
   canonical?: string;
 }
@@ -59,6 +61,9 @@ export function buildSlugMapFromPages(pages: WikiPageEntry[]): SlugMap {
       type: (p.frontmatter.type as PageType) ?? 'concept',
       title: typeof p.frontmatter.title === 'string' ? p.frontmatter.title : undefined,
       summary: typeof p.frontmatter.summary === 'string' ? p.frontmatter.summary : undefined,
+      tags: Array.isArray(p.frontmatter.tags)
+        ? p.frontmatter.tags.filter((t): t is string => typeof t === 'string')
+        : undefined,
     };
     canonical.set(slug, entry);
     aliasToCanonical.set(slug, slug);
@@ -180,6 +185,55 @@ export function writeSlugMapToIndex(indexPath: string, map: SlugMap, header?: st
     next = (header ?? defaultIndexHeader()) + '\n\n## Slug map (auto-maintained — do not hand-edit)\n\n' + block + '\n';
   }
   writeFileSync(indexPath, next, 'utf8');
+
+  // Keep the machine-friendly compact catalog in lock-step with the slug-map.
+  // It lives at `<wiki>/.aab/catalog.json` so agents (and the CLI's own
+  // retrieval) can scan a tiny structured index instead of the full index.md.
+  try {
+    writeCatalog(join(dirname(indexPath), '.aab', 'catalog.json'), map);
+  } catch {
+    // Catalog is a derived convenience artifact — never let a write failure
+    // here break the slug-map (the source of truth) write above.
+  }
+}
+
+/** One row in the compact catalog. Mirrors the fields agents need to triage. */
+export interface CatalogEntry {
+  slug: string;
+  type: PageType | string;
+  title?: string;
+  summary?: string;
+  tags?: string[];
+  /** Forward-slash path relative to `wiki/`. */
+  path: string;
+}
+
+export interface Catalog {
+  /** Schema version so future readers can adapt. */
+  version: 1;
+  count: number;
+  pages: CatalogEntry[];
+}
+
+/** Project a SlugMap into the compact catalog shape (canonical pages only). */
+export function buildCatalog(map: SlugMap): Catalog {
+  const pages: CatalogEntry[] = Array.from(map.canonical.values())
+    .map((e) => ({
+      slug: e.slug,
+      type: e.type,
+      title: e.title,
+      summary: e.summary,
+      tags: e.tags && e.tags.length > 0 ? e.tags : undefined,
+      path: e.path,
+    }))
+    .sort((a, b) => a.slug.localeCompare(b.slug));
+  return { version: 1, count: pages.length, pages };
+}
+
+/** Write the compact catalog JSON (creates `.aab/` as needed). */
+export function writeCatalog(catalogPath: string, map: SlugMap): void {
+  mkdirSync(dirname(catalogPath), { recursive: true });
+  writeFileSync(catalogPath, JSON.stringify(buildCatalog(map), null, 2) + '\n', 'utf8');
 }
 
 export function defaultIndexHeader(): string {

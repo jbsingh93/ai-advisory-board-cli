@@ -15,6 +15,7 @@
  */
 
 import type { AdvisoryBoardMember, BusinessContext, Response } from '../../storage/types.js';
+import type { RetrievedWikiPage } from '../knowledge/retrieve.js';
 
 export interface BuildMessageOptions {
   question: string;
@@ -37,6 +38,13 @@ export interface BuildMessageOptions {
    * because the member's cwd is the project dir, not the workspace.
    */
   wikiDir?: string;
+  /**
+   * Pages the CLI already retrieved (deterministic keyword scoring) and wants to
+   * inject as excerpts so the member doesn't have to search the wiki itself.
+   * When non-empty, the member message leads with these and frames Read/Grep/Glob
+   * as a fallback rather than the primary path.
+   */
+  retrievedContext?: RetrievedWikiPage[];
   /**
    * For a member joining mid-discussion via `summary` catch-up: a pre-rendered
    * text block summarising the prior rounds (used in place of the full
@@ -107,20 +115,44 @@ export function buildMemberUserMessage(opts: BuildMessageOptions): string {
     lines.push('');
   }
 
-  // Knowledge Wiki — the single most important grounding step. Members spawn
+  // Pre-retrieved wiki context. The CLI scored the wiki against the question
+  // and pre-fetched the most relevant pages so the member can advise directly
+  // instead of searching. This is the primary grounding when present.
+  const retrieved = opts.retrievedContext ?? [];
+  if (retrieved.length > 0) {
+    lines.push('## Retrieved knowledge — pre-fetched for you (ground your answer in this)');
+    lines.push(
+      `The CLI already searched the user's Knowledge Wiki and pulled the ${retrieved.length} most relevant page(s) below. Treat these as your primary context — you usually do NOT need to open the wiki yourself.`,
+    );
+    lines.push('');
+    for (const page of retrieved) {
+      lines.push(`### [[${page.slug}]]${page.title ? ` — ${page.title}` : ''} _(${page.type})_`);
+      lines.push(page.excerpt.trim());
+      lines.push('');
+    }
+  }
+
+  // Knowledge Wiki — grounding + fallback retrieval guidance. Members spawn
   // with cwd = project dir, so the wiki (under the workspace root) is reachable
   // only by its absolute path, granted via `--add-dir`.
   if (opts.wikiDir) {
     const dir = opts.wikiDir.replace(/\\/g, '/');
-    lines.push('## Knowledge base — CONSULT THIS FIRST (do not skip)');
+    if (retrieved.length > 0) {
+      lines.push('## Need more from the wiki? (fallback retrieval)');
+      lines.push(
+        `If the pre-fetched context above is insufficient, the full wiki is at \`${dir}\`. To dig deeper, follow these rules — they keep you within your tool budget:`,
+      );
+    } else {
+      lines.push('## Knowledge base — consult it before answering');
+      lines.push(
+        `The user's Knowledge Wiki lives at \`${dir}\` — it holds what we know about the user, their business, goals, and prior decisions. Retrieve from it with these rules (they keep you within your tool budget):`,
+      );
+    }
+    lines.push(`1. **Do NOT \`Read ${dir}/index.md\` in full** — it can exceed 256 KB and will blow your tool budget. If you must inspect it, \`Read\` it with \`limit: 150\` or \`Grep\` it for keywords.`);
+    lines.push(`2. \`Grep ${dir}\` for the key terms in the question first (target \`summary:\` and \`tags:\` frontmatter). For \`[[wikilink]]\` resolution, prefer the compact catalog at \`${dir}/.aab/catalog.json\` over the index.`);
+    lines.push('3. `Read` only the 1-3 most relevant pages before answering. You have a finite tool-turn budget — answer after targeted retrieval rather than browsing.');
     lines.push(
-      `The user's Knowledge Wiki lives at \`${dir}\`. It holds what we already know about the user, their business, goals, prior decisions, and context. **Before you answer, you MUST:**`,
-    );
-    lines.push(`1. \`Read ${dir}/index.md\` — the catalog + slug-map of every page.`);
-    lines.push(`2. \`Grep\` that directory for the key terms in the question (search the \`summary:\`/\`tags:\` frontmatter first).`);
-    lines.push('3. `Read` the 3-10 most relevant pages and follow useful `[[wikilinks]]`.');
-    lines.push(
-      'Ground your answer in what you find there — tailor it to THIS user, not generic advice. Only use web search to fill genuine gaps the wiki does not cover. Put the wiki slugs you actually used in your `sources`.',
+      'Tailor your answer to THIS user, not generic advice. Use web search only to fill genuine gaps the wiki does not cover. Put the wiki slugs you actually used in your `sources`.',
     );
     lines.push('');
   }

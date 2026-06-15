@@ -31,6 +31,8 @@ describe('quickPcScanProbe', () => {
     expect(['win32', 'darwin', 'linux']).toContain(r.platform);
     expect(typeof r.cliTools).toBe('number');
     expect(typeof r.envVarMatches).toBe('number');
+    expect(typeof r.mcpServers).toBe('number');
+    expect(typeof r.skills).toBe('number');
   });
 });
 
@@ -59,5 +61,20 @@ describe('scan (smoke)', () => {
     const r = scan({ envOverride: { PATH: process.env.PATH ?? '' } });
     expect(r.apps.length).toBeLessThanOrEqual(200);
     expect(r.cliTools.length).toBeLessThanOrEqual(80);
+  });
+
+  it('caps mcp servers and skills, and tags valid sources/scopes', () => {
+    const r = scan({ envOverride: { PATH: '' } });
+    expect(r.mcpServers.length).toBeLessThanOrEqual(500);
+    expect(r.existingSkills.length).toBeLessThanOrEqual(500);
+    const validSources = ['project', 'user', 'global', 'claude.ai', 'claude-desktop', 'cursor', 'windsurf', 'vscode', 'disk'];
+    for (const s of r.mcpServers) expect(validSources).toContain(s.source);
+    for (const s of r.existingSkills) expect(['project', 'user', 'plugin', 'disk']).toContain(s.scope);
+  });
+
+  it('deepScan terminates within its disk budget and stays structurally valid', () => {
+    const r = scan({ envOverride: { PATH: '' }, deepScan: true, diskBudgetMs: 1500, diskRoots: [] });
+    expect(Array.isArray(r.mcpServers)).toBe(true);
+    expect(Array.isArray(r.existingSkills)).toBe(true);
   });
 });

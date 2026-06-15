@@ -113,6 +113,10 @@ async function runIngestCore(core: IngestCore): Promise<IngestResult> {
     wikiKnowledgeMd,
     wikiIndexMd,
     inlineBody: core.inlineBody,
+    // Phase 8: discussion transcripts focus on advisor synthesis when the
+    // user's own utterances were already ingested per-input.
+    userFactsAlreadyIngested:
+      core.sourceType === 'discussion' && core.settings.knowledgeWiki?.autoIngestUserInputs !== false,
   });
 
   const model = pickModel(core.settings, core.modelOverride);

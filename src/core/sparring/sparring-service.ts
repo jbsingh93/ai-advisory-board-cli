@@ -25,6 +25,7 @@ import type {
   TokenUsageLog,
 } from '../../storage/types.js';
 import { buildSparringUserMessage } from './build-sparring-prompt.js';
+import { maybeEnqueueUserInput } from '../knowledge/ingest-queue.js';
 
 const ANCHOR_PREVIEW_CHARS = 220;
 const DEFAULT_TOOLS = ['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'];
@@ -139,6 +140,18 @@ export async function sendSparringMessage(opts: SendSparringMessageOptions): Pro
   };
   await opts.storage.saveSparringMessage(opts.session.id, userMsg);
   opts.session.messages.push(userMsg);
+
+  // Phase 8: ingest the user's sparring message as net-new user facts
+  // (serialized, fire-and-forget — never blocks the deep-dive reply).
+  maybeEnqueueUserInput({
+    text: trimmed,
+    kind: 'sparring_message',
+    settings: opts.settings,
+    storage: opts.storage,
+    discussionId: opts.discussion.id,
+    sparringSessionId: opts.session.id,
+    eventId: userMsg.id,
+  });
 
   // 2) Anchor lookup (use stored preview if the original response is gone).
   const anchorResponse =

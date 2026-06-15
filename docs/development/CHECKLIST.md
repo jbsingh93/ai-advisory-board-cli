@@ -517,6 +517,48 @@ Live progress tracker. Each item is a concrete deliverable. Phase numbering matc
 
 ---
 
+## Phase 5.2 — Whole-machine recon (MCP / connector / skill under-count fix) ✅
+
+**Shipped:** 2026-06-15. **Spec:** `docs/development/RECON_WHOLE_MACHINE_SCAN.md` (authoritative). **Owner file:** `src/core/skill/recon/pc-scan.ts`.
+
+**Trigger:** user reported the PC scan found **1 MCP server and 0 skills** on a machine with ~24 MCP servers and hundreds of skills. Root-caused (empirically, against the live `~/.claude.json`) to the scanner looking in almost none of the places these things actually live.
+
+**Two root causes + one latent bug:**
+- **MCP** read only `.mcp.json` (project/user/global) — never opened `~/.claude.json`, which is Claude Code's real store (top-level `mcpServers` + per-project `projects["<path>"].mcpServers` across 44 projects + the `claudeAiMcpEverConnected[]` remote connectors). Also ignored Claude Desktop / Cursor / Windsurf / VS Code.
+- **Skills** walked only **one** level under `~/.claude/plugins/` — but installed plugin skills sit 3–4 levels deeper (`marketplaces/<mp>/{plugins,external_plugins}/<plugin>/skills/<name>/SKILL.md`, `cache/<mp>/<plugin>/<version>/...`). → 0 plugin skills.
+- **Latent bug:** transport was inferred from `cfg.transport`, but the real field is `cfg.type` (`{"type":"http",...}`) → transport never populated.
+
+### Chunk 1 — multi-source config-store reads (always on, fast) ✅
+
+- [x] `collectMcpServers` rewritten — reads every store with dedup-by-name (first wins): the three `.mcp.json` scopes; `~/.claude.json` (top-level + per-project + `claudeAiMcpEverConnected`); Claude Desktop `claude_desktop_config.json`; Cursor (`~/.cursor/mcp.json` + project); Windsurf (`~/.codeium/windsurf/mcp_config.json`); VS Code (user `mcp.json` top-level `servers` key + project `.vscode/mcp.json`).
+- [x] `DetectedMcpServer.source` expanded to `project | user | global | claude.ai | claude-desktop | cursor | windsurf | vscode | disk`; added `url` + `configPath` fields.
+- [x] `inferTransport` reads `type` **or** `transport`, falls back to `url ⇒ http/sse` and `command ⇒ stdio` (fixes the latent bug).
+- [x] `collectExistingSkills` rewritten — bounded recursive walk of the whole `~/.claude/plugins` tree (depth 8) + every `installPath` from `installed_plugins.json` (depth 4) + project/user `.claude/skills` (depth 2). `DetectedExistingSkill.scope` gains `disk`.
+
+### Chunk 2 — known-project sweep (always on, fast) ✅
+
+- [x] `sweepKnownProjects` — enumerates the project paths in `~/.claude.json` → `projects` (folders the user has actually opened) and checks each for `.mcp.json` / `.cursor/mcp.json` / `.vscode/mcp.json` / `.claude/skills/`. Covers "any folder" with no disk crawl. Capped at 300.
+
+### Chunk 3 — opt-in full-disk crawl (`deepScan`, time-bounded) ✅
+
+- [x] `scan()` gains `deepScan` / `diskBudgetMs` / `diskRoots` options. `deepScanDisk` + iterative `walkDir` crawl every fixed drive on Windows (`C:`…`Z:`) or `~ + /Applications + /opt + /usr/local + /srv` on POSIX, looking for stray `.mcp.json` / `mcp.json` (under `.cursor`/`.vscode`) / `claude_desktop_config.json` / `SKILL.md`.
+- [x] Read-only, never-throws, no symlink-follow. Stops on wall-clock deadline (default 12 s) or 3 M-dirent budget. Prunes `PRUNE_DIR_NAMES`; always descends `DESCEND_DOTDIRS` (`.claude`/`.cursor`/`.vscode`/`.config`/`.codeium`). Truncation surfaces an **info** warning (no silent caps).
+- [x] MCP cap 500, skills cap 500; MCP dedup by name, skills dedup by dir path; both sorted.
+
+### Chunk 4 — doctor + orchestrator wiring ✅
+
+- [x] `quickPcScanProbe` now also returns `mcpServers` + `skills` counts (config-store reads only, no disk crawl). `aab doctor` "PC scan probe" line shows `… N MCP server(s), N skill(s) …`.
+- [x] `orchestrator.runRecon` defaults `pcDeepScan: true` (override via `ReconOptions.pcDeepScan`/`pcDiskBudgetMs`), fires a `crawling disk…` heartbeat, and the pc-scan done summary now reports skill count.
+
+### Chunk 5 — tests + live verification ✅
+
+- [x] `__tests__/pc-scan.test.ts` — added probe-field assertions (`mcpServers`/`skills`), source/scope validity + cap (≤500) checks, and a `deepScan` termination test (empty `diskRoots`, 1.5 s budget). All 28 recon tests pass; full typecheck clean.
+- [x] **Live verification (2026-06-15)** via `tsx` against the reporting machine: fast probe → **20 MCP, 29 skills**; `deepScan` → **24 MCP servers across 6 source kinds** (cursor / claude.ai / claude-desktop / project / windsurf / disk) + skills across all four scopes (saturated the 500 cap). Up from **1 MCP / 0 skills**. Transports now populate.
+
+> **Caveat:** `pc-scan.ts` is synchronous by design; `deepScan` blocks for up to `diskBudgetMs`. Fine in the CLI Planner path; GUI fast-path callers should keep `deepScan` off (layers 1–2 are already comprehensive).
+
+---
+
 ## Phase 6.5 — Web UI (messaging-app dashboard) ✅
 
 **Scope clarified 2026-05-19:** feature-specific UI now lives in the **owning phase** (Phase 2-5 each carry their own `**UI**` subsection). Phase 6.5 is the **polish + cross-cutting + shipped-views index**: the dashboard shell, the views already shipped (Discussions / Members / Actions / Principles / Settings / Knowledge), and the polish backlog (light theme, mobile responsive, token-usage dashboard, per-member color from frontmatter). Stubs below that name a Phase 2-5 feature are kept here for the at-a-glance index but their **authoritative scope is in the owning phase**.
@@ -773,6 +815,54 @@ Each spec lives under `docs/specs/<flow>.md` and is generated by driving the das
 - [x] #3 Member-delete empties a board → **keep-and-flag** (implemented; emptied boards kept + warned, never auto-deleted)
 - [x] #4 Inline "create + add member" in web composer → **deferred** (route via `members add` first; the add-list offers only existing active members)
 - [x] #5 Active board scope → **per-workspace via settings.activeBoardId** (implemented)
+
+---
+
+## Phase 8 — Continuous user-input wiki ingest ✅
+
+> Ingest **every** user utterance (initial question, follow-ups, HITL/board responses, 1:1 sparring) into the Knowledge Wiki via a dedicated user-fact **merge** agent that dedups **per fact, semantically** (create-if-new / merge-if-updated / skip-if-known) — never via a deterministic slug/hash gate (a re-mention can carry new nuance). Full design + rationale + rejected approaches + open questions: **`docs/development/USER_INPUT_INGEST.md`**. Design summary: `PLAN.md` Part 11. Extends `KNOWLEDGE_WIKI.md` §15–§16.
+>
+> **Status (2026-06-15):** ✅ shipped — typecheck + build clean, 344 unit tests pass (incl. 15 new), and **live smoke verified** on `smoke-p8-2026-06-15` (see the live-smoke item below for the exact run).
+
+### Merge prompt + ingest path ✅
+
+- [x] `src/core/prompts/wiki-merge.ts` → `buildUserFactMergePrompt(input)` — frames input as pure first-person user voice; mandates reading `wiki/index.md` slug-map + `Grep`/`Read` of candidate pages **before** writing; per-fact create/update/skip; **merge, don't append-dump**; conflict → newer-wins + `^[ambiguous]` + bump `updated:`; respect `userEdited: true` (→ `skipped`); reuse `skill-ingest.ts` frontmatter/`[[wikilink]]`/secrets contracts verbatim; **empty result is valid** (no mandatory source page)
+- [x] `src/core/knowledge/ingest-user-facts.ts` → `ingestUserFacts({ text, kind, discussionId?, sparringSessionId?, workspace, settings, ... })` — mirrors `runIngestCore` plumbing (dirs → raw capture → agent → parse → slug-map rebuild → manifest append → log) but: **no mandatory `wiki/sources/*.md`**, update-biased, `maxTurns 8`, haiku (`ingestModel`), no WebFetch, no content-hash skip (every utterance reaches the agent)
+- [x] `ManifestSourceType` gains `'user-input'` (`src/core/knowledge/manifest.ts`)
+- [x] `kind ∈ { 'initial_question' | 'follow_up' | 'hitl_response' | 'sparring_message' }` (`UserInputKind` in `wiki-merge.ts`)
+- [x] Raw capture written to `raw/user-inputs/<ts>-<kind>-<slug>.md` (new `paths().rawUserInputs` + `ensureWikiDirs`)
+
+### Serialized + debounced ingest queue (concurrency safety — mandatory) ✅
+
+- [x] `src/core/knowledge/ingest-queue.ts` — per-workspace, **drains one ingest at a time** (prevents concurrent ingests racing the `wiki/index.md` slug-map rebuild + `.manifest.json` append → lost pages), enqueue returns immediately (callers never await); `createIngestQueue(runner)` factory for testability
+- [x] Coalesce items that arrive **while a run is in flight** into **one** merge pass per (discussion/session, kind), concatenated with a divider (the long LLM call holds the window open — items 2..N batch)
+- [x] Idempotency guard against the **same event** firing twice — keyed on `eventId` (`UserResponse.id` / sparring `userMsg.id`), **not** content similarity; never blocks a genuine re-mention
+- [x] CLI drain strategy: best-effort `drainUserFactQueue(root)` in `closeContext` **before** lock release (output already printed in the command try-block, so the user sees results first); web server long-lived, drains in background (open Q `USER_INPUT_INGEST.md` §7.3 resolved this way)
+
+### Wire the four input points (`conversation-flow.ts` + `sparring-service.ts`) ✅
+
+- [x] Initial question → `maybeEnqueueUserInput({ kind: 'initial_question', eventId: initialUserResponse.id })` after round-1 save (`startDiscussion`)
+- [x] Follow-up question → `{ kind: 'follow_up', eventId: userResponse.id }` after follow-up commit + save (`addFollowUpQuestion`)
+- [x] HITL response → **replaced** `maybeAutoIngestUserResponse` with `{ kind: 'hitl_response', eventId: userResponse.id }`; 40-char gate dropped; old function + `ingestPaste` import removed (`respondToUserRequest`)
+- [x] Sparring message → `{ kind: 'sparring_message', discussionId, sparringSessionId, eventId: userMsg.id }` after `saveSparringMessage` in `sendSparringMessage` (previously **zero** wiki integration)
+- [x] All gated behind `autoIngestUserInputs` + `knowledgeWiki.enabled` + wiki-dirs-exist (in `maybeEnqueueUserInput`); fire **after** persistence; never throw
+
+### Reconcile conclude-time transcript ingest ✅
+
+- [x] `buildIngestPrompt` gains `userFactsAlreadyIngested`; `ingestDiscussionRaw` sets it true when `autoIngestUserInputs !== false` → transcript ingest focuses on **advisor synthesis / consensus / decisions**, no longer double-processing the user's raw words
+
+### Settings ✅
+
+- [x] `autoIngestUserInputs: boolean` (default `true`) in `KnowledgeWikiSettings` + `DEFAULT_KNOWLEDGE_WIKI_SETTINGS` (`src/storage/types.ts`); documented in `KNOWLEDGE_WIKI.md` §16.1 + §23
+- [x] `autoIngestUserResponses` kept (back-compat) but **superseded** by `autoIngestUserInputs` for HITL — documented, not removed
+
+### Tests + live smoke (mandatory — LLM-behavioural) ✅
+
+- [x] Unit (vitest): queue serialization / coalesce-in-flight / idempotency / failure-resilience / mid-drain (8) + `wiki-merge` prompt structure (7). Full suite green: 344 pass
+- [x] Typecheck + build clean
+- [x] Docs: `KNOWLEDGE_WIKI.md` §16.1 + §23, `PLAN.md` Part 11, `USER_INPUT_INGEST.md`
+- [x] **Live smoke** (verified 2026-06-15 on `smoke-p8-2026-06-15`, external test folder): (1) initial question "Acme sells to SMB retailers…" → `wiki/entities/acme.md` created (manifest `user-input`, raw capture + log line); (2) HITL reply restating known facts → **merged into existing page, no duplicate**; (3) HITL reply with new info + market pivot → `acme.md` **updated in place** (US-SMB history preserved, all 3 raw sources accumulated, `updated:` bumped, **no `acme-2.md`**); (4) sparring message → ingested (`sparring_message` entry) — **sparring wired** (was zero-integration); (5) `userEdited: true` page re-mentioned with a new margin → **skipped** (`userEditedPagesSkipped`), margin left at 42%. Queue drained on every CLI exit.
+- [x] Concurrency (item 6) — covered by the queue unit tests (serial drain / coalesce-in-flight / idempotency); sequential CLI calls can't force a live race, so not separately live-smoked
 
 ---
 

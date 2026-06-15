@@ -7,6 +7,7 @@ import { AabError } from '../core/errors.js';
 import { acquireLock, type LockHandle } from '../storage/locks.js';
 import { paths, resolveWorkspace, type ResolvedWorkspace } from '../storage/paths.js';
 import { FsStorageService } from '../storage/fs-storage-service.js';
+import { drainUserFactQueue } from '../core/knowledge/ingest-queue.js';
 
 export interface CommandContext {
   workspace: ResolvedWorkspace;
@@ -40,5 +41,12 @@ export async function openContext(cmd: Command, opts: OpenOptions = {}): Promise
 }
 
 export async function closeContext(ctx: CommandContext): Promise<void> {
+  // Phase 8: flush any pending background user-fact ingests before releasing
+  // the lock. Command output is already written by this point (it happens in
+  // the command's try-block, before the finally that calls closeContext), so
+  // the user sees their result first; draining here guarantees the ingest
+  // completes under our workspace lock and isn't cut short by process exit.
+  // Best-effort — never throws. See `docs/development/USER_INPUT_INGEST.md` §7.3.
+  await drainUserFactQueue(ctx.workspace.root);
   await ctx.lock.release();
 }

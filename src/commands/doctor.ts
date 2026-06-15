@@ -155,7 +155,7 @@ export function registerDoctorCommand(program: Command): void {
           label: 'PC scan probe',
           ok: pcProbe.ok,
           detail: pcProbe.ok
-            ? `${pcProbe.platform} — ${pcProbe.cliTools} CLI tool(s), ${pcProbe.envVarMatches} env var(s) flagged`
+            ? `${pcProbe.platform} — ${pcProbe.cliTools} CLI tool(s), ${pcProbe.mcpServers} MCP server(s), ${pcProbe.skills} skill(s), ${pcProbe.envVarMatches} env var(s) flagged`
             : pcProbe.error ?? 'unknown error',
         });
 

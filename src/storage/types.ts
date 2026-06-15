@@ -404,6 +404,16 @@ export interface KnowledgeWikiSettings {
   enabled: boolean;
   autoIngestDiscussions: boolean;
   autoIngestUserResponses: boolean;
+  /**
+   * Phase 8 master toggle: ingest EVERY user utterance (initial question,
+   * follow-ups, HITL/board responses, 1:1 sparring messages) into the wiki via
+   * the user-fact **merge** agent (`ingestUserFacts`). Dedups semantically,
+   * per-fact, after reading the wiki — never via a deterministic gate. When
+   * `true`, this supersedes `autoIngestUserResponses` for HITL replies (the
+   * HITL reply becomes one `kind` among the four). Default true.
+   * See `docs/development/USER_INPUT_INGEST.md`.
+   */
+  autoIngestUserInputs: boolean;
   ingestModel: ClaudeModelAlias | ClaudeModel;
   queryModel: ClaudeModelAlias | ClaudeModel;
   lintStaleDays: number;
@@ -421,6 +431,7 @@ export const DEFAULT_KNOWLEDGE_WIKI_SETTINGS: KnowledgeWikiSettings = {
   enabled: true,
   autoIngestDiscussions: true,
   autoIngestUserResponses: true,
+  autoIngestUserInputs: true,
   ingestModel: 'haiku',
   queryModel: 'sonnet',
   lintStaleDays: 90,

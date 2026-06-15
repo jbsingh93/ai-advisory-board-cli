@@ -142,6 +142,7 @@ export function paths(root: string): {
   rawPasted: string;
   rawDiscussions: string;
   rawSummaries: string;
+  rawUserInputs: string;
   outputs: string;
   manifest: string;
 } {
@@ -182,6 +183,7 @@ export function paths(root: string): {
     rawPasted: join(raw, 'pasted'),
     rawDiscussions: join(raw, 'discussions'),
     rawSummaries: join(raw, 'summaries'),
+    rawUserInputs: join(raw, 'user-inputs'),
     outputs: join(root, 'outputs'),
     manifest: join(root, '.manifest.json'),
   };
@@ -226,6 +228,7 @@ export function ensureWikiDirs(root: string): void {
     p.rawPasted,
     p.rawDiscussions,
     p.rawSummaries,
+    p.rawUserInputs,
     p.outputs,
   ]) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });

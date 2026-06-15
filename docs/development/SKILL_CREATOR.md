@@ -260,6 +260,8 @@ The Planner runs in **four phases**:
 
 ### 6.2 PC scan — read-only deep recon
 
+> **Whole-machine discovery (2026-06-15):** MCP/connector + skill detection was rewritten to read every config store on the box (`~/.claude.json` incl. per-project + claude.ai connectors, Claude Desktop, Cursor, Windsurf, VS Code), sweep the user's known project folders, and optionally crawl the full disk (`deepScan`). See **`docs/development/RECON_WHOLE_MACHINE_SCAN.md`** for the authoritative reference; the original sketch below predates it for app/CLI/env scanning, which is unchanged.
+
 Strictly read-only. The Planner agent itself never gets `Bash`; we gather the data Node-side and feed it as structured input. This is a hard architectural rule — see §15.
 
 Platform-specific implementation (`src/core/skill/recon/pc-scan.ts`):

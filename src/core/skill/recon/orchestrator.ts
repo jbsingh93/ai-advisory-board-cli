@@ -41,6 +41,13 @@ export interface ReconOptions {
   skipPcScan?: boolean;
   skipWiki?: boolean;
   skipWeb?: boolean;
+  /**
+   * Run the full-disk crawl during the PC scan (finds MCP/skills outside known
+   * config stores). Blocks for several seconds — default ON for thoroughness.
+   */
+  pcDeepScan?: boolean;
+  /** Wall-clock budget for the deep disk crawl. Default 12_000ms. */
+  pcDiskBudgetMs?: number;
   /** Cancellation — propagated to the wiki + web `claude` children. */
   signal?: AbortSignal;
   /** Default 5. */
@@ -67,8 +74,10 @@ export async function runRecon(opts: ReconOptions): Promise<ReconTriple> {
   if (opts.skipPcScan) {
     pc = emptyPc('skipped via --planner-no-pc-scan');
   } else {
+    const deepScan = opts.pcDeepScan !== false; // default ON
+    if (deepScan) opts.onPhaseProgress?.('pc-scan', 'crawling disk for MCP servers + skills…');
     try {
-      pc = scanPc({ projectRoot: opts.workspace.root });
+      pc = scanPc({ projectRoot: opts.workspace.root, deepScan, diskBudgetMs: opts.pcDiskBudgetMs });
     } catch (err) {
       pc = emptyPc(err instanceof Error ? err.message.slice(0, 160) : 'pc scan failed');
     }
@@ -76,7 +85,7 @@ export async function runRecon(opts: ReconOptions): Promise<ReconTriple> {
   for (const w of pc.warnings) warnings.push({ phase: 'pc-scan', severity: w.severity, message: w.message });
   opts.onPhaseDone?.(
     'pc-scan',
-    `${pc.apps.length} apps, ${pc.cliTools.length} CLI tools, ${pc.mcpServers.length} MCP, ${pc.envVars.length} env`,
+    `${pc.apps.length} apps, ${pc.cliTools.length} CLI tools, ${pc.mcpServers.length} MCP, ${pc.existingSkills.length} skills, ${pc.envVars.length} env`,
   );
 
   // Wiki + web run in parallel. Mark both 'running' up front so the UI doesn't

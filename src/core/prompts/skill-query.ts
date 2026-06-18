@@ -29,7 +29,7 @@ export function buildQueryPrompt(input: QueryPromptInput): string {
   if (input.wikiCatalogJson) {
     lines.push('## Wiki catalog (`wiki/.aab/catalog.json`)');
     lines.push('');
-    lines.push('This compact catalog lists every page (slug, type, title, summary, tags, path). Use it to pick pages and resolve slugs — do NOT `Read wiki/index.md` in full (it can exceed 256 KB).');
+    lines.push('This compact catalog lists pages (slug, type, title, summary, tags, path). Use it to pick pages and resolve slugs — do NOT `Read wiki/index.md` in full (it can exceed 256 KB). On a large wiki this catalog is **relevance-filtered** to the pages most related to the question (see any `_note`/`_omitted` fields); if what you need is not listed, `Grep`/`Glob` `wiki/` for it rather than assuming it does not exist.');
     lines.push('');
     lines.push('```json');
     lines.push(input.wikiCatalogJson.trim());

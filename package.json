@@ -1,6 +1,6 @@
 {
   "name": "ai-advisory-board",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "AI Advisory Board CLI — convene a panel of Claude sub-agents on any business question, and turn the resulting action items into installed Claude Code skills.",
   "type": "module",
   "bin": {

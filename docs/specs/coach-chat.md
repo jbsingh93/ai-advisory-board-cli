@@ -6,7 +6,7 @@
 - `POST /api/coach/sessions` → 202 + `{ session }`. Opener turn fires in the background.
 - `POST /api/coach/sessions/:id/messages` → 202. Reply arrives via WS `coach_message`.
 - `GET /api/coach/sessions/:id` → resume.
-**Engine:** `src/core/coach/decision-coach.ts:coachReply` (system prompt + transcript → claude → parse → persist).
+**Engine:** `src/core/coach/decision-coach.ts:coachReply` (system prompt + transcript → claude → parse → persist). The coach call is spawned with `WebSearch`/`WebFetch` enabled (no `maxTurns` cap) so it can verify time-sensitive facts instead of asserting stale-training claims (e.g. whether a company is public or private).
 
 ## Pre-conditions
 - Workspace with active principles (starter 8 are fine).
@@ -26,6 +26,7 @@
    - Quote one or more principles by **Title** in bold markdown.
    - Ask 1–2 Socratic questions.
    - End with a question or call to reflect.
+   - Render as **HTML** (bold titles are actually bold, `##` headings are headings, bullet lists are `<ul>`) — NOT raw markdown source. Assistant bubbles go through `renderWikiBody`; user bubbles stay plain text.
 9. Type a follow-up message into the composer (`data-testid="coach-input"`), Cmd/Ctrl+Enter or click **Send** (`data-testid="coach-send-btn"`).
 10. The previous reply remains; "Coach thinking…" indicator appears.
 11. New reply arrives. It must **reference the prior turn** (e.g., "Earlier you said the customer is 40% of ARR…").

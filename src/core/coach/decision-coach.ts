@@ -138,23 +138,48 @@ export function buildCoachWikiInstruction(wikiDir: string): string {
 }
 
 /**
- * Wrap the caller's onEvent so we can observe tool-use names (to flag wiki use)
- * while still forwarding every event to the original listener untouched.
+ * Wrap the caller's onEvent so we can observe tool-use (to flag wiki use and
+ * collect which pages were read) while still forwarding every event to the
+ * original listener untouched.
  */
 function makeCoachEventForwarder(
   passthrough: ((event: ClaudeStreamEvent) => void) | undefined,
-  onTool: (toolLower: string) => void,
+  onTool: (toolLower: string, input?: Record<string, unknown>) => void,
 ): (event: ClaudeStreamEvent) => void {
   return (event) => {
     if (event.type === 'assistant' && event.message?.content) {
       for (const block of event.message.content) {
         if (block.type === 'tool_use' && typeof block.name === 'string') {
-          onTool(block.name.toLowerCase());
+          onTool(block.name.toLowerCase(), block.input);
         }
       }
     }
     passthrough?.(event);
   };
+}
+
+/**
+ * Normalize a `Read` file_path to a forward-slash wiki-relative path
+ * (`wiki/entities/foo.md`), or undefined if it isn't a real wiki content page
+ * (catalog/index/log/knowledge infra files are excluded — they're not sources).
+ */
+function toWikiRelPath(input: unknown): string | undefined {
+  if (typeof input !== 'string' || !input) return undefined;
+  const posix = input.replace(/\\/g, '/');
+  const idx = posix.toLowerCase().lastIndexOf('/wiki/');
+  let rel = idx >= 0 ? posix.slice(idx + 1) : posix.startsWith('wiki/') ? posix : undefined;
+  if (!rel) return undefined;
+  const tail = rel.replace(/^wiki\//, '');
+  if (
+    tail === 'index.md' ||
+    tail === 'log.md' ||
+    tail === 'KNOWLEDGE.md' ||
+    tail.startsWith('.aab/') ||
+    !tail.endsWith('.md')
+  ) {
+    return undefined;
+  }
+  return rel;
 }
 
 function renderPrincipleForPrompt(p: Principle): string {
@@ -230,11 +255,22 @@ export async function coachReply(
   const fullPrompt = `${systemPrompt}${wikiBlock}\n\n---\n\nCONVERSATION SO FAR:\n${transcript}\n\nRespond now as the Decision Coach. Use markdown. Reference principles by their **Title**. Always end with a question or call to reflection.`;
 
   const model = opts.model ?? settings.primaryModel ?? 'sonnet';
-  // Track whether the coach actually opened the wiki this turn (Read/Grep/Glob)
-  // so we can render the transparency badge. WebSearch/WebFetch don't count.
+  // Track whether/how the coach opened the wiki this turn (Read/Grep/Glob) so we
+  // can render the transparency badge + "sources used". WebSearch/WebFetch don't
+  // count. We collect the wiki pages it Read and what it searched for.
   let usedWiki = false;
-  const onEvent = makeCoachEventForwarder(opts.onEvent, (tool) => {
-    if (tool === 'read' || tool === 'grep' || tool === 'glob') usedWiki = true;
+  const sourcesRead: string[] = [];
+  const queries: string[] = [];
+  const onEvent = makeCoachEventForwarder(opts.onEvent, (tool, input) => {
+    if (tool !== 'read' && tool !== 'grep' && tool !== 'glob') return;
+    usedWiki = true;
+    if (tool === 'read') {
+      const rel = toWikiRelPath(input?.file_path);
+      if (rel && !sourcesRead.includes(rel)) sourcesRead.push(rel);
+    } else {
+      const q = typeof input?.pattern === 'string' ? input.pattern : undefined;
+      if (q && !queries.includes(q)) queries.push(q);
+    }
   });
 
   // When the wiki is on, the coach needs Read/Grep/Glob plus `--add-dir` access
@@ -289,6 +325,8 @@ export async function coachReply(
     content: cleaned,
     principlesReferenced: referenced.length > 0 ? referenced : undefined,
     usedWiki: usedWiki || undefined,
+    wikiUsage:
+      sourcesRead.length > 0 || queries.length > 0 ? { sourcesRead, queries } : undefined,
     createdAt: nowIso(),
   };
 

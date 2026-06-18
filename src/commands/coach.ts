@@ -296,15 +296,28 @@ function fireCoachIngest(
   storage: CommandContextStorage,
   text: string,
 ): void {
-  if (session.useBusinessWiki) {
-    maybeEnqueueUserInput({
-      text,
-      kind: 'coach_message',
-      settings,
-      storage,
-      coachSessionId: session.id,
-    });
-  }
+  if (!session.useBusinessWiki) return;
+  const userMsg = [...session.messages].reverse().find((m) => m.role === 'user');
+  maybeEnqueueUserInput({
+    text,
+    kind: 'coach_message',
+    settings,
+    storage,
+    coachSessionId: session.id,
+    onResult: async (result) => {
+      if (!userMsg) return;
+      const r = (result ?? {}) as { producedPages?: unknown; updatedPages?: unknown; notes?: unknown };
+      const fresh = await storage.loadDecisionSessionById(session.id);
+      const msg = fresh?.messages.find((m) => m.id === userMsg.id);
+      if (!fresh || !msg) return;
+      msg.wikiIngest = {
+        producedPages: Array.isArray(r.producedPages) ? (r.producedPages as string[]) : [],
+        updatedPages: Array.isArray(r.updatedPages) ? (r.updatedPages as string[]) : [],
+        notes: typeof r.notes === 'string' ? r.notes : undefined,
+      };
+      await storage.updateDecisionSession({ ...fresh, updatedAt: nowIso() });
+    },
+  });
 }
 
 type CommandContextStorage = Awaited<ReturnType<typeof openContext>>['storage'];

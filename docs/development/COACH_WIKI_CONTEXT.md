@@ -20,8 +20,7 @@ Let the Decision Coach optionally draw on the user's **Knowledge Wiki** — thei
 
 ### The toggle
 - **Per-session, persisted, flippable mid-session.** New `DecisionSession.useBusinessWiki?: boolean` (default `false`). Flip it any turn; it sticks for the session until flipped again.
-- **Opt-in globally.** New `knowledgeWiki.exposeToCoach: boolean` (default `false`), mirroring `exposeToMemberAgents` / `exposeToOrchestrator`. When `false`, the toggle is hidden and the coach never touches the wiki. When `true`, the per-session toggle is available (and still defaults OFF per new session). This is the "opt-in setting" — a one-time flip in settings surfaces the toggle; per-use control then lives on the toggle.
-  - Tradeoff noted: default-off-global means the toggle is hidden until a user enables it in settings. If we'd rather surface discoverability, flip the global default to `true` later — the per-session default stays OFF either way, so behavior is unchanged out of the box.
+- **The per-session toggle is the SOLE control — no global opt-in.** Updated after first ship (the original `knowledgeWiki.exposeToCoach` global gate was removed): the user wanted the wiki toggle available *directly*, with no Settings step. The toggle is surfaced right in the **New Coach Session modal** (set it ON at creation) and in the **composer** (flip it any turn). Default OFF per new session keeps out-of-the-box behavior unchanged.
 
 ### Read side (toggle ON)
 - `coachReply` spawns with:
@@ -44,7 +43,8 @@ Let the Decision Coach optionally draw on the user's **Knowledge Wiki** — thei
 ## Surfaces
 
 ### Web UI (`gui/`)
-- **Toggle button** in the coach composer (`renderCoachChat`, near the Send button): "📚 Use Business Wiki" with on/off state, only rendered when `state.settings.knowledgeWiki.exposeToCoach` is true. Reflects `currentSession.useBusinessWiki`.
+- **Toggle in the New Coach Session modal** (`openNewCoachSessionModal`): "📚 Use Business Wiki" checkbox; its state is sent as `useBusinessWiki` on `POST /api/coach/sessions`, so a session can start with the wiki already wired.
+- **Toggle button** in the coach composer (`renderCoachChat`, near the Send button): "📚 Use Business Wiki" with on/off state, **always rendered** (no global gate). Reflects `currentSession.useBusinessWiki`.
 - Flipping it `PATCH`es the session; the per-message POST also carries the current state so a flip + send in one go is atomic.
 - New endpoint **`PATCH /api/coach/sessions/:id`** `{ useBusinessWiki: boolean }` (mirrors the discussions `PATCH`). Broadcast `coach_session_updated`.
 - `📚 wiki` badge in the message stream as above.
@@ -53,14 +53,14 @@ Let the Decision Coach optionally draw on the user's **Knowledge Wiki** — thei
 - **`aab coach --wiki`** — start a new session (or resume) with `useBusinessWiki: true`.
 - **`aab coach send <id> <msg> --wiki`** — one-shot turn with the wiki on; persists the flag onto the session so it sticks.
 - Optionally `aab coach wiki <on|off> <session>` to flip an existing session without sending. (Nice-to-have; `--wiki` on `send` covers the core need.)
-- Honor `knowledgeWiki.exposeToCoach`: if the global opt-in is off, `--wiki` errors with a `UserError` hint to enable `knowledgeWiki.exposeToCoach` first.
+- `--wiki` just sets `useBusinessWiki: true` on the session — no global opt-in to honor.
 
 ## Code touch-points (implementation checklist)
 
 - `src/storage/types.ts`
   - `DecisionSession.useBusinessWiki?: boolean`.
   - `DecisionMessage.usedWiki?: boolean`.
-  - `KnowledgeWikiSettings.exposeToCoach: boolean` + default `false` in `DEFAULT_KNOWLEDGE_WIKI_SETTINGS`.
+  - (No global `exposeToCoach` setting — the per-session toggle is the sole control.)
 - `src/core/coach/decision-coach.ts`
   - `CoachReplyOptions`: add `useWiki?: boolean`, `workspaceRoot?: string`, `wikiDir?: string`.
   - When `useWiki`, extend `allowedTools`, set `addDirs`, append the wiki-instruction block (new builder `buildCoachWikiInstruction()`), keep `strictMcpConfig: true`.
@@ -70,12 +70,12 @@ Let the Decision Coach optionally draw on the user's **Knowledge Wiki** — thei
 - `src/core/knowledge/ingest-user-facts.ts` — accept `coachSessionId?` for manifest provenance (alongside `discussionId` / `sparringSessionId`).
 - `src/gui/server.ts` — `PATCH /api/coach/sessions/:id`; pass `useWiki`/workspace paths into `coachReply`; fire the gated user-fact ingest after a user turn; broadcast `coach_session_updated`.
 - `src/commands/coach.ts` — `--wiki` on the default action + `send`; thread workspace paths + `useWiki` into `coachReply`; fire the gated ingest.
-- `gui/app.js` — composer toggle (gated on `exposeToCoach`), `PATCH` wiring, `📚 wiki` badge.
+- `gui/app.js` — new-session-modal toggle + composer toggle (always shown), `PATCH` wiring, `📚 wiki` badge.
 - `gui/style.css` — toggle + badge styling.
 
 ## Verification (when built)
 - **Live CLI smoke** from the external test folder: a session with a wiki containing a relevant fact, toggle ON → the coach asks a *sharper, principle-grounded question* that reflects the fact **without lecturing on it**; toggle OFF → identical to today (no wiki tools, no ingest). Confirm a user turn with the toggle ON produced a wiki ingest (`wiki/log.md` / manifest entry, `kind: coach_message`).
-- **Playwright MCP smoke**: toggle visible only when `exposeToCoach` on; flipping persists across reload; `📚 wiki` badge appears on turns that used the wiki.
+- **Playwright MCP smoke**: toggle present in the new-session modal and the composer (no settings step); creating a session with it ON persists `useBusinessWiki: true`; flipping persists across reload; `📚 wiki` badge appears on turns that used the wiki.
 - Unit test: `buildCoachWikiInstruction()` framing contains the "ask sharper questions, do not lecture" guardrail; `coachReply` adds the read tools + `addDirs` only when `useWiki`.
 
 ## Explicitly out of scope (v1)

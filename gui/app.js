@@ -4322,42 +4322,38 @@ function renderCoachChat() {
     'data-testid': 'coach-input',
   });
 
-  // "📚 Use Business Wiki" toggle — only when the global opt-in is on
-  // (knowledgeWiki.exposeToCoach). Per-session, flippable mid-session.
-  const wikiOptIn = !!(state.settings && state.settings.knowledgeWiki && state.settings.knowledgeWiki.exposeToCoach);
-  let wikiToggle = null;
-  if (wikiOptIn) {
-    const on = !!s.useBusinessWiki;
-    wikiToggle = h(
-      'button',
-      {
-        type: 'button',
-        class: 'coach-wiki-toggle' + (on ? ' on' : ''),
-        'data-testid': 'coach-wiki-toggle',
-        'aria-pressed': on ? 'true' : 'false',
-        title: 'Use your Business Wiki as context for this session — the coach reads your facts and ingests your messages. Flip anytime.',
-      },
-      on ? '📚 Wiki: ON' : '📚 Wiki: OFF',
-    );
-    wikiToggle.addEventListener('click', async () => {
-      const next = !s.useBusinessWiki;
-      wikiToggle.disabled = true;
-      try {
-        const updated = await fetchJSON('/api/coach/sessions/' + s.id, {
-          method: 'PATCH',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ useBusinessWiki: next }),
-        });
-        coachState.currentSession = updated;
-        refreshCoachSessions();
-        renderCoachChat();
-        toast(next ? '📚 Business Wiki ON for this session.' : 'Business Wiki OFF.', 'ok');
-      } catch (e) {
-        toast('Could not update: ' + e.message, 'err');
-        wikiToggle.disabled = false;
-      }
-    });
-  }
+  // "📚 Use Business Wiki" toggle — always available, per-session, flippable
+  // mid-session. No global opt-in required.
+  const on = !!s.useBusinessWiki;
+  const wikiToggle = h(
+    'button',
+    {
+      type: 'button',
+      class: 'coach-wiki-toggle' + (on ? ' on' : ''),
+      'data-testid': 'coach-wiki-toggle',
+      'aria-pressed': on ? 'true' : 'false',
+      title: 'Use your Business Wiki as context for this session — the coach reads your facts and ingests your messages. Flip anytime.',
+    },
+    on ? '📚 Wiki: ON' : '📚 Wiki: OFF',
+  );
+  wikiToggle.addEventListener('click', async () => {
+    const next = !s.useBusinessWiki;
+    wikiToggle.disabled = true;
+    try {
+      const updated = await fetchJSON('/api/coach/sessions/' + s.id, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ useBusinessWiki: next }),
+      });
+      coachState.currentSession = updated;
+      refreshCoachSessions();
+      renderCoachChat();
+      toast(next ? '📚 Business Wiki ON for this session.' : 'Business Wiki OFF.', 'ok');
+    } catch (e) {
+      toast('Could not update: ' + e.message, 'err');
+      wikiToggle.disabled = false;
+    }
+  });
 
   const sendBtn = h('button', { class: 'btn-primary', 'data-testid': 'coach-send-btn' }, 'Send');
   const send = async () => {
@@ -4416,6 +4412,21 @@ function openNewCoachSessionModal() {
   };
   body.appendChild(fields.title.wrap);
   body.appendChild(fields.situation.wrap);
+
+  // "📚 Use Business Wiki" — start this session with the wiki wired in (the
+  // coach reads your facts + ingests your messages). Flippable later too.
+  const wikiWrap = h('div', { class: 'form-field coach-wiki-field' });
+  const wikiLabel = h('label', { class: 'switch-inline' });
+  const wikiToggleEl = h('span', { class: 'switch' });
+  const wikiCb = h('input', { type: 'checkbox', 'data-testid': 'coach-new-wiki-toggle' });
+  wikiToggleEl.appendChild(wikiCb);
+  wikiToggleEl.appendChild(h('span', { class: 'switch-track' }));
+  wikiLabel.appendChild(wikiToggleEl);
+  wikiLabel.appendChild(h('span', { class: 'switch-inline-label' }, '📚 Use Business Wiki'));
+  wikiWrap.appendChild(wikiLabel);
+  wikiWrap.appendChild(h('div', { class: 'field-help' }, 'The coach draws on your business facts and ingests your messages back into the wiki. Off = a hermetic principles-mirror.'));
+  body.appendChild(wikiWrap);
+
   $('#edit-modal-delete').hidden = true;
   $('#edit-modal').hidden = false;
   fields.situation.input.focus();
@@ -4428,7 +4439,7 @@ function openNewCoachSessionModal() {
     const r = await fetchJSON('/api/coach/sessions', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ situation, title: fields.title.input.value.trim() || undefined }),
+      body: JSON.stringify({ situation, title: fields.title.input.value.trim() || undefined, useBusinessWiki: wikiCb.checked }),
     });
     toast('Session started — coach is opening the conversation.', 'ok');
     coachState.currentSessionId = r.session.id;

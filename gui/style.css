@@ -1354,6 +1354,9 @@ textarea, input, button { color: inherit; }
   gap: 10px;
 }
 .principle-head .switch { margin-left: auto; flex-shrink: 0; }
+.switch-inline { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; }
+.switch-inline .switch-inline-label { font-size: 13px; color: var(--text); user-select: none; }
+.coach-wiki-field { margin-top: 4px; }
 
 /* ---------- Settings form ---------- */
 

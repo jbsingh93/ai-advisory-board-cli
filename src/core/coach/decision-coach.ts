@@ -32,7 +32,7 @@ export interface CoachReplyOptions {
    * When true, wire the Knowledge Wiki to this turn: grant the coach
    * Read/Grep/Glob over the workspace and append the wiki-instruction block so
    * it can pull the user's business facts / own ingested thoughts on-demand.
-   * Caller is responsible for honoring the global `exposeToCoach` opt-in.
+   * Driven by the per-session `DecisionSession.useBusinessWiki` toggle.
    * See `docs/development/COACH_WIKI_CONTEXT.md`.
    */
   useWiki?: boolean;

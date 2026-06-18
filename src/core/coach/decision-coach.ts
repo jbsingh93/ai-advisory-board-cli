@@ -8,6 +8,7 @@
  * Single non-agent claude call per turn. The coach's "session" is one
  * `DecisionSession` row (messages[] + appliedPrinciples[]).
  */
+import { join } from 'node:path';
 import { runClaude, extractText, type ClaudeStreamEvent } from '../../llm/claude-code-runner.js';
 import { logger } from '../logger.js';
 import { ModelError } from '../errors.js';
@@ -27,6 +28,21 @@ export interface CoachReplyOptions {
   /** Override the model (default: settings.primaryModel). */
   model?: ClaudeModelAlias | ClaudeModel | string;
   timeoutMs?: number;
+  /**
+   * When true, wire the Knowledge Wiki to this turn: grant the coach
+   * Read/Grep/Glob over the workspace and append the wiki-instruction block so
+   * it can pull the user's business facts / own ingested thoughts on-demand.
+   * Caller is responsible for honoring the global `exposeToCoach` opt-in.
+   * See `docs/development/COACH_WIKI_CONTEXT.md`.
+   */
+  useWiki?: boolean;
+  /**
+   * Workspace root (the dir that contains `wiki/`). Required when `useWiki` so
+   * the coach can reach the wiki via `--add-dir` (its spawn cwd is elsewhere).
+   */
+  workspaceRoot?: string;
+  /** Absolute path to the `wiki/` directory. Defaults to `<workspaceRoot>/wiki`. */
+  wikiDir?: string;
 }
 
 export interface CoachReplyResult {
@@ -96,6 +112,51 @@ USER'S PRINCIPLES:
 ${principlesBlock}`;
 }
 
+/**
+ * Wiki-instruction block appended to the coach's system prompt when the
+ * per-session "Use Business Wiki" toggle is ON. Reuses the member-prompt framing
+ * (catalog-first, don't read the mega-index, 1-3 pages) but adds the coach's
+ * non-negotiable guardrail: the wiki is **fuel for sharper principle-grounded
+ * questions, never subject matter to lecture on.** See
+ * `docs/development/COACH_WIKI_CONTEXT.md`.
+ */
+export function buildCoachWikiInstruction(wikiDir: string): string {
+  const dir = wikiDir.replace(/\\/g, '/');
+  const lines: string[] = [];
+  lines.push('## BUSINESS WIKI (on-demand context about THIS user)');
+  lines.push(
+    `The user has turned ON their Knowledge Wiki for this session. It lives at \`${dir}\` and holds what we know about them — their business, market, customers, goals, prior decisions, and their own ingested thoughts. Use it to make your principle-grounded questions **specific to this user** instead of generic.`,
+  );
+  lines.push('');
+  lines.push('Retrieve from it on-demand, within your tool budget:');
+  lines.push(`1. Start from the compact catalog \`${dir}/.aab/catalog.json\` — it lists every page (slug, title, summary, tags). Do NOT \`Read ${dir}/index.md\` in full (it can exceed 256 KB). \`Grep\` for key terms in the situation if the catalog isn't enough.`);
+  lines.push('2. `Read` only the 1-3 most relevant pages before you respond. Pull just what this turn needs — do not browse.');
+  lines.push('3. The wiki (internal, user-specific) is your default source for "who is this user / what is their business". Web search stays the fallback for generic external facts only — same rule as Embrace Reality.');
+  lines.push('');
+  lines.push('**CRITICAL — how to USE what you find:** the wiki is fuel for sharper questions, NEVER subject matter to lecture on. You are still a principles-mirror, not a business advisor. Do NOT summarize, quote at length, or give advice on the wiki\'s contents. Turn a fact into a pointed principle-grounded question — e.g. if you learn "Customer X is 40% of ARR", do not explain concentration risk; ask what their **Embrace Reality** principle says about depending on one customer. Stay Socratic, ground everything in THEIR principles, and end on a reflection question as always.');
+  return lines.join('\n');
+}
+
+/**
+ * Wrap the caller's onEvent so we can observe tool-use names (to flag wiki use)
+ * while still forwarding every event to the original listener untouched.
+ */
+function makeCoachEventForwarder(
+  passthrough: ((event: ClaudeStreamEvent) => void) | undefined,
+  onTool: (toolLower: string) => void,
+): (event: ClaudeStreamEvent) => void {
+  return (event) => {
+    if (event.type === 'assistant' && event.message?.content) {
+      for (const block of event.message.content) {
+        if (block.type === 'tool_use' && typeof block.name === 'string') {
+          onTool(block.name.toLowerCase());
+        }
+      }
+    }
+    passthrough?.(event);
+  };
+}
+
 function renderPrincipleForPrompt(p: Principle): string {
   const lines: string[] = [`**${p.title}** (priority ${p.priority}/10, ${p.category})`];
   lines.push(`Description: ${p.description}`);
@@ -156,11 +217,34 @@ export async function coachReply(
     };
   }
 
+  // Read-side wiki wiring. When on, the coach gets read tools over the workspace
+  // and a guardrailed instruction block telling it to pull the user's business
+  // facts / own thoughts on-demand — as fuel for sharper principle-grounded
+  // questions, NEVER as subject matter to lecture on.
+  const useWiki = !!opts.useWiki;
+  const wikiDir = opts.wikiDir ?? (opts.workspaceRoot ? join(opts.workspaceRoot, 'wiki') : undefined);
+
   const transcript = buildTranscript(session, userTurn, isOpener);
   const systemPrompt = buildDecisionCoachSystemPrompt(principles);
-  const fullPrompt = `${systemPrompt}\n\n---\n\nCONVERSATION SO FAR:\n${transcript}\n\nRespond now as the Decision Coach. Use markdown. Reference principles by their **Title**. Always end with a question or call to reflection.`;
+  const wikiBlock = useWiki && wikiDir ? `\n\n${buildCoachWikiInstruction(wikiDir)}` : '';
+  const fullPrompt = `${systemPrompt}${wikiBlock}\n\n---\n\nCONVERSATION SO FAR:\n${transcript}\n\nRespond now as the Decision Coach. Use markdown. Reference principles by their **Title**. Always end with a question or call to reflection.`;
 
   const model = opts.model ?? settings.primaryModel ?? 'sonnet';
+  // Track whether the coach actually opened the wiki this turn (Read/Grep/Glob)
+  // so we can render the transparency badge. WebSearch/WebFetch don't count.
+  let usedWiki = false;
+  const onEvent = makeCoachEventForwarder(opts.onEvent, (tool) => {
+    if (tool === 'read' || tool === 'grep' || tool === 'glob') usedWiki = true;
+  });
+
+  // When the wiki is on, the coach needs Read/Grep/Glob plus `--add-dir` access
+  // to the workspace root (its spawn cwd is elsewhere). Otherwise it stays
+  // exactly as today: web tools only, hermetic.
+  const allowedTools = useWiki
+    ? ['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob']
+    : ['WebSearch', 'WebFetch'];
+  const addDirs = useWiki && opts.workspaceRoot ? [opts.workspaceRoot] : undefined;
+
   let raw: string;
   try {
     const result = await runClaude({
@@ -172,13 +256,14 @@ export async function coachReply(
       // spurious `max_turns` failures the moment the model takes a search turn
       // before answering (same lesson as emit-member-agent.ts). The per-call
       // budget + wall-clock timeout are the real guardrails.
-      allowedTools: ['WebSearch', 'WebFetch'],
-      // Only WebSearch/WebFetch are needed — skip the (slow / OAuth-stalling)
-      // startup of the user's configured MCP servers.
+      allowedTools,
+      addDirs,
+      // Only WebSearch/WebFetch (+ optional wiki read tools) are needed — skip
+      // the (slow / OAuth-stalling) startup of the user's configured MCP servers.
       strictMcpConfig: true,
       timeoutMs: opts.timeoutMs ?? 5 * 60_000,
       signal: opts.signal,
-      onEvent: opts.onEvent,
+      onEvent,
       maxBudgetUsd: settings.perCallBudgetUsd,
     });
     raw = extractText(result);
@@ -203,6 +288,7 @@ export async function coachReply(
     role: 'assistant',
     content: cleaned,
     principlesReferenced: referenced.length > 0 ? referenced : undefined,
+    usedWiki: usedWiki || undefined,
     createdAt: nowIso(),
   };
 
@@ -261,4 +347,5 @@ export const __test = {
   extractReferencedPrincipleIds,
   mergeAppliedPrinciples,
   renderPrincipleForPrompt,
+  buildCoachWikiInstruction,
 };

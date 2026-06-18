@@ -53,6 +53,8 @@ export interface IngestUserFactsOptions {
   discussionId?: string;
   /** Sparring session id, when kind === 'sparring_message'. */
   sparringSessionId?: string;
+  /** Decision-coach session id, when kind === 'coach_message'. */
+  coachSessionId?: string;
   /** Override the ingest model (default: knowledgeWiki.ingestModel ?? fastModel ?? haiku). */
   modelOverride?: string;
   signal?: AbortSignal;
@@ -81,7 +83,11 @@ export async function ingestUserFacts(opts: IngestUserFactsOptions): Promise<Ing
   const snippet = humanizeSlug(text.split(/\s+/).slice(0, 6).join(' '), 40) || 'user-input';
   const rawPath = join(p.rawUserInputs, `${ts}-${opts.kind}-${snippet}.md`);
   mkdirSync(dirname(rawPath), { recursive: true });
-  writeFileSync(rawPath, renderRawCapture(opts.kind, text, opts.discussionId, opts.sparringSessionId), 'utf8');
+  writeFileSync(
+    rawPath,
+    renderRawCapture(opts.kind, text, opts.discussionId, opts.sparringSessionId, opts.coachSessionId),
+    'utf8',
+  );
   const rawRelPath = toPosix(relative(root, rawPath));
   const hash = sha256Hex(text);
 
@@ -206,10 +212,12 @@ function renderRawCapture(
   text: string,
   discussionId?: string,
   sparringSessionId?: string,
+  coachSessionId?: string,
 ): string {
   const meta: string[] = [`<!-- kind: ${kind} -->`];
   if (discussionId) meta.push(`<!-- discussion: ${discussionId} -->`);
   if (sparringSessionId) meta.push(`<!-- sparring: ${sparringSessionId} -->`);
+  if (coachSessionId) meta.push(`<!-- coach: ${coachSessionId} -->`);
   meta.push(`<!-- captured: ${nowIso()} -->`);
   return `${meta.join('\n')}\n\n${text}\n`;
 }

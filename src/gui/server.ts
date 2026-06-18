@@ -86,6 +86,7 @@ import { buildSourceContext } from '../core/actions/source-context.js';
 import { enhancePersona, researchExpertise, type EnhancementType } from '../core/members/ai-enhancer.js';
 import { generateVoiceGuide } from '../core/members/voice-guide.js';
 import { coachReply, newDecisionSession } from '../core/coach/decision-coach.js';
+import { maybeEnqueueUserInput } from '../core/knowledge/ingest-queue.js';
 import {
   EXPLORER_STEPS,
   applyStep,
@@ -1280,6 +1281,17 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
   // Decision Coach — session CRUD + messages
   // ============================================================
 
+  // Resolve the read-side wiki wiring for a coach turn. The per-session toggle
+  // only takes effect when the global `exposeToCoach` opt-in is on.
+  const coachWikiOpts = (
+    session: DecisionSession,
+    settings: AppSettings,
+  ): { useWiki: boolean; workspaceRoot: string; wikiDir: string } => {
+    const root = opts.storage.getWorkspaceRoot();
+    const useWiki = !!session.useBusinessWiki && settings.knowledgeWiki?.exposeToCoach === true;
+    return { useWiki, workspaceRoot: root, wikiDir: paths(root).wiki };
+  };
+
   app.get('/api/coach/sessions', async (_req, res) => {
     try {
       const sessions = await opts.storage.loadDecisionSessions();
@@ -1308,14 +1320,48 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
     }
   });
 
+  // PATCH — flip the per-session "Use Business Wiki" toggle (mid-session). Only
+  // meaningful when the global `exposeToCoach` opt-in is on, but we persist the
+  // flag regardless so it sticks if the opt-in is later enabled.
+  app.patch('/api/coach/sessions/:id', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as { useBusinessWiki?: unknown };
+      let session = await opts.storage.loadDecisionSessionById(req.params.id);
+      if (!session) {
+        const all = await opts.storage.loadDecisionSessions();
+        const byShort = all.find((s) => s.id.startsWith(req.params.id));
+        if (!byShort) {
+          res.status(404).json({ error: `No coach session matching "${req.params.id}"` });
+          return;
+        }
+        session = byShort;
+      }
+      if (typeof body.useBusinessWiki !== 'boolean') {
+        res.status(400).json({ error: 'Body must include a boolean `useBusinessWiki`.' });
+        return;
+      }
+      const updated: DecisionSession = {
+        ...session,
+        useBusinessWiki: body.useBusinessWiki,
+        updatedAt: nowIso(),
+      };
+      await opts.storage.updateDecisionSession(updated);
+      broadcast({ type: 'coach_session_updated', session: updated });
+      res.json(updated);
+    } catch (error) {
+      sendError(res, 500, error);
+    }
+  });
+
   app.post('/api/coach/sessions', async (req, res) => {
     try {
-      const body = (req.body ?? {}) as { situation?: string; title?: string };
+      const body = (req.body ?? {}) as { situation?: string; title?: string; useBusinessWiki?: boolean };
       if (!body.situation || !body.situation.trim()) {
         res.status(400).json({ error: 'situation is required' });
         return;
       }
       const session = newDecisionSession(body.situation.trim(), body.title?.trim() || undefined);
+      if (typeof body.useBusinessWiki === 'boolean') session.useBusinessWiki = body.useBusinessWiki;
       await opts.storage.saveDecisionSession(session);
       res.status(202).json({ accepted: true, session });
       broadcast({ type: 'coach_session_started', session });
@@ -1326,7 +1372,7 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
           const settings = await opts.storage.loadSettings();
           const principles = await opts.storage.loadPrinciples();
           broadcast({ type: 'coach_thinking', sessionId: session.id });
-          const { session: updated, reply } = await coachReply(session, principles, '', settings);
+          const { session: updated, reply } = await coachReply(session, principles, '', settings, coachWikiOpts(session, settings));
           await opts.storage.updateDecisionSession(updated);
           broadcast({ type: 'coach_message', sessionId: updated.id, message: reply, session: updated });
         } catch (error) {
@@ -1344,7 +1390,7 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
 
   app.post('/api/coach/sessions/:id/messages', async (req, res) => {
     try {
-      const body = (req.body ?? {}) as { content?: string };
+      const body = (req.body ?? {}) as { content?: string; useBusinessWiki?: boolean };
       if (!body.content || !body.content.trim()) {
         res.status(400).json({ error: 'content is required' });
         return;
@@ -1359,6 +1405,11 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
         }
         session = byShort;
       }
+      // Honor a toggle state carried with the message (flip + send atomically).
+      if (typeof body.useBusinessWiki === 'boolean' && body.useBusinessWiki !== session.useBusinessWiki) {
+        session = { ...session, useBusinessWiki: body.useBusinessWiki };
+        await opts.storage.updateDecisionSession(session);
+      }
       res.status(202).json({ accepted: true, sessionId: session.id });
       broadcast({ type: 'coach_thinking', sessionId: session.id });
 
@@ -1366,9 +1417,24 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
         try {
           const settings = await opts.storage.loadSettings();
           const principles = await opts.storage.loadPrinciples();
-          const { session: updated, reply } = await coachReply(session!, principles, body.content!.trim(), settings);
+          const content = body.content!.trim();
+          const { session: updated, reply } = await coachReply(session!, principles, content, settings, coachWikiOpts(session!, settings));
           await opts.storage.updateDecisionSession(updated);
           broadcast({ type: 'coach_message', sessionId: updated.id, message: reply, session: updated });
+
+          // Write side (bidirectional): when the wiki is ON for this session,
+          // ingest the user's own words back into the wiki so their
+          // decision-thinking accumulates. Fire-and-forget via the queue —
+          // gating + non-blocking are the queue's job.
+          if (updated.useBusinessWiki && settings.knowledgeWiki?.exposeToCoach === true) {
+            maybeEnqueueUserInput({
+              text: content,
+              kind: 'coach_message',
+              settings,
+              storage: opts.storage,
+              coachSessionId: updated.id,
+            });
+          }
         } catch (error) {
           broadcast({
             type: 'coach_error',

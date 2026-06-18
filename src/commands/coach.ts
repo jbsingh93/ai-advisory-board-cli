@@ -15,7 +15,9 @@ import { spinner } from '../ui/spinner.js';
 import { UserError } from '../core/errors.js';
 import { nowIso } from '../core/utils.js';
 import { coachReply, newDecisionSession } from '../core/coach/decision-coach.js';
-import type { DecisionSession } from '../storage/types.js';
+import { maybeEnqueueUserInput } from '../core/knowledge/ingest-queue.js';
+import { paths } from '../storage/paths.js';
+import type { AppSettings, DecisionSession } from '../storage/types.js';
 
 export function registerCoachCommand(program: Command): void {
   const coach = program.command('coach').description('principle-based decision coach (Dalio-style)');
@@ -26,7 +28,8 @@ export function registerCoachCommand(program: Command): void {
     .option('--situation <text>', 'situation prompt (for a brand-new session)')
     .option('--title <text>', 'title for a brand-new session')
     .option('--no-stream', 'disable token streaming (useful for testing)')
-    .action(async (opts: { resume?: string; situation?: string; title?: string; stream?: boolean }) => {
+    .option('--wiki', 'wire the Business/Knowledge Wiki to the coach for this session (reads + ingests)')
+    .action(async (opts: { resume?: string; situation?: string; title?: string; stream?: boolean; wiki?: boolean }) => {
       // If the user invoked a subcommand, commander handles it. This action
       // only fires when there's no subcommand.
       const ctx = await openContext(coach);
@@ -55,6 +58,16 @@ export function registerCoachCommand(program: Command): void {
         }
 
         const settings = await ctx.storage.loadSettings();
+        if (opts.wiki) {
+          assertWikiOptIn(settings);
+          if (!session.useBusinessWiki) {
+            session.useBusinessWiki = true;
+            await ctx.storage.updateDecisionSession(session);
+          }
+        }
+        if (session.useBusinessWiki && settings.knowledgeWiki?.exposeToCoach === true) {
+          process.stdout.write(c.hint('📚 Business Wiki is ON for this session.\n'));
+        }
         const principles = await ctx.storage.loadPrinciples();
         const activePrincipleCount = principles.filter((pp) => pp.isActive).length;
         process.stdout.write(
@@ -66,7 +79,9 @@ export function registerCoachCommand(program: Command): void {
           const sp = spinner('Coach thinking...');
           sp.start();
           try {
-            const { session: updated, reply } = await coachReply(session, principles, '', settings);
+            const { session: updated, reply } = await coachReply(
+              session, principles, '', settings, coachWikiRunOpts(session, settings, ctx.workspace.root),
+            );
             sp.stop();
             session = updated;
             await ctx.storage.updateDecisionSession(session);
@@ -90,11 +105,14 @@ export function registerCoachCommand(program: Command): void {
           const sp = spinner('Coach thinking...');
           sp.start();
           try {
-            const { session: updated, reply } = await coachReply(session, principles, trimmed, settings);
+            const { session: updated, reply } = await coachReply(
+              session, principles, trimmed, settings, coachWikiRunOpts(session, settings, ctx.workspace.root),
+            );
             sp.stop();
             session = updated;
             await ctx.storage.updateDecisionSession(session);
             renderMessage(reply.role, reply.content);
+            fireCoachIngest(session, settings, ctx.storage, trimmed);
           } catch (error) {
             sp.fail(`Coach failed: ${error instanceof Error ? error.message : String(error)}`);
             // Continue the REPL so the user can retry.
@@ -112,7 +130,8 @@ export function registerCoachCommand(program: Command): void {
   coach
     .command('send <sessionId> <message>')
     .description('send one message and print the coach reply (non-interactive)')
-    .action(async (sessionId: string, message: string) => {
+    .option('--wiki', 'wire the Business/Knowledge Wiki to the coach (reads + ingests); persists onto the session')
+    .action(async (sessionId: string, message: string, sendOpts: { wiki?: boolean }) => {
       const ctx = await openContext(coach);
       try {
         let session = await ctx.storage.loadDecisionSessionById(sessionId);
@@ -123,9 +142,16 @@ export function registerCoachCommand(program: Command): void {
           session = byShort;
         }
         const settings = await ctx.storage.loadSettings();
+        if (sendOpts.wiki) {
+          assertWikiOptIn(settings);
+          session = { ...session, useBusinessWiki: true };
+        }
         const principles = await ctx.storage.loadPrinciples();
-        const { session: updated, reply } = await coachReply(session, principles, message, settings);
+        const { session: updated, reply } = await coachReply(
+          session, principles, message, settings, coachWikiRunOpts(session, settings, ctx.workspace.root),
+        );
         await ctx.storage.updateDecisionSession(updated);
+        fireCoachIngest(updated, settings, ctx.storage, message);
         if (ctx.json) {
           process.stdout.write(JSON.stringify({ session: updated, reply }, null, 2) + '\n');
           return;
@@ -254,6 +280,50 @@ export function registerCoachCommand(program: Command): void {
       }
     });
 }
+
+/** Read-side wiki wiring for a coach turn (gated by the global opt-in). */
+function coachWikiRunOpts(
+  session: DecisionSession,
+  settings: AppSettings,
+  root: string,
+): { useWiki: boolean; workspaceRoot: string; wikiDir: string } {
+  const useWiki = !!session.useBusinessWiki && settings.knowledgeWiki?.exposeToCoach === true;
+  return { useWiki, workspaceRoot: root, wikiDir: paths(root).wiki };
+}
+
+/** Reject `--wiki` when the global opt-in is off, with a fix-it hint. */
+function assertWikiOptIn(settings: AppSettings): void {
+  if (settings.knowledgeWiki?.exposeToCoach !== true) {
+    throw new UserError(
+      'The Business Wiki is not enabled for the Decision Coach.',
+      'Enable it first: set `knowledgeWiki.exposeToCoach` to true (Settings in the web UI, or edit the workspace settings.json), then retry with --wiki.',
+    );
+  }
+}
+
+/**
+ * Write side (bidirectional): when the wiki is ON for this session, ingest the
+ * user's own words back into the wiki. Fire-and-forget — the queue gates +
+ * never blocks; `closeContext` drains it before the CLI exits.
+ */
+function fireCoachIngest(
+  session: DecisionSession,
+  settings: AppSettings,
+  storage: CommandContextStorage,
+  text: string,
+): void {
+  if (session.useBusinessWiki && settings.knowledgeWiki?.exposeToCoach === true) {
+    maybeEnqueueUserInput({
+      text,
+      kind: 'coach_message',
+      settings,
+      storage,
+      coachSessionId: session.id,
+    });
+  }
+}
+
+type CommandContextStorage = Awaited<ReturnType<typeof openContext>>['storage'];
 
 function renderMessage(role: 'user' | 'assistant', content: string): void {
   if (role === 'user') {

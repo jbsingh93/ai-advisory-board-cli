@@ -25,7 +25,8 @@ export type UserInputKind =
   | 'initial_question'
   | 'follow_up'
   | 'hitl_response'
-  | 'sparring_message';
+  | 'sparring_message'
+  | 'coach_message';
 
 export interface UserFactMergePromptInput {
   /** The user's own words (one utterance, or a coalesced burst of them). */
@@ -49,6 +50,8 @@ const KIND_FRAMING: Record<UserInputKind, string> = {
     'This is the user answering a clarifying question the board asked them. It is direct, high-signal ground truth — their stated facts, preferences, and decisions.',
   sparring_message:
     'This is the user talking to one advisor in a private 1:1 deep-dive. It tends to be candid and detailed about their real situation.',
+  coach_message:
+    "This is the user thinking through a hard decision with their principles-based decision coach. It is candid, reflective, and high-signal about their real situation, values, and what they're weighing.",
 };
 
 export function buildUserFactMergePrompt(input: UserFactMergePromptInput): string {

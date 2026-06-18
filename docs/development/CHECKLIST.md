@@ -270,6 +270,11 @@ Live progress tracker. Each item is a concrete deliverable. Phase numbering matc
 - [x] `src/core/coach/principle-explorer.ts` — 5-step explorer flow with cross-step context (`renderCrossStepContext` groups by step), `extractSuggested` regex per step, `applyStep` merges synthesized text into the working draft
 - [x] DecisionSession persistence — `loadDecisionSessions / loadDecisionSessionById / saveDecisionSession / updateDecisionSession / deleteDecisionSession` added to `StorageService` interface; one JSON file per session under `decision-sessions/`; updated-desc sort for list display
 
+##### Decision Coach enhancements (2026-06-18)
+
+- [x] **Web search grounding** — `coachReply` now spawns with `allowedTools: ['WebSearch', 'WebFetch']` (+ `strictMcpConfig: true`) instead of `allowedTools: []`, and the hard `maxTurns: 1` cap is removed (a 1-turn cap aborts the moment the coach takes a search turn before answering — same lesson as `emit-member-agent.ts`). The system prompt gains a **"GROUND FACTS IN REALITY"** section telling the coach to verify time-sensitive / checkable facts (company public-vs-private status, prices, valuations, recent events, regulations) via the web before asserting them — its training cutoff goes stale (e.g. a company that IPO'd after the cutoff). Fixes the coach calling a now-public company "private". Per-call budget + 5-min wall-clock timeout remain the guardrails.
+- [x] **Rendered markdown in the web chat** — assistant coach bubbles in `gui/app.js` now run `renderWikiBody(m.content)` into `innerHTML` (the same lightweight markdown renderer the member responses use) instead of `textContent`, so headings/bold/lists/blockquotes render instead of showing raw `##`/`**` source. User turns stay plain `textContent` (never interpret user input as markup). `gui/style.css` `.coach-msg.assistant .coach-msg-body` switched from `white-space: pre-wrap` to `normal` with block-spacing rules for the rendered elements.
+
 #### Decision Coach UI (`gui/`)
 
 - [x] Sidebar item: **🧠 Coach** opens chat view (`data-route="coach"`, `data-testid="tab-coach"`)

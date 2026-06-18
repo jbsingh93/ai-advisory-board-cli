@@ -4283,7 +4283,14 @@ function renderCoachChat() {
     const bubble = h('div', { class: `coach-msg ${m.role}` });
     bubble.appendChild(h('span', { class: 'coach-role' }, m.role === 'user' ? 'you' : 'coach'));
     const body = h('div', { class: 'coach-msg-body' });
-    body.textContent = m.content;
+    // The coach replies in markdown — render it to HTML (same lightweight
+    // renderer the member responses use). User turns stay plain text so we
+    // never interpret user input as markup.
+    if (m.role === 'assistant') {
+      body.innerHTML = renderWikiBody(m.content || '');
+    } else {
+      body.textContent = m.content;
+    }
     bubble.appendChild(body);
     if (m.principlesReferenced && m.principlesReferenced.length > 0) {
       const refs = h('div', { class: 'coach-msg-refs' });

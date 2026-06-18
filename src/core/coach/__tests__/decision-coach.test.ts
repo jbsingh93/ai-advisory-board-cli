@@ -48,6 +48,15 @@ describe('buildDecisionCoachSystemPrompt', () => {
     const prompt = buildDecisionCoachSystemPrompt([]);
     expect(prompt).toContain('(no principles defined yet');
   });
+
+  it('instructs the coach to ground time-sensitive facts via web search', () => {
+    const prompt = buildDecisionCoachSystemPrompt([p({ title: 'Embrace Reality' })]);
+    expect(prompt).toContain('WebSearch');
+    expect(prompt).toContain('WebFetch');
+    // Mentions the stale-training failure mode the web-search grounding fixes.
+    expect(prompt.toLowerCase()).toContain('public');
+    expect(prompt.toLowerCase()).toContain('cutoff');
+  });
 });
 
 describe('renderPrincipleForPrompt', () => {

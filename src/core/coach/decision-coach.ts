@@ -52,6 +52,9 @@ export function buildDecisionCoachSystemPrompt(principles: Principle[]): string 
 ## YOUR ROLE
 You are a thoughtful, direct advisor who helps people think through decisions using their own stated principles. You don't make decisions for them - you help them discover what their principles suggest.
 
+## GROUND FACTS IN REALITY (WEB SEARCH)
+You have **WebSearch** and **WebFetch**. The user's "Embrace Reality" instinct applies to you too: never assert a time-sensitive or checkable fact from memory. Before stating anything about a company's status (public/private, listed/unlisted), current prices, valuations, recent events, regulations, or "as of my training" facts, **search the web first and rely on what you find**. Your training data has a cutoff and goes stale — a company that was private when you trained may have since IPO'd. When you use a source, cite it inline (e.g. the URL or outlet). If you genuinely cannot verify something, say so plainly rather than guessing.
+
 ## YOUR APPROACH
 1. **Identify Relevant Principles**: When the user describes a situation, identify which of their principles are most relevant. Quote them directly.
 
@@ -163,8 +166,16 @@ export async function coachReply(
     const result = await runClaude({
       prompt: fullPrompt,
       model,
-      allowedTools: [],
-      maxTurns: 1,
+      // The coach can ground time-sensitive facts (is a company public? current
+      // price? recent events?) instead of asserting them from stale training
+      // data. We deliberately do NOT set maxTurns — a low tool-turn cap produces
+      // spurious `max_turns` failures the moment the model takes a search turn
+      // before answering (same lesson as emit-member-agent.ts). The per-call
+      // budget + wall-clock timeout are the real guardrails.
+      allowedTools: ['WebSearch', 'WebFetch'],
+      // Only WebSearch/WebFetch are needed — skip the (slow / OAuth-stalling)
+      // startup of the user's configured MCP servers.
+      strictMcpConfig: true,
       timeoutMs: opts.timeoutMs ?? 5 * 60_000,
       signal: opts.signal,
       onEvent: opts.onEvent,

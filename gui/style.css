@@ -1917,6 +1917,34 @@ textarea, input, button { color: inherit; }
   font-size: 13px;
   resize: vertical;
 }
+.coach-composer-controls { display: flex; flex-direction: column; gap: 6px; align-items: stretch; justify-content: flex-end; }
+.coach-wiki-toggle {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.coach-wiki-toggle:hover { border-color: var(--accent); color: var(--text); }
+.coach-wiki-toggle.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.coach-wiki-toggle:disabled { opacity: 0.5; cursor: default; }
+.coach-msg-badge {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 999px;
+  padding: 1px 8px;
+  width: fit-content;
+}
 
 /* ==================================================================
    Sparring (Phase 3) — 1:1 deep dive modal

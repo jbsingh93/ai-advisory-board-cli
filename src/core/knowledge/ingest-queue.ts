@@ -39,6 +39,7 @@ export interface UserFactJob {
   settings: AppSettings;
   discussionId?: string;
   sparringSessionId?: string;
+  coachSessionId?: string;
   /** Optional event identity for double-fire idempotency (e.g. UserResponse.id). */
   eventId?: string;
 }
@@ -102,6 +103,7 @@ export function createIngestQueue(runner: IngestRunner = ingestUserFacts): Inges
                 settings: group.settings,
                 discussionId: group.discussionId,
                 sparringSessionId: group.sparringSessionId,
+                coachSessionId: group.coachSessionId,
               });
             } catch (error) {
               logger.warn('[ingest-queue] user-fact ingest failed (non-blocking):', error);
@@ -132,7 +134,7 @@ export function createIngestQueue(runner: IngestRunner = ingestUserFacts): Inges
 export function coalesce(batch: UserFactJob[]): UserFactJob[] {
   const groups = new Map<string, UserFactJob[]>();
   for (const job of batch) {
-    const scope = job.discussionId ?? job.sparringSessionId ?? '_';
+    const scope = job.discussionId ?? job.sparringSessionId ?? job.coachSessionId ?? '_';
     const key = `${scope}::${job.kind}`;
     const arr = groups.get(key);
     if (arr) arr.push(job);
@@ -175,6 +177,7 @@ export interface MaybeEnqueueOptions {
   storage: StorageService;
   discussionId?: string;
   sparringSessionId?: string;
+  coachSessionId?: string;
   eventId?: string;
 }
 
@@ -207,6 +210,7 @@ export function maybeEnqueueUserInput(opts: MaybeEnqueueOptions): void {
       settings: opts.settings,
       discussionId: opts.discussionId,
       sparringSessionId: opts.sparringSessionId,
+      coachSessionId: opts.coachSessionId,
       eventId: opts.eventId,
     });
   } catch (error) {

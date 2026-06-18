@@ -290,6 +290,12 @@ export interface DecisionMessage {
   role: 'user' | 'assistant';
   content: string;
   principlesReferenced?: string[];
+  /**
+   * True when the coach actually consulted the Business Wiki (Read/Grep/Glob)
+   * while producing this turn. Drives the `📚 wiki` transparency badge in the
+   * UI. Only set on assistant turns. See `docs/development/COACH_WIKI_CONTEXT.md`.
+   */
+  usedWiki?: boolean;
   createdAt: string;
 }
 
@@ -303,6 +309,15 @@ export interface DecisionSession {
   outcome?: string;
   reflection?: string;
   status: 'active' | 'decided' | 'reflected';
+  /**
+   * Per-session "Use Business Wiki" toggle. When true, the coach is wired to the
+   * Knowledge Wiki both ways: it reads business facts / the user's own ingested
+   * thoughts on-demand, and the user's coach messages are ingested back into the
+   * wiki. Default false (hermetic principles-mirror). Flippable mid-session.
+   * Gated globally by `KnowledgeWikiSettings.exposeToCoach`.
+   * See `docs/development/COACH_WIKI_CONTEXT.md`.
+   */
+  useBusinessWiki?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -429,6 +444,15 @@ export interface KnowledgeWikiSettings {
   summarySoftCap: number;
   exposeToMemberAgents: boolean;
   exposeToOrchestrator: boolean;
+  /**
+   * Global opt-in for wiring the Knowledge Wiki to the Decision Coach. When
+   * false (default) the per-session "Use Business Wiki" toggle is hidden and the
+   * coach never touches the wiki — today's hermetic behavior. When true, the
+   * per-session toggle becomes available (and still defaults OFF per session).
+   * Mirrors `exposeToMemberAgents` / `exposeToOrchestrator`.
+   * See `docs/development/COACH_WIKI_CONTEXT.md`.
+   */
+  exposeToCoach: boolean;
   recommendFoam: boolean;
   slugMapInIndex: boolean;
   maxAliasesGlobal: number;
@@ -466,6 +490,7 @@ export const DEFAULT_KNOWLEDGE_WIKI_SETTINGS: KnowledgeWikiSettings = {
   summarySoftCap: 200,
   exposeToMemberAgents: true,
   exposeToOrchestrator: true,
+  exposeToCoach: false,
   recommendFoam: true,
   slugMapInIndex: true,
   maxAliasesGlobal: 100,

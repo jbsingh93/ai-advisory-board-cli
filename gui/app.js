@@ -4302,6 +4302,12 @@ function renderCoachChat() {
         bubble.appendChild(refs);
       }
     }
+    // Transparency: the coach consulted the Business Wiki for this reply.
+    if (m.role === 'assistant' && m.usedWiki) {
+      bubble.appendChild(
+        h('div', { class: 'coach-msg-badge', 'data-testid': 'coach-wiki-badge', title: 'The coach drew on your Business Wiki for this reply.' }, '📚 wiki'),
+      );
+    }
     stream.appendChild(bubble);
   }
   if (coachState.thinking) {
@@ -4315,6 +4321,44 @@ function renderCoachChat() {
     placeholder: 'Type your message…',
     'data-testid': 'coach-input',
   });
+
+  // "📚 Use Business Wiki" toggle — only when the global opt-in is on
+  // (knowledgeWiki.exposeToCoach). Per-session, flippable mid-session.
+  const wikiOptIn = !!(state.settings && state.settings.knowledgeWiki && state.settings.knowledgeWiki.exposeToCoach);
+  let wikiToggle = null;
+  if (wikiOptIn) {
+    const on = !!s.useBusinessWiki;
+    wikiToggle = h(
+      'button',
+      {
+        type: 'button',
+        class: 'coach-wiki-toggle' + (on ? ' on' : ''),
+        'data-testid': 'coach-wiki-toggle',
+        'aria-pressed': on ? 'true' : 'false',
+        title: 'Use your Business Wiki as context for this session — the coach reads your facts and ingests your messages. Flip anytime.',
+      },
+      on ? '📚 Wiki: ON' : '📚 Wiki: OFF',
+    );
+    wikiToggle.addEventListener('click', async () => {
+      const next = !s.useBusinessWiki;
+      wikiToggle.disabled = true;
+      try {
+        const updated = await fetchJSON('/api/coach/sessions/' + s.id, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ useBusinessWiki: next }),
+        });
+        coachState.currentSession = updated;
+        refreshCoachSessions();
+        renderCoachChat();
+        toast(next ? '📚 Business Wiki ON for this session.' : 'Business Wiki OFF.', 'ok');
+      } catch (e) {
+        toast('Could not update: ' + e.message, 'err');
+        wikiToggle.disabled = false;
+      }
+    });
+  }
+
   const sendBtn = h('button', { class: 'btn-primary', 'data-testid': 'coach-send-btn' }, 'Send');
   const send = async () => {
     const text = input.value.trim();
@@ -4327,7 +4371,8 @@ function renderCoachChat() {
       await fetchJSON(`/api/coach/sessions/${s.id}/messages`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ content: text }),
+        // Carry the current toggle state so a flip + send in one go is atomic.
+        body: JSON.stringify({ content: text, useBusinessWiki: !!s.useBusinessWiki }),
       });
       // The actual reply arrives via WS coach_message.
     } catch (e) {
@@ -4346,7 +4391,10 @@ function renderCoachChat() {
     }
   });
   composer.appendChild(input);
-  composer.appendChild(sendBtn);
+  const composerControls = h('div', { class: 'coach-composer-controls' });
+  if (wikiToggle) composerControls.appendChild(wikiToggle);
+  composerControls.appendChild(sendBtn);
+  composer.appendChild(composerControls);
   detail.appendChild(composer);
 
   // Auto-scroll to bottom

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildDecisionCoachSystemPrompt, newDecisionSession, __test } from '../decision-coach.js';
 import type { Principle } from '../../../storage/types.js';
 
-const { extractReferencedPrincipleIds, mergeAppliedPrinciples, renderPrincipleForPrompt, buildTranscript } = __test;
+const { extractReferencedPrincipleIds, mergeAppliedPrinciples, renderPrincipleForPrompt, buildTranscript, buildCoachWikiInstruction } = __test;
 
 function p(overrides: Partial<Principle>): Principle {
   return {
@@ -56,6 +56,32 @@ describe('buildDecisionCoachSystemPrompt', () => {
     // Mentions the stale-training failure mode the web-search grounding fixes.
     expect(prompt.toLowerCase()).toContain('public');
     expect(prompt.toLowerCase()).toContain('cutoff');
+  });
+});
+
+describe('buildCoachWikiInstruction', () => {
+  it('embeds the wiki dir (forward-slashed) and the catalog-first guidance', () => {
+    const out = buildCoachWikiInstruction('C:\\ws\\wiki');
+    expect(out).toContain('C:/ws/wiki');
+    expect(out).toContain('.aab/catalog.json');
+    // Must steer away from reading the mega-index in full.
+    expect(out).toContain('index.md');
+  });
+
+  it('carries the "fuel for sharper questions, do NOT lecture" guardrail', () => {
+    const out = buildCoachWikiInstruction('/ws/wiki');
+    const lower = out.toLowerCase();
+    expect(lower).toContain('sharper');
+    expect(lower).toContain('never subject matter');
+    // Explicitly forbids summarizing/advising on the wiki contents.
+    expect(lower).toContain('do not summarize');
+    expect(lower).toContain('not a business advisor');
+  });
+
+  it('keeps wiki as the default source and web search as the fallback', () => {
+    const out = buildCoachWikiInstruction('/ws/wiki').toLowerCase();
+    expect(out).toContain('default source');
+    expect(out).toContain('fallback');
   });
 });
 

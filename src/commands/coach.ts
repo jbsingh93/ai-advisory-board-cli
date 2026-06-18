@@ -58,14 +58,11 @@ export function registerCoachCommand(program: Command): void {
         }
 
         const settings = await ctx.storage.loadSettings();
-        if (opts.wiki) {
-          assertWikiOptIn(settings);
-          if (!session.useBusinessWiki) {
-            session.useBusinessWiki = true;
-            await ctx.storage.updateDecisionSession(session);
-          }
+        if (opts.wiki && !session.useBusinessWiki) {
+          session.useBusinessWiki = true;
+          await ctx.storage.updateDecisionSession(session);
         }
-        if (session.useBusinessWiki && settings.knowledgeWiki?.exposeToCoach === true) {
+        if (session.useBusinessWiki) {
           process.stdout.write(c.hint('📚 Business Wiki is ON for this session.\n'));
         }
         const principles = await ctx.storage.loadPrinciples();
@@ -80,7 +77,7 @@ export function registerCoachCommand(program: Command): void {
           sp.start();
           try {
             const { session: updated, reply } = await coachReply(
-              session, principles, '', settings, coachWikiRunOpts(session, settings, ctx.workspace.root),
+              session, principles, '', settings, coachWikiRunOpts(session, ctx.workspace.root),
             );
             sp.stop();
             session = updated;
@@ -106,7 +103,7 @@ export function registerCoachCommand(program: Command): void {
           sp.start();
           try {
             const { session: updated, reply } = await coachReply(
-              session, principles, trimmed, settings, coachWikiRunOpts(session, settings, ctx.workspace.root),
+              session, principles, trimmed, settings, coachWikiRunOpts(session, ctx.workspace.root),
             );
             sp.stop();
             session = updated;
@@ -143,12 +140,11 @@ export function registerCoachCommand(program: Command): void {
         }
         const settings = await ctx.storage.loadSettings();
         if (sendOpts.wiki) {
-          assertWikiOptIn(settings);
           session = { ...session, useBusinessWiki: true };
         }
         const principles = await ctx.storage.loadPrinciples();
         const { session: updated, reply } = await coachReply(
-          session, principles, message, settings, coachWikiRunOpts(session, settings, ctx.workspace.root),
+          session, principles, message, settings, coachWikiRunOpts(session, ctx.workspace.root),
         );
         await ctx.storage.updateDecisionSession(updated);
         fireCoachIngest(updated, settings, ctx.storage, message);
@@ -281,24 +277,12 @@ export function registerCoachCommand(program: Command): void {
     });
 }
 
-/** Read-side wiki wiring for a coach turn (gated by the global opt-in). */
+/** Read-side wiki wiring for a coach turn — driven by the per-session toggle. */
 function coachWikiRunOpts(
   session: DecisionSession,
-  settings: AppSettings,
   root: string,
 ): { useWiki: boolean; workspaceRoot: string; wikiDir: string } {
-  const useWiki = !!session.useBusinessWiki && settings.knowledgeWiki?.exposeToCoach === true;
-  return { useWiki, workspaceRoot: root, wikiDir: paths(root).wiki };
-}
-
-/** Reject `--wiki` when the global opt-in is off, with a fix-it hint. */
-function assertWikiOptIn(settings: AppSettings): void {
-  if (settings.knowledgeWiki?.exposeToCoach !== true) {
-    throw new UserError(
-      'The Business Wiki is not enabled for the Decision Coach.',
-      'Enable it first: set `knowledgeWiki.exposeToCoach` to true (Settings in the web UI, or edit the workspace settings.json), then retry with --wiki.',
-    );
-  }
+  return { useWiki: !!session.useBusinessWiki, workspaceRoot: root, wikiDir: paths(root).wiki };
 }
 
 /**
@@ -312,7 +296,7 @@ function fireCoachIngest(
   storage: CommandContextStorage,
   text: string,
 ): void {
-  if (session.useBusinessWiki && settings.knowledgeWiki?.exposeToCoach === true) {
+  if (session.useBusinessWiki) {
     maybeEnqueueUserInput({
       text,
       kind: 'coach_message',

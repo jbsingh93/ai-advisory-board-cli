@@ -1281,15 +1281,13 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
   // Decision Coach — session CRUD + messages
   // ============================================================
 
-  // Resolve the read-side wiki wiring for a coach turn. The per-session toggle
-  // only takes effect when the global `exposeToCoach` opt-in is on.
+  // Resolve the read-side wiki wiring for a coach turn. Driven solely by the
+  // per-session "Use Business Wiki" toggle — no global opt-in required.
   const coachWikiOpts = (
     session: DecisionSession,
-    settings: AppSettings,
   ): { useWiki: boolean; workspaceRoot: string; wikiDir: string } => {
     const root = opts.storage.getWorkspaceRoot();
-    const useWiki = !!session.useBusinessWiki && settings.knowledgeWiki?.exposeToCoach === true;
-    return { useWiki, workspaceRoot: root, wikiDir: paths(root).wiki };
+    return { useWiki: !!session.useBusinessWiki, workspaceRoot: root, wikiDir: paths(root).wiki };
   };
 
   app.get('/api/coach/sessions', async (_req, res) => {
@@ -1320,9 +1318,7 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
     }
   });
 
-  // PATCH — flip the per-session "Use Business Wiki" toggle (mid-session). Only
-  // meaningful when the global `exposeToCoach` opt-in is on, but we persist the
-  // flag regardless so it sticks if the opt-in is later enabled.
+  // PATCH — flip the per-session "Use Business Wiki" toggle (mid-session).
   app.patch('/api/coach/sessions/:id', async (req, res) => {
     try {
       const body = (req.body ?? {}) as { useBusinessWiki?: unknown };
@@ -1372,7 +1368,7 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
           const settings = await opts.storage.loadSettings();
           const principles = await opts.storage.loadPrinciples();
           broadcast({ type: 'coach_thinking', sessionId: session.id });
-          const { session: updated, reply } = await coachReply(session, principles, '', settings, coachWikiOpts(session, settings));
+          const { session: updated, reply } = await coachReply(session, principles, '', settings, coachWikiOpts(session));
           await opts.storage.updateDecisionSession(updated);
           broadcast({ type: 'coach_message', sessionId: updated.id, message: reply, session: updated });
         } catch (error) {
@@ -1418,7 +1414,7 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
           const settings = await opts.storage.loadSettings();
           const principles = await opts.storage.loadPrinciples();
           const content = body.content!.trim();
-          const { session: updated, reply } = await coachReply(session!, principles, content, settings, coachWikiOpts(session!, settings));
+          const { session: updated, reply } = await coachReply(session!, principles, content, settings, coachWikiOpts(session!));
           await opts.storage.updateDecisionSession(updated);
           broadcast({ type: 'coach_message', sessionId: updated.id, message: reply, session: updated });
 
@@ -1426,7 +1422,7 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
           // ingest the user's own words back into the wiki so their
           // decision-thinking accumulates. Fire-and-forget via the queue —
           // gating + non-blocking are the queue's job.
-          if (updated.useBusinessWiki && settings.knowledgeWiki?.exposeToCoach === true) {
+          if (updated.useBusinessWiki) {
             maybeEnqueueUserInput({
               text: content,
               kind: 'coach_message',

@@ -42,6 +42,12 @@ export interface UserFactJob {
   coachSessionId?: string;
   /** Optional event identity for double-fire idempotency (e.g. UserResponse.id). */
   eventId?: string;
+  /**
+   * Optional callback invoked with the ingest result once the merge agent runs
+   * for this job (or null if it failed). Used by the coach to surface "what was
+   * added to your wiki" for a turn. Best-effort — never blocks the queue.
+   */
+  onResult?: (result: unknown) => void | Promise<void>;
 }
 
 export type IngestRunner = (opts: IngestUserFactsOptions) => Promise<unknown>;
@@ -96,7 +102,7 @@ export function createIngestQueue(runner: IngestRunner = ingestUserFacts): Inges
           const batch = state.pending.splice(0, state.pending.length);
           for (const group of coalesce(batch)) {
             try {
-              await runner({
+              const result = await runner({
                 text: group.text,
                 kind: group.kind,
                 workspace: group.workspace,
@@ -105,8 +111,14 @@ export function createIngestQueue(runner: IngestRunner = ingestUserFacts): Inges
                 sparringSessionId: group.sparringSessionId,
                 coachSessionId: group.coachSessionId,
               });
+              if (group.onResult) {
+                try { await group.onResult(result); } catch { /* best-effort */ }
+              }
             } catch (error) {
               logger.warn('[ingest-queue] user-fact ingest failed (non-blocking):', error);
+              if (group.onResult) {
+                try { await group.onResult(null); } catch { /* best-effort */ }
+              }
             }
           }
         }
@@ -179,6 +191,7 @@ export interface MaybeEnqueueOptions {
   sparringSessionId?: string;
   coachSessionId?: string;
   eventId?: string;
+  onResult?: (result: unknown) => void | Promise<void>;
 }
 
 /**
@@ -212,6 +225,7 @@ export function maybeEnqueueUserInput(opts: MaybeEnqueueOptions): void {
       sparringSessionId: opts.sparringSessionId,
       coachSessionId: opts.coachSessionId,
       eventId: opts.eventId,
+      onResult: opts.onResult,
     });
   } catch (error) {
     logger.debug('[ingest-queue] enqueue failed (non-blocking):', error);

@@ -67,6 +67,7 @@ import type {
   AdvisoryBoardMember,
   AppSettings,
   Board,
+  DecisionMessage,
   DecisionSession,
   Discussion,
   Principle,
@@ -1290,6 +1291,31 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
     return { useWiki: !!session.useBusinessWiki, workspaceRoot: root, wikiDir: paths(root).wiki };
   };
 
+  // Persist the wiki-ingest result of a coach user turn onto that message, so
+  // the UI can show "what was added to your wiki". Returns the recorded summary
+  // (or null if there's nothing to record / the message vanished).
+  const recordCoachWikiIngest = async (
+    storage: FsStorageService,
+    sessionId: string,
+    messageId: string | undefined,
+    result: unknown,
+  ): Promise<DecisionMessage['wikiIngest'] | null> => {
+    if (!messageId) return null;
+    const r = (result ?? {}) as { producedPages?: unknown; updatedPages?: unknown; notes?: unknown };
+    const ingest = {
+      producedPages: Array.isArray(r.producedPages) ? (r.producedPages as string[]) : [],
+      updatedPages: Array.isArray(r.updatedPages) ? (r.updatedPages as string[]) : [],
+      notes: typeof r.notes === 'string' ? r.notes : undefined,
+    };
+    const session = await storage.loadDecisionSessionById(sessionId);
+    if (!session) return null;
+    const msg = session.messages.find((m) => m.id === messageId);
+    if (!msg) return null;
+    msg.wikiIngest = ingest;
+    await storage.updateDecisionSession({ ...session, updatedAt: nowIso() });
+    return ingest;
+  };
+
   app.get('/api/coach/sessions', async (_req, res) => {
     try {
       const sessions = await opts.storage.loadDecisionSessions();
@@ -1421,14 +1447,27 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServerHand
           // Write side (bidirectional): when the wiki is ON for this session,
           // ingest the user's own words back into the wiki so their
           // decision-thinking accumulates. Fire-and-forget via the queue —
-          // gating + non-blocking are the queue's job.
+          // gating + non-blocking are the queue's job. The onResult callback
+          // records "what was added to your wiki" onto the user turn + streams
+          // it to the UI.
           if (updated.useBusinessWiki) {
+            const userMsg = [...updated.messages].reverse().find((m) => m.role === 'user');
             maybeEnqueueUserInput({
               text: content,
               kind: 'coach_message',
               settings,
               storage: opts.storage,
               coachSessionId: updated.id,
+              onResult: async (result) => {
+                try {
+                  const ingest = await recordCoachWikiIngest(opts.storage, updated.id, userMsg?.id, result);
+                  if (ingest) {
+                    broadcast({ type: 'coach_wiki_ingested', sessionId: updated.id, messageId: userMsg?.id, wikiIngest: ingest });
+                  }
+                } catch (err) {
+                  logger.debug('[coach] record wiki ingest failed (non-blocking):', err);
+                }
+              },
             });
           }
         } catch (error) {

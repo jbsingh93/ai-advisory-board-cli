@@ -4245,6 +4245,94 @@ async function loadCoachSession(id) {
   }
 }
 
+// wiki/entities/globex-account.md → "globex-account"
+function coachWikiPageLabel(relPath) {
+  return String(relPath || '').split('/').pop().replace(/\.md$/, '');
+}
+
+// Expandable "📚 wiki" badge for an assistant turn: lists the wiki pages the
+// coach read + what it searched for.
+function renderCoachWikiUsage(m) {
+  const u = m.wikiUsage || {};
+  const sources = u.sourcesRead || [];
+  const queries = u.queries || [];
+  if (!m.usedWiki && sources.length === 0 && queries.length === 0) return null;
+
+  const wrap = h('div', { class: 'coach-wiki-detail' });
+  const count = sources.length;
+  const badge = h('button', {
+    type: 'button',
+    class: 'coach-msg-badge coach-wiki-badge-btn',
+    'data-testid': 'coach-wiki-badge',
+    'aria-expanded': 'false',
+    title: 'What the coach used from your Business Wiki — click to expand',
+  }, count > 0 ? `📚 wiki · ${count} source${count === 1 ? '' : 's'} ▸` : '📚 wiki ▸');
+
+  const panel = h('div', { class: 'coach-wiki-panel', 'data-testid': 'coach-wiki-panel' });
+  panel.hidden = true;
+  if (sources.length > 0) {
+    panel.appendChild(h('div', { class: 'coach-wiki-panel-head' }, 'Sources used'));
+    const ul = h('ul', { class: 'coach-wiki-list' });
+    for (const p of sources) {
+      const li = h('li', {});
+      const a = h('a', { href: '#', class: 'coach-wiki-link' }, coachWikiPageLabel(p));
+      a.addEventListener('click', (e) => { e.preventDefault(); navigate('knowledge'); });
+      li.appendChild(a);
+      ul.appendChild(li);
+    }
+    panel.appendChild(ul);
+  }
+  if (queries.length > 0) {
+    panel.appendChild(h('div', { class: 'coach-wiki-panel-head' }, 'Searched for'));
+    const ul = h('ul', { class: 'coach-wiki-list' });
+    for (const q of queries) ul.appendChild(h('li', {}, '“' + q + '”'));
+    panel.appendChild(ul);
+  }
+  if (sources.length === 0 && queries.length === 0) {
+    panel.appendChild(h('div', { class: 'coach-wiki-empty' }, 'Consulted your wiki (no specific page captured).'));
+  }
+
+  badge.addEventListener('click', () => {
+    const open = panel.hidden;
+    panel.hidden = !open;
+    badge.setAttribute('aria-expanded', open ? 'true' : 'false');
+    badge.textContent = (count > 0 ? `📚 wiki · ${count} source${count === 1 ? '' : 's'} ` : '📚 wiki ') + (open ? '▾' : '▸');
+  });
+  wrap.appendChild(badge);
+  wrap.appendChild(panel);
+  return wrap;
+}
+
+// "📥 Added to your wiki" note for a user turn whose words were ingested.
+function renderCoachWikiIngest(m) {
+  const ing = m.wikiIngest;
+  if (!ing) return null;
+  const produced = ing.producedPages || [];
+  const updated = ing.updatedPages || [];
+  const total = produced.length + updated.length;
+  const note = h('div', { class: 'coach-wiki-ingest', 'data-testid': 'coach-wiki-ingest' });
+  if (total === 0) {
+    note.appendChild(h('span', { class: 'coach-wiki-ingest-head' }, '📥 Saved to your wiki — nothing new to add'));
+    return note;
+  }
+  note.appendChild(h('span', { class: 'coach-wiki-ingest-head' }, `📥 Added to your wiki (${total})`));
+  const ul = h('ul', { class: 'coach-wiki-list' });
+  for (const p of produced) {
+    const li = h('li', {});
+    li.appendChild(h('span', { class: 'coach-wiki-tag new' }, 'new'));
+    li.appendChild(document.createTextNode(' ' + coachWikiPageLabel(p)));
+    ul.appendChild(li);
+  }
+  for (const p of updated) {
+    const li = h('li', {});
+    li.appendChild(h('span', { class: 'coach-wiki-tag upd' }, 'updated'));
+    li.appendChild(document.createTextNode(' ' + coachWikiPageLabel(p)));
+    ul.appendChild(li);
+  }
+  note.appendChild(ul);
+  return note;
+}
+
 function renderCoachChat() {
   const detail = $('#coach-detail');
   if (!detail || !coachState.currentSession) return;
@@ -4302,11 +4390,14 @@ function renderCoachChat() {
         bubble.appendChild(refs);
       }
     }
-    // Transparency: the coach consulted the Business Wiki for this reply.
-    if (m.role === 'assistant' && m.usedWiki) {
-      bubble.appendChild(
-        h('div', { class: 'coach-msg-badge', 'data-testid': 'coach-wiki-badge', title: 'The coach drew on your Business Wiki for this reply.' }, '📚 wiki'),
-      );
+    // Transparency: assistant turns show an expandable "📚 wiki" badge listing
+    // which wiki pages the coach read; user turns show what got ingested.
+    if (m.role === 'assistant') {
+      const panel = renderCoachWikiUsage(m);
+      if (panel) bubble.appendChild(panel);
+    } else {
+      const ingest = renderCoachWikiIngest(m);
+      if (ingest) bubble.appendChild(ingest);
     }
     stream.appendChild(bubble);
   }
@@ -4470,6 +4561,15 @@ window.addEventListener('aab-coach-event', (ev) => {
       coachState.thinking = false;
       toast('Coach error: ' + d.message, 'err');
       if (state.route === 'coach') renderCoachChat();
+    }
+  } else if (d.type === 'coach_wiki_ingested') {
+    // Async write-side result — attach to the user turn + re-render.
+    if (coachState.currentSessionId === d.sessionId && coachState.currentSession && d.messageId) {
+      const msg = (coachState.currentSession.messages || []).find((m) => m.id === d.messageId);
+      if (msg) {
+        msg.wikiIngest = d.wikiIngest;
+        if (state.route === 'coach') renderCoachChat();
+      }
     }
   } else if (d.type === 'coach_session_started' || d.type === 'coach_session_deleted' || d.type === 'coach_session_updated') {
     refreshCoachSessions();

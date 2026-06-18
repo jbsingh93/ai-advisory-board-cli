@@ -38,7 +38,8 @@ Let the Decision Coach optionally draw on the user's **Knowledge Wiki** — thei
 
 ### Transparency
 - Detect on-demand wiki use from the stream (`onEvent` tool_use events for `Read`/`Grep`/`Glob`) and record `DecisionMessage.usedWiki?: boolean`.
-- Web UI: render a small **📚 wiki** badge on assistant turns where `usedWiki` is true, next to the existing `principlesReferenced` footnote (`.coach-msg-refs`). Keeps the user aware when business context shaped a reply.
+- **Sources used (read side).** Capture *which* wiki pages the coach `Read` (and what it `Grep`/`Glob`'d for) into `DecisionMessage.wikiUsage = { sourcesRead[], queries[] }`. The web UI renders the **📚 wiki** badge as an **expandable disclosure** ("📚 wiki · N sources ▸") that lists the pages used (each links to the Knowledge view) and the search terms.
+- **Ingested (write side).** The user-fact merge result for a turn is recorded onto that user message as `DecisionMessage.wikiIngest = { producedPages[], updatedPages[], notes? }` via the ingest-queue's `onResult` callback (awaited so the CLI persists it before exit; the server streams it live via a `coach_wiki_ingested` WS event). The UI shows a **📥 Added to your wiki (N)** note under the user turn (new / updated page chips), or "nothing new to add".
 
 ## Surfaces
 

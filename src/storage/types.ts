@@ -296,6 +296,28 @@ export interface DecisionMessage {
    * UI. Only set on assistant turns. See `docs/development/COACH_WIKI_CONTEXT.md`.
    */
   usedWiki?: boolean;
+  /**
+   * Transparency detail for an assistant turn that used the wiki: which wiki
+   * pages the coach Read and what it searched for. Populated alongside
+   * `usedWiki`. Lets the UI expand the `📚 wiki` badge into "sources used".
+   */
+  wikiUsage?: {
+    /** Wiki-relative paths the coach `Read` (e.g. `wiki/entities/globex.md`). */
+    sourcesRead: string[];
+    /** `Grep` patterns / `Glob` globs it ran against the wiki. */
+    queries: string[];
+  };
+  /**
+   * Transparency detail for a USER turn whose words were ingested back into the
+   * wiki (write side). Recorded asynchronously after the merge agent runs, so it
+   * may appear a moment after the turn. `producedPages`/`updatedPages` empty +
+   * present means "processed, nothing new".
+   */
+  wikiIngest?: {
+    producedPages: string[];
+    updatedPages: string[];
+    notes?: string;
+  };
   createdAt: string;
 }
 

@@ -48,7 +48,7 @@ jobs:
         run: npm run build
 
       - name: Create release PR or publish
-        uses: changesets/action@v1
+        uses: changesets/action@v2
         with:
           # When the release PR is merged, this script runs `changeset publish`
           # which publishes to npm. Trusted publishing via OIDC means no

@@ -18,9 +18,8 @@
     "allowSyntheticDefaultImports": true,
     "verbatimModuleSyntax": false,
     "isolatedModules": true,
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     }
   },
   "include": ["bin/**/*.ts", "src/**/*.ts"],

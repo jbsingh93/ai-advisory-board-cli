@@ -56,7 +56,9 @@ if (init.status !== 0) {
 }
 console.log(`✓ Seeded workspace at ${join(homeDir, '.aabcli', workspaceSlug)}`);
 
-const ui = spawn(process.execPath, [AAB_BIN, 'ui', '--port', '3737'], {
+// Playwright owns the browser lifecycle; do not launch an unmanaged system browser.
+const uiPort = new URL(process.env.AAB_UI_BASE_URL ?? 'http://127.0.0.1:3737').port || '80';
+const ui = spawn(process.execPath, [AAB_BIN, 'ui', '--no-open', '--port', uiPort], {
   cwd: projectRoot,
   env,
   stdio: 'inherit',

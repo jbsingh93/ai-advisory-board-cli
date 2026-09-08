@@ -48,15 +48,14 @@ jobs:
         run: npm run build
 
       - name: Create release PR or publish
-        uses: changesets/action@v1
+        uses: changesets/action@v2
         with:
           # When the release PR is merged, this script runs `changeset publish`
           # which publishes to npm. Trusted publishing via OIDC means no
           # NPM_TOKEN is needed — npm verifies the GitHub Actions workflow
           # identity via the id-token permission above.
-          publish: npm run changeset:publish
-          version: npm run changeset:version
-          commit: "chore: release"
-          title: "chore: release"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          publish-script: npm run changeset:publish
+          version-script: npm run changeset:version
+          commit-message: "chore: release"
+          pr-title: "chore: release"
+          github-token: ${{ secrets.GITHUB_TOKEN }}

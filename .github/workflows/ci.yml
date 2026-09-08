@@ -12,6 +12,57 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  release-preflight:
+    name: Release preflight (node 24)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # This job owns a disposable checkout. It never commits, tags, or publishes.
+      - name: Seed a release candidate
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          writeFileSync(join(process.env.RUNNER_TEMP, 'release-before.json'), JSON.stringify(pkg));
+          writeFileSync('.changeset/ci-release-preflight.md', `---\n${JSON.stringify(pkg.name)}: patch\n---\n\nRelease preflight only.\n`);
+          NODE
+      - name: Verify action recognizes the release candidate
+        id: release-mode
+        uses: changesets/action/select-mode@v2
+      - name: Exercise versioning and packaging
+        env:
+          RELEASE_MODE: ${{ steps.release-mode.outputs.mode }}
+        run: |
+          test "$RELEASE_MODE" = version
+          npm run changeset:version
+          npm run build
+          npm pack --dry-run --json > "$RUNNER_TEMP/release-pack.json"
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const before = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP, 'release-before.json'), 'utf8'));
+          const after = JSON.parse(readFileSync('package.json', 'utf8'));
+          assert.notEqual(after.version, before.version, 'Changesets must increment the version');
+          assert.ok(readFileSync('CHANGELOG.md', 'utf8').includes('Release preflight only.'));
+          const [pack] = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP, 'release-pack.json'), 'utf8'));
+          assert.equal(pack.version, after.version);
+          assert.ok(pack.files.some(f => f.path === 'dist/bin/aab.js'));
+          assert.ok(pack.files.some(f => f.path === 'gui/index.html'));
+          assert.ok(!pack.files.some(f => /^(docs|tests|test-artifacts)\//.test(f.path)));
+          NODE
+
   build:
     name: build (node ${{ matrix.node }} · ${{ matrix.os }})
     runs-on: ${{ matrix.os }}

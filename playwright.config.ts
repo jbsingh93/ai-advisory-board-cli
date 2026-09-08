@@ -18,7 +18,7 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   workers: 1,
   reporter: process.env.CI ? [['list'], ['html', { outputFolder: 'test-artifacts/playwright-test/html' }]] : 'list',
-  outputDir: 'test-artifacts/playwright-test',
+  outputDir: 'test-artifacts/playwright-test/results',
   timeout: 60_000,
   expect: { timeout: 10_000 },
   use: {
